@@ -1,0 +1,11 @@
+name = "tu-trinh-language-api"
+main = "src/index.ts"
+compatibility_date = "2026-08-18"
+
+[ai]
+binding = "AI"
+
+[vars]
+ALLOWED_ORIGINS = "http://localhost:5173,https://tuandatdl.github.io"
+ENRICHMENT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast"
+TRANSLATION_MODEL = "@cf/meta/llama-3.2-3b-instruct"

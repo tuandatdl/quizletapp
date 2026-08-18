@@ -1,0 +1,11 @@
+import { afterEach,describe,expect,it } from "vitest";
+import { VocabularyService } from "../src/core/vocabulary.js";
+import { testContext } from "./helpers.js";
+
+const contexts:Array<Awaited<ReturnType<typeof testContext>>>=[];
+afterEach(async()=>{while(contexts.length)await contexts.pop()!.close();});
+describe("vocabulary",()=>{
+  it("creates, reads, updates and deletes an item",async()=>{const c=await testContext();contexts.push(c);const service=new VocabularyService(c.db);const created=service.create(c.userId,{language:"en",term:"Patience",meaningVi:"sự kiên nhẫn",source:"MANUAL",metadata:{ipa:"/ˈpeɪʃəns/"}});expect(created.duplicate).toBe(false);expect(service.get(c.userId,created.item.id).normalizedTerm).toBe("patience");expect(service.update(c.userId,created.item.id,{note:"important"}).note).toBe("important");service.remove(c.userId,created.item.id);expect(()=>service.get(c.userId,created.item.id)).toThrow();});
+  it("returns the existing item for normalized duplicates",async()=>{const c=await testContext();contexts.push(c);const service=new VocabularyService(c.db),input={language:"en" as const,term:"Patience",meaningVi:"sự kiên nhẫn",source:"MANUAL" as const,metadata:{}};const first=service.create(c.userId,input),second=service.create(c.userId,{...input,term:" patience "});expect(second.duplicate).toBe(true);expect(second.item.id).toBe(first.item.id);});
+  it("saves a reading selection with provenance and prevents duplicates",async()=>{const c=await testContext();contexts.push(c);const reading=await c.app.inject({method:"POST",url:"/api/readings",headers:c.headers,payload:{language:"en",title:"Text",content:"Learning takes time."}});const readingId=reading.json().data.id;const first=await c.app.inject({method:"POST",url:"/api/vocabulary/from-selection",headers:c.headers,payload:{text:"takes time",sourceLanguage:"en",targetLanguage:"vi",readingId,meaningVi:"cần thời gian"}});const second=await c.app.inject({method:"POST",url:"/api/vocabulary/from-selection",headers:c.headers,payload:{text:"takes time",sourceLanguage:"en",targetLanguage:"vi",readingId,meaningVi:"cần thời gian"}});expect(first.statusCode).toBe(201);expect(first.json().data.item.source).toBe("READING_SELECTION");expect(second.statusCode).toBe(200);expect(second.json().data.duplicate).toBe(true);});
+});
