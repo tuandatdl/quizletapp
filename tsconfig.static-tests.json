@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    "types": ["node", "vitest/globals"],
+    "noEmit": true
+  },
+  "include": [
+    "tests/static-edition.test.ts",
+    "src/frontend/**/*.ts",
+    "src/shared/**/*.ts",
+    "cloudflare/worker/src/**/*.ts"
+  ]
+}

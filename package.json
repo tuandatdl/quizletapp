@@ -1,0 +1,55 @@
+{
+  "name": "tu-trinh-language-core",
+  "version": "0.9.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:server": "tsx watch src/server.ts",
+    "dev:client": "vite",
+    "build:server": "tsc -p tsconfig.build.json",
+    "build:client": "vite build",
+    "build:pages": "VITE_RUNTIME_MODE=static vite build --mode pages",
+    "build": "node scripts/clean-build.mjs && npm run build:server && npm run build:client",
+    "typecheck:server": "tsc -p tsconfig.json --noEmit",
+    "typecheck:client": "tsc -p tsconfig.app.json --noEmit",
+    "typecheck:worker": "tsc -p cloudflare/worker/tsconfig.json --noEmit",
+    "typecheck:static-tests": "tsc -p tsconfig.static-tests.json --noEmit",
+    "typecheck": "npm run typecheck:server && npm run typecheck:client && npm run typecheck:worker && npm run typecheck:static-tests",
+    "start": "node dist/src/server.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:migrate": "tsx src/db/migrate.ts",
+    "db:migrate:production": "node dist/src/db/migrate.js",
+    "db:seed": "tsx src/db/seed.ts",
+    "db:backup": "node scripts/db-backup.mjs",
+    "db:restore": "node scripts/db-restore.mjs",
+    "smoke:fresh": "node scripts/smoke-fresh-db.mjs",
+    "smoke:production": "node scripts/smoke-production.mjs",
+    "smoke:static": "node scripts/smoke-static.mjs",
+    "release:artifact": "node scripts/create-release-artifact.mjs",
+    "verify": "npm run typecheck && npm test"
+  },
+  "dependencies": {
+    "fastify": "^5.12.0",
+    "lucide-react": "^1.31.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-router-dom": "^7.18.2",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^6.0.5",
+    "fake-indexeddb": "^6.2.5",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.1",
+    "vitest": "^4.1.10"
+  }
+}

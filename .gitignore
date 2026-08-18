@@ -1,0 +1,16 @@
+node_modules/
+dist/
+data/*.db
+data/*.db-*
+.env
+.env.*
+!.env.example
+coverage/
+backups/
+release/
+*.log
+*.webm
+*.wav
+*.mp3
+.vite/
+.DS_Store
