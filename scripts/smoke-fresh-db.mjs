@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { createServer } from "node:net";
 
 const run = (command, args, env) => new Promise((resolve, reject) => {
@@ -35,6 +36,20 @@ const waitForHealth = async (baseUrl) => {
   throw new Error(`Server did not become healthy: ${String(lastError)}`);
 };
 
+const stopServer = async (child) => {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  const exited = once(child, "exit");
+  child.kill("SIGTERM");
+  const [code, signal] = await Promise.race([
+    exited,
+    new Promise((_, reject) => {
+      const timer = setTimeout(() => reject(new Error("Fresh smoke server shutdown timed out")), 12_000);
+      timer.unref();
+    }),
+  ]);
+  if (code !== 0 || signal) throw new Error(`Fresh smoke server did not stop cleanly: code=${code} signal=${signal}`);
+};
+
 const scratchDir = await mkdtemp(join(tmpdir(), "tu-trinh-fresh-"));
 const databasePath = join(scratchDir, "fresh.db");
 const port = await availablePort();
@@ -44,7 +59,7 @@ let server;
 try {
   await run("npm", ["run", "db:migrate"], testEnv);
   await run("npm", ["run", "db:seed"], testEnv);
-  server = spawn("npm", ["start"], { cwd: process.cwd(), env: testEnv, stdio: ["ignore", "pipe", "pipe"] });
+  server = spawn("node", ["dist/src/server.js"], { cwd: process.cwd(), env: testEnv, stdio: ["ignore", "pipe", "pipe"] });
   let serverOutput = "";
   server.stdout.on("data", (chunk) => { serverOutput += chunk; });
   server.stderr.on("data", (chunk) => { serverOutput += chunk; });
@@ -68,9 +83,6 @@ try {
   if (dashboard.data.languages.en.totalWords !== 2 || dashboard.data.languages.zh.totalWords !== 2) throw new Error("Dashboard seed aggregation mismatch");
   console.log(JSON.stringify({ status: "ok", migration: true, seed: true, productionStart: true, demoLogin: true, vocabulary: vocabulary.data.length, readings: readings.data.length }));
 } finally {
-  if (server && !server.killed) {
-    server.kill("SIGTERM");
-    await new Promise((resolve) => server.once("exit", resolve));
-  }
+  if (server) await stopServer(server);
   await rm(scratchDir, { recursive: true, force: true });
 }
