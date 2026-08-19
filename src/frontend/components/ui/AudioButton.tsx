@@ -4,7 +4,7 @@ import { ttsApi } from "../../api/tts.api";
 import { useToast } from "../../context/ToastContext";
 import { useLanguage } from "../../context/LanguageContext";
 import type { Language } from "../../types/api";
-import { configureSpeechUtterance } from "../../services/speech";
+import { cancelSpeechAndWait, configureSpeechUtterance, getReadySpeechVoices, waitForSpeechVoices } from "../../services/speech";
 
 let activeHtmlAudio: HTMLAudioElement | null = null;
 
@@ -41,12 +41,14 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const speechGenRef = useRef<number>(0);
   const mountedRef = useRef(true);
 
   const currentSpeed = speed ?? settings?.audioSpeed ?? 1;
   const speechText = text?.trim() ?? "";
 
   const stopCurrent = () => {
+    speechGenRef.current += 1;
     abortRef.current?.abort();
     abortRef.current = null;
     if (audioRef.current) {
@@ -73,29 +75,56 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
     };
   }, []);
 
-  const playBrowserSpeech = (speechText: string, lang: Language) => {
+  const playBrowserSpeech = async (speechText: string, lang: Language) => {
     if (!("speechSynthesis" in window)) {
       toastError("Trình duyệt không hỗ trợ phát âm (SpeechSynthesis).");
       return;
     }
-    window.speechSynthesis.cancel();
+    speechGenRef.current += 1;
+    const currentGen = speechGenRef.current;
+    setIsLoading(true);
+
+    await cancelSpeechAndWait(100);
+    if (!mountedRef.current || speechGenRef.current !== currentGen) return;
+
+    const voices = await waitForSpeechVoices(200);
+    if (!mountedRef.current || speechGenRef.current !== currentGen) return;
+
     const utterance = new SpeechSynthesisUtterance(speechText);
     utteranceRef.current = utterance;
     const preferredVoice = lang === "zh" ? settings?.preferredVoiceZh : settings?.preferredVoiceEn;
-    configureSpeechUtterance(utterance, lang, currentSpeed, window.speechSynthesis.getVoices(), preferredVoice);
+    configureSpeechUtterance(utterance, lang, currentSpeed, voices.length > 0 ? voices : getReadySpeechVoices(), preferredVoice);
 
-    utterance.onstart = () => mountedRef.current && setIsPlaying(true);
+    utterance.onstart = () => {
+      if (mountedRef.current && speechGenRef.current === currentGen) {
+        setIsLoading(false);
+        setIsPlaying(true);
+      }
+    };
     utterance.onend = () => {
-      utteranceRef.current = null;
-      if (mountedRef.current) setIsPlaying(false);
+      if (utteranceRef.current === utterance) utteranceRef.current = null;
+      if (mountedRef.current && speechGenRef.current === currentGen) {
+        setIsLoading(false);
+        setIsPlaying(false);
+      }
     };
     utterance.onerror = (event) => {
-      utteranceRef.current = null;
-      if (mountedRef.current) setIsPlaying(false);
-      if (!['canceled', 'interrupted'].includes(event.error)) toastError("Lỗi khi phát âm qua trình duyệt.");
+      if (utteranceRef.current === utterance) utteranceRef.current = null;
+      if (mountedRef.current && speechGenRef.current === currentGen) {
+        setIsLoading(false);
+        setIsPlaying(false);
+      }
+      if (!["canceled", "interrupted"].includes(event.error)) toastError("Lỗi khi phát âm qua trình duyệt.");
     };
 
-    window.speechSynthesis.speak(utterance);
+    try {
+      window.speechSynthesis.speak(utterance);
+    } catch {
+      if (mountedRef.current && speechGenRef.current === currentGen) {
+        setIsLoading(false);
+        setIsPlaying(false);
+      }
+    }
   };
 
   const playHtmlAudio = async (url: string, fallbackText?: string) => {
