@@ -4,7 +4,12 @@ import type { Language } from "../shared/schemas.js";
 export interface VocabularySenseSuggestion {
   partOfSpeech?: string;
   meaningVi?: string;
+  ipa?: string;
+  pronunciation?: string;
+  pinyin?: string;
   synonyms?: string[];
+  example?: string;
+  exampleTranslation?: string;
 }
 
 export interface VocabularyEnrichmentSuggestion {

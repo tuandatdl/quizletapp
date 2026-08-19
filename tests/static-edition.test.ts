@@ -314,8 +314,8 @@ describe("automatic enrichment", () => {
     const persistence = adapter();
     // Cache a previous enrichment in IndexedDB
     await persistence.put("enrichmentCache", {
-      id: "vocabulary-enrichment-v1:en:car",
-      version: "vocabulary-enrichment-v1",
+      id: "vocabulary-enrichment-v2:en:car",
+      version: "vocabulary-enrichment-v2",
       language: "en",
       normalizedTerm: "car",
       value: { term: "car", language: "en", meaningVi: "xe hơi cũ", partOfSpeech: "noun" },
@@ -428,9 +428,9 @@ describe("Cloudflare Worker contract", () => {
   const enrichBody = (terms: string[], language: "en" | "zh" = "en") => ({ language, targetLanguage: "vi", terms, enrichmentVersion: "vocabulary-enrichment-v1" });
 
   it("enriches one term", async () => {
-    const response = await handleRequest(jsonRequest("/v1/vocabulary/enrich", enrichBody(["give up"])), env(async () => ({ response: JSON.stringify({ items: [{ term: "give up", language: "en", meaningVi: "từ bỏ", partOfSpeech: "phrase" }] }) })));
+    const response = await handleRequest(jsonRequest("/v1/vocabulary/enrich", enrichBody(["give up"])), env(async () => ({ response: JSON.stringify({ items: [{ term: "give up", language: "en", meaningVi: "từ bỏ", partOfSpeech: "phrasal verb", ipa: "/ɡɪv ʌp/" }] }) })));
     expect(response.status).toBe(200);
-    expect((await response.json() as any).data.items[0]).toEqual(expect.objectContaining({ term: "give up", meaningVi: "từ bỏ" }));
+    expect((await response.json() as any).data.items[0]).toEqual(expect.objectContaining({ term: "give up", meaningVi: "từ bỏ", partOfSpeech: "phrasal verb", ipa: "/ɡɪv ʌp/" }));
   });
 
   it("enriches four terms in exact order with a cardinality-bound runtime schema", async () => {
@@ -439,7 +439,7 @@ describe("Cloudflare Worker contract", () => {
       const schema = ((input.response_format as any).json_schema.properties.items);
       expect(schema.minItems).toBe(4);
       expect(schema.maxItems).toBe(4);
-      return { response: { items: terms.map((term) => ({ term, language: "en", meaningVi: `nghĩa ${term}` })) } };
+      return { response: { items: terms.map((term) => ({ term, language: "en", meaningVi: `nghĩa ${term}`, partOfSpeech: "noun", ipa: `/${term}-sound/` })) } };
     });
     const response = await handleRequest(jsonRequest("/v1/vocabulary/enrich", enrichBody(terms)), env(run));
     expect(response.status).toBe(200);
@@ -449,29 +449,86 @@ describe("Cloudflare Worker contract", () => {
 
   it("rejects a batch missing one output item", () => {
     expect(() => validateEnrichmentItems({ items: [
-      { term: "go", meaningVi: "đi" },
-      { term: "car", meaningVi: "xe hơi" },
-      { term: "live", meaningVi: "sống" },
+      { term: "go", meaningVi: "đi", partOfSpeech: "verb", ipa: "/ɡoʊ/" },
+      { term: "car", meaningVi: "xe hơi", partOfSpeech: "noun", ipa: "/kɑːr/" },
+      { term: "live", meaningVi: "sống", partOfSpeech: "verb", ipa: "/lɪv/" },
     ] }, ["go", "car", "live", "total"], "en")).toThrow(/item count/u);
   });
 
   it("rejects output items in the wrong order", () => {
     expect(() => validateEnrichmentItems({ items: [
-      { term: "car", meaningVi: "xe hơi" },
-      { term: "go", meaningVi: "đi" },
+      { term: "car", meaningVi: "xe hơi", partOfSpeech: "noun", ipa: "/kɑːr/" },
+      { term: "go", meaningVi: "đi", partOfSpeech: "verb", ipa: "/ɡoʊ/" },
     ] }, ["go", "car"], "en")).toThrow(/index 0/u);
   });
 
   it("rejects a term that does not exactly match its input", () => {
-    expect(() => validateEnrichmentItems({ items: [{ term: "Go", meaningVi: "đi" }] }, ["go"], "en")).toThrow(/index 0/u);
+    expect(() => validateEnrichmentItems({ items: [{ term: "Go", meaningVi: "đi", partOfSpeech: "verb", ipa: "/ɡoʊ/" }] }, ["go"], "en")).toThrow(/index 0/u);
+  });
+
+  it("rejects English items missing partOfSpeech or missing valid IPA", () => {
+    expect(() => validateEnrichmentItems({ items: [{ term: "go", meaningVi: "đi", ipa: "/ɡoʊ/" }] }, ["go"], "en")).toThrow(/partOfSpeech/u);
+    expect(() => validateEnrichmentItems({ items: [{ term: "go", meaningVi: "đi", partOfSpeech: "verb" }] }, ["go"], "en")).toThrow(/missing IPA/u);
+    expect(() => validateEnrichmentItems({ items: [{ term: "go", meaningVi: "đi", partOfSpeech: "verb", ipa: "go" }] }, ["go"], "en")).toThrow(/invalid IPA/u);
+  });
+
+  it("supports heteronyms and multi-sense items with distinct POS and IPA per sense (live, record)", () => {
+    const [liveItem] = validateEnrichmentItems({
+      items: [{
+        term: "live",
+        language: "en",
+        meaningVi: "sống",
+        partOfSpeech: "verb",
+        ipa: "/lɪv/",
+        senses: [
+          { partOfSpeech: "verb", ipa: "/lɪv/", meaningVi: "sống; sinh sống", example: "Where do you live?", exampleTranslation: "Bạn sống ở đâu?" },
+          { partOfSpeech: "adjective", ipa: "/laɪv/", meaningVi: "trực tiếp", example: "live broadcast", exampleTranslation: "phát sóng trực tiếp" },
+        ],
+      }],
+    }, ["live"], "en");
+
+    expect(liveItem).toEqual(expect.objectContaining({
+      term: "live",
+      meaningVi: "sống",
+      partOfSpeech: "verb",
+      ipa: "/lɪv/",
+    }));
+    expect((liveItem.senses as any[])[0]).toEqual(expect.objectContaining({
+      partOfSpeech: "verb",
+      ipa: "/lɪv/",
+      meaningVi: "sống; sinh sống",
+    }));
+    expect((liveItem.senses as any[])[1]).toEqual(expect.objectContaining({
+      partOfSpeech: "adjective",
+      ipa: "/laɪv/",
+      meaningVi: "trực tiếp",
+    }));
+
+    const [recordItem] = validateEnrichmentItems({
+      items: [{
+        term: "record",
+        language: "en",
+        meaningVi: "hồ sơ; kỷ lục",
+        partOfSpeech: "noun",
+        ipa: "/ˈrek.ɚd/",
+        senses: [
+          { partOfSpeech: "noun", ipa: "/ˈrek.ɚd/", meaningVi: "hồ sơ; kỷ lục" },
+          { partOfSpeech: "verb", ipa: "/rɪˈkɔːrd/", meaningVi: "ghi âm; ghi lại" },
+        ],
+      }],
+    }, ["record"], "en");
+
+    expect(recordItem.ipa).toBe("/ˈrek.ɚd/");
+    expect((recordItem.senses as any[])[1].ipa).toBe("/rɪˈkɔːrd/");
+    expect((recordItem.senses as any[])[1].partOfSpeech).toBe("verb");
   });
 
   it("strips Chinese-only fields from normalized English output", () => {
     const [item] = validateEnrichmentItems({ items: [{
-      term: "car", language: "en", meaningVi: "xe hơi",
+      term: "car", language: "en", meaningVi: "xe hơi", partOfSpeech: "noun", ipa: "/kɑːr/",
       pinyin: "qiche", simplified: "汽车", traditional: "xe hơi", toneData: [1],
     }] }, ["car"], "en");
-    expect(item).toEqual(expect.objectContaining({ term: "car", meaningVi: "xe hơi" }));
+    expect(item).toEqual(expect.objectContaining({ term: "car", meaningVi: "xe hơi", partOfSpeech: "noun", ipa: "/kɑːr/" }));
     expect(item).not.toHaveProperty("pinyin");
     expect(item).not.toHaveProperty("simplified");
     expect(item).not.toHaveProperty("traditional");
@@ -484,22 +541,22 @@ describe("Cloudflare Worker contract", () => {
   it("falls back to validated single-term calls when a multi-term response is invalid", async () => {
     const terms = ["go", "car", "live", "total"];
     const run = vi.fn()
-      .mockResolvedValueOnce({ response: { items: terms.slice(0, 3).map((term) => ({ term, language: "en", meaningVi: `nghĩa ${term}` })) } })
-      .mockResolvedValueOnce({ response: { items: [{ term: "go", language: "en", meaningVi: "đi" }] } })
-      .mockResolvedValueOnce({ response: { items: [{ term: "car", language: "en", meaningVi: "xe hơi" }] } })
-      .mockResolvedValueOnce({ response: { items: [{ term: "live", language: "en", meaningVi: "sống" }] } })
-      .mockResolvedValueOnce({ response: { items: [{ term: "total", language: "en", meaningVi: "tổng cộng" }] } });
+      .mockResolvedValueOnce({ response: { items: terms.slice(0, 3).map((term) => ({ term, language: "en", meaningVi: `nghĩa ${term}`, partOfSpeech: "noun", ipa: `/${term}-sound/` })) } })
+      .mockResolvedValueOnce({ response: { items: [{ term: "go", language: "en", meaningVi: "đi", partOfSpeech: "verb", ipa: "/ɡoʊ/" }] } })
+      .mockResolvedValueOnce({ response: { items: [{ term: "car", language: "en", meaningVi: "xe hơi", partOfSpeech: "noun", ipa: "/kɑːr/" }] } })
+      .mockResolvedValueOnce({ response: { items: [{ term: "live", language: "en", meaningVi: "sống", partOfSpeech: "verb", ipa: "/lɪv/" }] } })
+      .mockResolvedValueOnce({ response: { items: [{ term: "total", language: "en", meaningVi: "tổng cộng", partOfSpeech: "noun", ipa: "/ˈtoʊ.t̬əl/" }] } });
     const response = await handleRequest(jsonRequest("/v1/vocabulary/enrich", enrichBody(terms)), env(run));
     expect(response.status).toBe(200);
     const payload = await response.json() as any;
     expect(payload.data.items.map((item: any) => item.term)).toEqual(terms);
-    expect(payload.data.items.every((item: any) => Boolean(item.meaningVi))).toBe(true);
+    expect(payload.data.items.every((item: any) => Boolean(item.meaningVi) && Boolean(item.partOfSpeech) && Boolean(item.ipa))).toBe(true);
     expect(run).toHaveBeenCalledTimes(5);
   });
 
   it("keeps Chinese-only fields for normalized Chinese output", () => {
-    const [item] = validateEnrichmentItems({ items: [{ term: "汽车", meaningVi: "xe hơi", pinyin: "qì chē", simplified: "汽车", traditional: "汽車", toneData: [4, 1] }] }, ["汽车"], "zh");
-    expect(item).toEqual(expect.objectContaining({ pinyin: "qì chē", simplified: "汽车", traditional: "汽車", toneData: [4, 1] }));
+    const [item] = validateEnrichmentItems({ items: [{ term: "汽车", meaningVi: "xe hơi", partOfSpeech: "noun", pinyin: "qì chē", simplified: "汽车", traditional: "汽車", toneData: [4, 1] }] }, ["汽车"], "zh");
+    expect(item).toEqual(expect.objectContaining({ pinyin: "qì chē", simplified: "汽车", traditional: "汽車", toneData: [4, 1], partOfSpeech: "noun" }));
   });
 
   it("keeps the translation endpoint working", async () => {
@@ -525,5 +582,53 @@ describe("Cloudflare Worker contract", () => {
     const response = await handleRequest(jsonRequest("/v1/translate", { text: "go", sourceLanguage: "en", targetLanguage: "vi" }), env(async () => ({ response: "not-json" })));
     expect(response.status).toBe(502);
     expect((await response.json() as any).error.code).toBe("AI_RESPONSE_INVALID");
+  });
+
+  it("updates meaning, POS, and IPA synchronously when switching senses for heteronyms", () => {
+    interface PreviewItem {
+      term: string;
+      meaningVi: string;
+      partOfSpeech: string;
+      pronunciation: string;
+      ipa?: string;
+      senses: Array<{ partOfSpeech?: string; meaningVi: string; ipa?: string; pronunciation?: string }>;
+    }
+
+    const liveItem: PreviewItem = {
+      term: "live",
+      meaningVi: "sống",
+      partOfSpeech: "verb",
+      pronunciation: "/lɪv/",
+      ipa: "/lɪv/",
+      senses: [
+        { partOfSpeech: "verb", ipa: "/lɪv/", meaningVi: "sống; sinh sống" },
+        { partOfSpeech: "adjective", ipa: "/laɪv/", meaningVi: "trực tiếp" },
+      ],
+    };
+
+    const chooseSense = (item: PreviewItem, senseIndex: number): PreviewItem => {
+      const sense = item.senses[senseIndex];
+      if (!sense) return item;
+      const newPron = sense.ipa || sense.pronunciation || item.pronunciation;
+      return {
+        ...item,
+        meaningVi: sense.meaningVi || item.meaningVi,
+        partOfSpeech: sense.partOfSpeech || item.partOfSpeech,
+        pronunciation: newPron,
+        ipa: sense.ipa || newPron,
+      };
+    };
+
+    const switchedToAdj = chooseSense(liveItem, 1);
+    expect(switchedToAdj.meaningVi).toBe("trực tiếp");
+    expect(switchedToAdj.partOfSpeech).toBe("adjective");
+    expect(switchedToAdj.pronunciation).toBe("/laɪv/");
+    expect(switchedToAdj.ipa).toBe("/laɪv/");
+
+    const switchedBackToVerb = chooseSense(switchedToAdj, 0);
+    expect(switchedBackToVerb.meaningVi).toBe("sống; sinh sống");
+    expect(switchedBackToVerb.partOfSpeech).toBe("verb");
+    expect(switchedBackToVerb.pronunciation).toBe("/lɪv/");
+    expect(switchedBackToVerb.ipa).toBe("/lɪv/");
   });
 });

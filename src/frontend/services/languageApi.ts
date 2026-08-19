@@ -2,13 +2,18 @@ import type { Language } from "../types/api";
 import type { PersistenceAdapter, StoredRecord } from "../persistence/types";
 import { getLanguageApiUrl } from "../runtime/runtime";
 
-export const ENRICHMENT_VERSION = "vocabulary-enrichment-v1";
+export const ENRICHMENT_VERSION = "vocabulary-enrichment-v2";
 export const MAX_ENRICHMENT_BATCH_SIZE = 25;
 
 export interface VocabularySense {
   partOfSpeech?: string;
   meaningVi: string;
+  ipa?: string;
+  pronunciation?: string;
+  pinyin?: string;
   synonyms?: string[];
+  example?: string;
+  exampleTranslation?: string;
 }
 
 export interface VocabularyEnrichment {
@@ -71,7 +76,16 @@ export function validateEnrichment(value: unknown, expectedLanguage?: Language):
         if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
         const sense = raw as Record<string, unknown>;
         const meaning = optionalString(sense.meaningVi, 1000);
-        return meaning ? [{ meaningVi: meaning, partOfSpeech: optionalString(sense.partOfSpeech, 50), synonyms: stringArray(sense.synonyms) }] : [];
+        return meaning ? [{
+          meaningVi: meaning,
+          partOfSpeech: optionalString(sense.partOfSpeech, 50),
+          ipa: optionalString(sense.ipa, 200),
+          pronunciation: optionalString(sense.pronunciation, 200),
+          pinyin: optionalString(sense.pinyin, 200),
+          synonyms: stringArray(sense.synonyms),
+          example: optionalString(sense.example, 2000),
+          exampleTranslation: optionalString(sense.exampleTranslation, 2000),
+        }] : [];
       })
     : undefined;
   const toneData = Array.isArray(item.toneData)

@@ -144,7 +144,12 @@ export interface CreateVocabularyResult {
 export interface VocabularySenseSuggestion {
   partOfSpeech?: string;
   meaningVi?: string;
+  ipa?: string;
+  pronunciation?: string;
+  pinyin?: string;
   synonyms?: string[];
+  example?: string;
+  exampleTranslation?: string;
 }
 
 export interface BulkVocabularySuggestion {
