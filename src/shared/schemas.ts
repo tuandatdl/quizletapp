@@ -81,11 +81,30 @@ export const readingInputSchema = z.object({
   translationVi: z.string().trim().max(50_000).nullable().optional(), topic: z.string().trim().max(100).nullable().optional(), level: z.string().trim().max(30).nullable().optional()
 });
 export const readingPatchSchema = readingInputSchema.partial();
+export const vocabularyContextSchema = z.object({
+  sentence: z.string().trim().min(1).max(600),
+  previousSentence: z.string().trim().max(600).optional(),
+  nextSentence: z.string().trim().max(600).optional(),
+});
+export type VocabularyContext = z.infer<typeof vocabularyContextSchema>;
+
+export const enrichContextSchema = z.object({
+  term: z.string().trim().min(1).max(200),
+  language: languageSchema,
+  sentence: z.string().trim().min(1).max(600),
+  previousSentence: z.string().trim().max(600).optional(),
+  nextSentence: z.string().trim().max(600).optional(),
+});
+export type EnrichContextInput = z.infer<typeof enrichContextSchema>;
+
 export const translationSelectionSchema = z.object({
   text: z.string().trim().min(1).max(1000), sourceLanguage: languageSchema, targetLanguage: z.literal("vi"), readingId: z.string().uuid().optional()
 });
 export const saveSelectionSchema = translationSelectionSchema.extend({
-  meaningVi: z.string().trim().min(1).max(1000), pronunciation: z.string().trim().max(200).optional(), partOfSpeech: z.string().trim().max(50).optional()
+  meaningVi: z.string().trim().max(1000).optional().default(""),
+  pronunciation: z.string().trim().max(200).optional(),
+  partOfSpeech: z.string().trim().max(50).optional(),
+  context: vocabularyContextSchema.optional()
 });
 export const ttsRequestSchema = z.object({
   text: z.string().trim().min(1).max(5000), language: languageSchema, voice: z.string().max(100).optional(), speed: z.union([z.literal(0.75), z.literal(1), z.literal(1.25)]).default(1)

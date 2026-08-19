@@ -10,14 +10,14 @@ import { UnconfiguredPronunciationService, UnconfiguredTranslationService, Uncon
 import { ReadingService } from "./core/reading.js";
 import { VocabularyService } from "./core/vocabulary.js";
 import { VocabularyBulkService } from "./core/vocabulary-bulk.js";
-import type { VocabularyEnrichmentService } from "./core/vocabulary-enrichment.js";
+import type { VocabularyEnrichmentService, VocabularyEnrichmentSuggestion } from "./core/vocabulary-enrichment.js";
 import { UnconfiguredVocabularyEnrichmentService } from "./core/vocabulary-enrichment.js";
 import type { Database } from "./db/database.js";
 import { RequestRateLimiter } from "./production/rate-limit.js";
 import { applySecurityHeaders, enforceOrigin } from "./production/security.js";
 import { sendStaticOrSpa } from "./production/static.js";
 import { AppError, errorBody, errors } from "./shared/errors.js";
-import { bulkPreviewSchema, bulkVocabularySchema, gameAnswerSchema, gameStartSchema, languageSchema, loginSchema, pronunciationRequestSchema, quizAnswerSchema, quizStartSchema, readingInputSchema, readingPatchSchema, registerSchema, reviewActionSchema, saveSelectionSchema, translationSelectionSchema, ttsRequestSchema, vocabularyInputSchema, vocabularyPatchSchema, vocabularyQuerySchema } from "./shared/schemas.js";
+import { bulkPreviewSchema, bulkVocabularySchema, enrichContextSchema, gameAnswerSchema, gameStartSchema, languageSchema, loginSchema, pronunciationRequestSchema, quizAnswerSchema, quizStartSchema, readingInputSchema, readingPatchSchema, registerSchema, reviewActionSchema, saveSelectionSchema, translationSelectionSchema, ttsRequestSchema, vocabularyInputSchema, vocabularyPatchSchema, vocabularyQuerySchema } from "./shared/schemas.js";
 
 interface Dependencies { db:Database;config:AppConfig;translation?:TranslationService;tts?:TTSService;pronunciation?:PronunciationService;vocabularyEnrichment?:VocabularyEnrichmentService }
 const idParam=z.object({id:z.string().uuid()});
@@ -84,7 +84,8 @@ export function buildApp(deps:Dependencies){
   app.post("/api/readings/:id/translate",async req=>resource(await reading.translatePassage(userId(req),readingParam.parse(req.params).id)));
   app.get("/api/translation/availability",async()=>resource({configured:translation.configured,provider:translation.provider}));
   app.post("/api/translate-selection",async req=>{const uid=userId(req),now=Date.now(),record=selectionRate.get(uid);if(!record||now-record.start>=60_000)selectionRate.set(uid,{start:now,count:1});else if(record.count>=30)throw errors.rateLimited();else record.count++;return resource(await reading.translateSelection(uid,translationSelectionSchema.parse(req.body)));});
-  app.post("/api/vocabulary/from-selection",async(req,reply)=>{const input=saveSelectionSchema.parse(req.body);if(input.readingId)reading.get(userId(req),input.readingId);const result=vocab.create(userId(req),{language:input.sourceLanguage,term:input.text,meaningVi:input.meaningVi,pronunciation:input.pronunciation,partOfSpeech:input.partOfSpeech,source:"READING_SELECTION",sourceReadingId:input.readingId,metadata:{}});reply.status(result.duplicate?200:201);return resource(result);});
+  app.post("/api/vocabulary/enrich-context",async req=>{const input=enrichContextSchema.parse(req.body);if(!vocabularyEnrichment.configured)return resource(null);try{const enriched=await vocabularyEnrichment.enrich({language:input.language,term:input.term,nativeLanguage:"vi",context:{sentence:input.sentence,previousSentence:input.previousSentence,nextSentence:input.nextSentence}});return resource(enriched);}catch{return resource(null);}});
+  app.post("/api/vocabulary/from-selection",async(req,reply)=>{const input=saveSelectionSchema.parse(req.body);if(input.readingId)reading.get(userId(req),input.readingId);let enriched:VocabularyEnrichmentSuggestion|undefined;if(vocabularyEnrichment.configured){try{if(input.context)enriched=await vocabularyEnrichment.enrich({language:input.sourceLanguage,term:input.text,nativeLanguage:"vi",context:input.context});}catch{}}const sourceContext=input.context?{sentence:input.context.sentence,previousSentence:input.context.previousSentence,nextSentence:input.context.nextSentence}:undefined;const metadata:Record<string,unknown>=enriched?{synonyms:enriched.synonyms??[],senses:enriched.senses??[],ipa:enriched.ipa,pinyin:enriched.pinyin,...(input.context?{sourceContext,contextAware:true}:{})}:(input.context?{sourceContext,contextAware:true}:{});const result=vocab.create(userId(req),{language:input.sourceLanguage,term:input.text,meaningVi:input.meaningVi||enriched?.meaningVi||"",pronunciation:input.pronunciation||enriched?.pronunciation||enriched?.ipa||enriched?.pinyin,partOfSpeech:input.partOfSpeech||enriched?.partOfSpeech,example:enriched?.example,exampleTranslation:enriched?.exampleTranslation,source:"READING_SELECTION",sourceReadingId:input.readingId,metadata});reply.status(result.duplicate?200:201);if(result.duplicate&&enriched)return resource({...result,contextualSense:enriched});return resource(result);});
   app.post("/api/tts",async req=>{const input=ttsRequestSchema.parse(req.body);return resource(await tts.synthesize(input));});
 
   app.get("/api/pronunciation/availability",async()=>resource(pronunciation.availability()));

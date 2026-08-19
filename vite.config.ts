@@ -3,8 +3,6 @@ import react from "@vitejs/plugin-react";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { cloudflare } from "@cloudflare/vite-plugin";
-
 const rootDir = fileURLToPath(new URL(".", import.meta.url));
 
 export default defineConfig(({ mode }) => {
@@ -14,7 +12,7 @@ export default defineConfig(({ mode }) => {
   const pagesBase = (env.VITE_PAGES_BASE_PATH || "/quizletapp/").replace(/^([^/])/u, "/$1").replace(/([^/])$/u, "$1/");
   return {
     base: staticMode ? pagesBase : "/",
-    plugins: [react(), cloudflare()],
+    plugins: [react()],
     resolve: {
       alias: {
         "@": path.resolve(rootDir, "./src/frontend"),
