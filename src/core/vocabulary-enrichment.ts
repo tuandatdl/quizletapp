@@ -1,5 +1,5 @@
 import { errors } from "../shared/errors.js";
-import type { Language } from "../shared/schemas.js";
+import type { Language, VocabularyContext } from "../shared/schemas.js";
 
 export interface VocabularySenseSuggestion {
   partOfSpeech?: string;
@@ -39,6 +39,7 @@ export interface VocabularyEnrichmentService {
     language: Language;
     term: string;
     nativeLanguage: "vi";
+    context?: VocabularyContext;
   }): Promise<VocabularyEnrichmentSuggestion>;
 }
 
