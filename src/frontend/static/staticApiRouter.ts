@@ -337,11 +337,7 @@ export class StaticApiRouter {
       previousSentence: body.previousSentence,
       nextSentence: body.nextSentence,
     };
-    try {
-      return await this.languageApi.enrichTermWithContext(body.language, body.term, context);
-    } catch {
-      return null;
-    }
+    return await this.languageApi.enrichTermWithContext(body.language, body.term, context);
   }
 
   private async saveSelection(body: any): Promise<CreateVocabularyResult & { contextualSense?: VocabularyEnrichment }> {
