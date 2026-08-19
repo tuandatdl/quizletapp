@@ -14,6 +14,8 @@ import {
   cloudSyncAvailable,
   getSupabaseClient,
   resetSupabaseClientForTesting,
+  isAuthCallbackUrl,
+  handleAuthRedirect,
 } from "../src/frontend/persistence/supabaseClient.js";
 
 describe("Supabase Local-First Cloud Sync", () => {
@@ -401,5 +403,74 @@ describe("Magic Link button regression", () => {
     expect(signInWithOtp).toHaveBeenCalledOnce();
     const callArg = (signInWithOtp.mock.lastCall as unknown[])[0] as { email: string };
     expect(callArg.email).toBe("trintran5555@gmail.com");
+  });
+});
+
+// ─── Regression: Auth callback routing — HashRouter must never see 404 ───────
+describe("Auth callback routing regression", () => {
+  afterEach(() => {
+    resetSupabaseClientForTesting();
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  function mockLocation(href: string) {
+    const url = new URL(href);
+    vi.stubGlobal("window", {
+      location: {
+        href,
+        search: url.search,
+        hash: url.hash,
+        pathname: url.pathname,
+        replace: vi.fn(),
+      },
+    });
+  }
+
+  it("14. isAuthCallbackUrl detects #access_token= as callback", () => {
+    mockLocation("https://tuandatdl.github.io/quizletapp/#access_token=abc&refresh_token=xyz");
+    expect(isAuthCallbackUrl()).toBe(true);
+  });
+
+  it("15. isAuthCallbackUrl detects ?code= as callback", () => {
+    mockLocation("https://tuandatdl.github.io/quizletapp/?code=someCode#/");
+    expect(isAuthCallbackUrl()).toBe(true);
+  });
+
+  it("16. isAuthCallbackUrl detects #error_description= as callback", () => {
+    mockLocation("https://tuandatdl.github.io/quizletapp/#error_description=access+denied");
+    expect(isAuthCallbackUrl()).toBe(true);
+  });
+
+  it("17. isAuthCallbackUrl returns false for normal #/settings load", () => {
+    mockLocation("https://tuandatdl.github.io/quizletapp/#/settings");
+    expect(isAuthCallbackUrl()).toBe(false);
+  });
+
+  it("18. handleAuthRedirect calls window.location.replace with #/settings on access_token callback", async () => {
+    mockLocation("https://tuandatdl.github.io/quizletapp/#access_token=tok&refresh_token=ref&token_type=bearer");
+
+    vi.stubEnv("VITE_SUPABASE_URL", "https://example.supabase.co");
+    vi.stubEnv("VITE_SUPABASE_ANON_KEY", "sb_test_key");
+
+    const setSession = vi.fn(async () => ({ data: { session: { user: { email: "t@t.com" } } }, error: null }));
+    const mockClient = {
+      auth: {
+        setSession,
+        getSession: vi.fn(async () => ({ data: { session: null } })),
+        onAuthStateChange: vi.fn(() => ({ data: { subscription: { unsubscribe: vi.fn() } } })),
+      },
+    };
+    resetSupabaseClientForTesting(mockClient as any);
+
+    await handleAuthRedirect();
+
+    expect(setSession).toHaveBeenCalledOnce();
+    const replaceFn = window.location.replace as ReturnType<typeof vi.fn>;
+    expect(replaceFn.mock.calls.length).toBe(1);
+    const redirectArg = replaceFn.mock.calls[0][0] as string;
+    expect(redirectArg).toContain("#/settings");
+    // Must NOT contain raw token params
+    expect(redirectArg).not.toContain("access_token");
   });
 });

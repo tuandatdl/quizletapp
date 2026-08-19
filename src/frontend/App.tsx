@@ -24,7 +24,7 @@ import { GamesPage } from "./pages/games/GamesPage";
 import { ProgressPage } from "./pages/progress/ProgressPage";
 import { SettingsPage } from "./pages/settings/SettingsPage";
 import { isStaticRuntime } from "./runtime/runtime";
-import { handleAuthRedirect } from "./persistence/supabaseClient";
+import { handleAuthRedirect, isAuthCallbackUrl } from "./persistence/supabaseClient";
 
 const NotFoundPage: React.FC = () => (
   <main style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: "var(--space-6)", textAlign: "center" }}>
@@ -37,15 +37,64 @@ const NotFoundPage: React.FC = () => (
   </main>
 );
 
+/** Minimal splash shown while auth callback is being processed */
+const AuthRedirectingPage: React.FC = () => (
+  <main style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: "var(--space-6)", textAlign: "center" }}>
+    <div>
+      <div style={{ width: 40, height: 40, border: "3px solid var(--accent-en-primary)", borderTopColor: "transparent", borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto var(--space-4)" }} />
+      <p style={{ color: "var(--text-secondary)" }}>Đang xác thực đăng nhập…</p>
+    </div>
+    {/* inline keyframes for the spinner */}
+    <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+  </main>
+);
+
 export const App: React.FC = () => {
   const staticMode = isStaticRuntime();
   const Router = staticMode ? HashRouter : BrowserRouter;
 
+  /**
+   * authRedirectReady:
+   * - For server mode: immediately true (no auth callback needed).
+   * - For static mode: starts as false when we detect an auth callback URL,
+   *   so we can block HashRouter rendering until handleAuthRedirect() finishes.
+   *   Normal static page loads start as true and are never blocked.
+   */
+  const [authRedirectReady, setAuthRedirectReady] = React.useState<boolean>(
+    () => !staticMode || !isAuthCallbackUrl(),
+  );
+
   React.useEffect(() => {
-    if (staticMode) {
-      void handleAuthRedirect();
+    if (!staticMode) {
+      setAuthRedirectReady(true);
+      return;
     }
+
+    if (!isAuthCallbackUrl()) {
+      // Normal non-callback load — nothing to do
+      setAuthRedirectReady(true);
+      return;
+    }
+
+    // Auth callback detected — process it BEFORE HashRouter renders.
+    // handleAuthRedirect() will call window.location.replace(…#/settings)
+    // on success/failure, which triggers a fresh page load with a clean route.
+    void handleAuthRedirect().finally(() => {
+      // If replace() was called, this code is never reached (page reloads).
+      // Fallback: mark ready so the router renders something.
+      setAuthRedirectReady(true);
+    });
   }, [staticMode]);
+
+  // While processing an auth callback, show a loading splash instead of the router.
+  if (!authRedirectReady) {
+    return (
+      <ThemeProvider>
+        <AuthRedirectingPage />
+      </ThemeProvider>
+    );
+  }
+
   return (
     <ThemeProvider>
       <AuthProvider>

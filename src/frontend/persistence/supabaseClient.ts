@@ -1,4 +1,4 @@
-import { createClient, type SupabaseClient, type User, type Session } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient, type Session } from "@supabase/supabase-js";
 
 let clientInstance: SupabaseClient | null = null;
 let clientInitialized = false;
@@ -37,7 +37,8 @@ export function getSupabaseClient(): SupabaseClient | null {
       auth: {
         persistSession: true,
         autoRefreshToken: true,
-        detectSessionInUrl: true,
+        // We handle session detection ourselves to avoid HashRouter conflict
+        detectSessionInUrl: false,
         storageKey: "tutrinh_supabase_auth",
       },
     });
@@ -59,37 +60,69 @@ export function resetSupabaseClientForTesting(mockClient?: SupabaseClient | null
 }
 
 /**
+ * Returns true if the current URL looks like a Supabase auth callback.
+ * This must be called BEFORE HashRouter renders to prevent 404.
+ */
+export function isAuthCallbackUrl(): boolean {
+  if (typeof window === "undefined") return false;
+  const search = window.location.search;
+  const hash = window.location.hash;
+  return (
+    search.includes("code=") ||
+    hash.includes("access_token=") ||
+    hash.includes("refresh_token=") ||
+    hash.includes("error_description=")
+  );
+}
+
+/**
  * Handles HashRouter-compatible Supabase Auth redirect tokens on GitHub Pages.
- * When Supabase redirects with `#access_token=...` or `?code=...`,
- * this extracts the auth session and cleans up the browser hash route without losing user state.
+ *
+ * After a successful auth exchange, performs a full same-origin replace to
+ * `#/settings` so HashRouter boots with a clean, valid route.
+ *
+ * Returns the resulting Session (or null on failure / no callback present).
  */
 export async function handleAuthRedirect(): Promise<Session | null> {
   const supabase = getSupabaseClient();
   if (!supabase || typeof window === "undefined") return null;
 
   try {
-    // 1. Check if URL contains query parameter auth code (PKCE flow)
+    // ── 1. PKCE flow: ?code= in query string ──────────────────────────────
     const urlParams = new URLSearchParams(window.location.search);
     const code = urlParams.get("code");
     if (code) {
       const { data, error } = await supabase.auth.exchangeCodeForSession(code);
-      // Clean up query param
+
+      // Build clean search without the code param
       urlParams.delete("code");
-      const newSearch = urlParams.toString() ? `?${urlParams.toString()}` : "";
-      window.history.replaceState(null, "", `${window.location.pathname}${newSearch}${window.location.hash || "#/settings"}`);
+      const cleanSearch = urlParams.toString() ? `?${urlParams.toString()}` : "";
+
       if (error) {
         console.error("Error exchanging code for session:", error);
+        // Redirect to settings even on error — do NOT leave user at auth fragment
+        window.location.replace(`${window.location.pathname}${cleanSearch}#/settings`);
         return null;
       }
+
+      // Full replace so HashRouter sees a clean #/settings on boot
+      window.location.replace(`${window.location.pathname}${cleanSearch}#/settings`);
       return data.session;
     }
 
-    // 2. Check if window.location.hash contains access_token from Implicit / Magic Link flow
+    // ── 2. Implicit / Magic Link flow: #access_token= in hash ─────────────
     const rawHash = window.location.hash;
     if (rawHash && (rawHash.includes("access_token=") || rawHash.includes("error_description="))) {
-      // Extract hash params
       const hashContent = rawHash.startsWith("#") ? rawHash.slice(1) : rawHash;
       const hashParams = new URLSearchParams(hashContent);
+
+      const errorDesc = hashParams.get("error_description");
+      if (errorDesc) {
+        console.error("Supabase auth error in hash:", errorDesc);
+        window.location.replace(`${window.location.pathname}${window.location.search}#/settings`);
+        return null;
+      }
+
       const accessToken = hashParams.get("access_token");
       const refreshToken = hashParams.get("refresh_token");
 
@@ -98,17 +131,20 @@ export async function handleAuthRedirect(): Promise<Session | null> {
           access_token: accessToken,
           refresh_token: refreshToken,
         });
-        // Restore clean hash router path
-        window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}#/settings`);
+
         if (error) {
           console.error("Error setting session from hash:", error);
+          window.location.replace(`${window.location.pathname}${window.location.search}#/settings`);
           return null;
         }
+
+        // Full replace — HashRouter will boot at #/settings cleanly
+        window.location.replace(`${window.location.pathname}${window.location.search}#/settings`);
         return data.session;
       }
     }
 
-    // 3. Normal session lookup
+    // ── 3. Normal (non-callback) page load — just return existing session ──
     const { data } = await supabase.auth.getSession();
     return data.session;
   } catch (error) {
