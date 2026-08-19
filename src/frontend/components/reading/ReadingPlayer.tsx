@@ -116,7 +116,11 @@ export const ReadingPlayer: React.FC<ReadingPlayerProps> = ({
           <div>
             <div style={{ fontSize: "var(--text-xs)", fontWeight: 700, color: "var(--text-primary)" }}>
               {isSpeech ? (
-                isPlaying ? (
+                playbackState.loading ? (
+                  <span style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                    Đang chuẩn bị giọng đọc...
+                  </span>
+                ) : isPlaying ? (
                   <span>Đang đọc: Câu {currentSentenceIdx + 1} / {totalSentences}</span>
                 ) : isPaused ? (
                   <span>Tạm dừng ở: Câu {currentSentenceIdx + 1} / {totalSentences}</span>
@@ -130,7 +134,11 @@ export const ReadingPlayer: React.FC<ReadingPlayerProps> = ({
               )}
             </div>
             <div style={{ fontSize: "0.75rem", color: "var(--text-tertiary)" }}>
-              {isSpeech ? "Chế độ phát âm chuẩn từng câu (SpeechSynthesis)" : "Tệp âm thanh gốc"}
+              {isSpeech
+                ? playbackState.engine === "cloud"
+                  ? "Chế độ phát âm Cloud TTS tự nhiên"
+                  : "Chế độ phát âm từng câu (SpeechSynthesis)"
+                : "Tệp âm thanh gốc"}
             </div>
           </div>
         </div>

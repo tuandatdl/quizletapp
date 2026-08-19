@@ -43,6 +43,8 @@ const DEFAULT_SETTINGS: UserSettings = {
   dailyGoal: 20,
   audioSpeed: 1,
   autoPlayAudio: false,
+  audioEngine: "AUTO",
+  preferredCloudVoiceEn: "aura-asteria-en",
   showTranslation: true,
   showPinyin: true,
   showHanzi: true,

@@ -11,8 +11,14 @@ import {
   getSpeechCancelSettleMs,
   waitForSpeechVoices,
 } from "../../services/speech";
+import {
+  synthesizeCloudSpeech,
+  configureAudioElementPlaybackRate,
+  DEFAULT_CLOUD_VOICE_EN,
+} from "../../services/cloudTts";
 
 let activeHtmlAudio: HTMLAudioElement | null = null;
+let activeObjectUrl: string | null = null;
 
 export interface AudioButtonProps {
   text?: string;
@@ -35,16 +41,17 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
 }) => {
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(false);
-  const { toastError, toastInfo } = (() => {
+  const { toastError } = (() => {
     try {
       const t = useToast();
-      return { toastError: t.error, toastInfo: t.info };
+      return { toastError: t.error };
     } catch {
-      return { toastError: console.error, toastInfo: console.log };
+      return { toastError: console.error };
     }
   })();
   const { settings } = useLanguage();
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const objectUrlRef = useRef<string | null>(null);
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const speechGenRef = useRef<number>(0);
@@ -53,16 +60,29 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
   const currentSpeed = speed ?? settings?.audioSpeed ?? 1;
   const speechText = text?.trim() ?? "";
 
+  const cleanupAudio = () => {
+    if (audioRef.current) {
+      try {
+        audioRef.current.pause();
+        audioRef.current.src = "";
+      } catch {}
+      if (activeHtmlAudio === audioRef.current) activeHtmlAudio = null;
+      audioRef.current = null;
+    }
+    if (objectUrlRef.current) {
+      try {
+        URL.revokeObjectURL(objectUrlRef.current);
+      } catch {}
+      if (activeObjectUrl === objectUrlRef.current) activeObjectUrl = null;
+      objectUrlRef.current = null;
+    }
+  };
+
   const stopCurrent = () => {
     speechGenRef.current += 1;
     abortRef.current?.abort();
     abortRef.current = null;
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.src = "";
-      if (activeHtmlAudio === audioRef.current) activeHtmlAudio = null;
-      audioRef.current = null;
-    }
+    cleanupAudio();
     if (utteranceRef.current && "speechSynthesis" in window) {
       window.speechSynthesis.cancel();
       utteranceRef.current = null;
@@ -81,7 +101,7 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
     };
   }, []);
 
-  const playBrowserSpeech = async (speechText: string, lang: Language) => {
+  const playBrowserSpeech = async (textToSpeak: string, lang: Language) => {
     if (!("speechSynthesis" in window)) {
       toastError("Trình duyệt không hỗ trợ phát âm (SpeechSynthesis).");
       return;
@@ -96,7 +116,7 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
     const voices = await waitForSpeechVoices(200);
     if (!mountedRef.current || speechGenRef.current !== currentGen) return;
 
-    const utterance = new SpeechSynthesisUtterance(speechText);
+    const utterance = new SpeechSynthesisUtterance(textToSpeak);
     utteranceRef.current = utterance;
     const preferredVoice = lang === "zh" ? settings?.preferredVoiceZh : settings?.preferredVoiceEn;
     configureSpeechUtterance(utterance, lang, currentSpeed, voices.length > 0 ? voices : getReadySpeechVoices(), preferredVoice);
@@ -133,43 +153,85 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
     }
   };
 
-  const playHtmlAudio = async (url: string, fallbackText?: string) => {
+  const playHtmlAudio = async (url: string, fallbackText?: string, isObjectUrl = false) => {
+    speechGenRef.current += 1;
+    const currentGen = speechGenRef.current;
+
     if (activeHtmlAudio) {
-      activeHtmlAudio.pause();
-      activeHtmlAudio.src = "";
+      try {
+        activeHtmlAudio.pause();
+        activeHtmlAudio.src = "";
+      } catch {}
+      activeHtmlAudio = null;
+    }
+    if (activeObjectUrl && activeObjectUrl !== url) {
+      try {
+        URL.revokeObjectURL(activeObjectUrl);
+      } catch {}
+      activeObjectUrl = null;
     }
     if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+
     const audio = new Audio(url);
     audioRef.current = audio;
     activeHtmlAudio = audio;
-    audio.playbackRate = currentSpeed;
+    if (isObjectUrl) {
+      objectUrlRef.current = url;
+      activeObjectUrl = url;
+    }
+
+    configureAudioElementPlaybackRate(audio, currentSpeed);
+
     audio.onplay = () => {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || speechGenRef.current !== currentGen) return;
       setIsLoading(false);
       setIsPlaying(true);
     };
     audio.onended = () => {
       if (activeHtmlAudio === audio) activeHtmlAudio = null;
+      if (isObjectUrl) {
+        try {
+          URL.revokeObjectURL(url);
+        } catch {}
+        if (activeObjectUrl === url) activeObjectUrl = null;
+        objectUrlRef.current = null;
+      }
       audioRef.current = null;
-      if (mountedRef.current) setIsPlaying(false);
+      if (mountedRef.current && speechGenRef.current === currentGen) setIsPlaying(false);
     };
     audio.onerror = () => {
       if (activeHtmlAudio === audio) activeHtmlAudio = null;
+      if (isObjectUrl) {
+        try {
+          URL.revokeObjectURL(url);
+        } catch {}
+        if (activeObjectUrl === url) activeObjectUrl = null;
+        objectUrlRef.current = null;
+      }
       audioRef.current = null;
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || speechGenRef.current !== currentGen) return;
       setIsLoading(false);
       setIsPlaying(false);
-      if (fallbackText) playBrowserSpeech(fallbackText, language);
+      if (fallbackText) void playBrowserSpeech(fallbackText, language);
       else toastError("Không thể phát tệp âm thanh.");
     };
-    try { await audio.play(); }
-    catch {
+
+    try {
+      await audio.play();
+    } catch {
       if (activeHtmlAudio === audio) activeHtmlAudio = null;
+      if (isObjectUrl) {
+        try {
+          URL.revokeObjectURL(url);
+        } catch {}
+        if (activeObjectUrl === url) activeObjectUrl = null;
+        objectUrlRef.current = null;
+      }
       audioRef.current = null;
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || speechGenRef.current !== currentGen) return;
       setIsLoading(false);
       setIsPlaying(false);
-      if (fallbackText) playBrowserSpeech(fallbackText, language);
+      if (fallbackText) void playBrowserSpeech(fallbackText, language);
       else toastError("Không thể phát tệp âm thanh.");
     }
   };
@@ -182,41 +244,66 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
       return;
     }
 
-    // 1. If audioUrl exists from backend/item, play directly
+    // 1. If static audioUrl exists, play directly
     if (audioUrl) {
       setIsLoading(true);
       await playHtmlAudio(audioUrl, speechText || undefined);
       return;
     }
 
-    // 2. If text is provided, try TTS API
-    if (speechText) {
-      setIsLoading(true);
-      const controller = new AbortController();
-      abortRef.current?.abort();
-      abortRef.current = controller;
-      try {
-        const res = await ttsApi.synthesize({
-          text: speechText,
-          language,
-          speed: currentSpeed,
-        }, controller.signal);
-        abortRef.current = null;
-        if (!mountedRef.current) return;
+    if (!speechText) return;
 
-        if (res?.audioUrl) {
-          await playHtmlAudio(res.audioUrl, speechText);
-        } else {
-          setIsLoading(false);
-          playBrowserSpeech(speechText, language);
-        }
+    setIsLoading(true);
+    const controller = new AbortController();
+    abortRef.current?.abort();
+    abortRef.current = controller;
+    speechGenRef.current += 1;
+    const currentGen = speechGenRef.current;
+
+    // 2. If English & Cloud TTS enabled (AUTO or CLOUD), use Cloud TTS first
+    const isCloudEnabled = (settings?.audioEngine !== "BROWSER") && language === "en";
+    if (isCloudEnabled) {
+      try {
+        const voice = settings?.preferredCloudVoiceEn || DEFAULT_CLOUD_VOICE_EN;
+        const blob = await synthesizeCloudSpeech({
+          text: speechText,
+          language: "en",
+          voice,
+          signal: controller.signal,
+        });
+        if (!mountedRef.current || speechGenRef.current !== currentGen) return;
+
+        const objectUrl = URL.createObjectURL(blob);
+        await playHtmlAudio(objectUrl, speechText, true);
+        return;
       } catch (err: any) {
-        abortRef.current = null;
-        if (err?.name === "AbortError" || !mountedRef.current) return;
+        if (controller.signal.aborted || !mountedRef.current || speechGenRef.current !== currentGen) return;
+        // Fallback to SpeechSynthesis if Cloud TTS failed or offline
         setIsLoading(false);
-        // If SERVICE_NOT_CONFIGURED or error, use browser fallback as permitted by contract
-        playBrowserSpeech(speechText, language);
+        await playBrowserSpeech(speechText, language);
+        return;
       }
+    }
+
+    // 3. Fallback / Chinese / Browser engine mode
+    try {
+      const res = await ttsApi.synthesize({
+        text: speechText,
+        language,
+        speed: currentSpeed,
+      }, controller.signal);
+      if (!mountedRef.current || speechGenRef.current !== currentGen) return;
+
+      if (res?.audioUrl) {
+        await playHtmlAudio(res.audioUrl, speechText);
+      } else {
+        setIsLoading(false);
+        await playBrowserSpeech(speechText, language);
+      }
+    } catch (err: any) {
+      if (err?.name === "AbortError" || !mountedRef.current || speechGenRef.current !== currentGen) return;
+      setIsLoading(false);
+      await playBrowserSpeech(speechText, language);
     }
   };
 
