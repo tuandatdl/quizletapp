@@ -52,7 +52,7 @@ export class CloudAuthService {
 
       // Compute redirect URL compatible with GitHub Pages HashRouter
       const redirectUrl = typeof window !== "undefined"
-        ? `${window.location.origin}${window.location.pathname}#/settings`
+        ? `${window.location.origin}${window.location.pathname}`
         : undefined;
 
       const { error } = await supabase.auth.signInWithOtp({

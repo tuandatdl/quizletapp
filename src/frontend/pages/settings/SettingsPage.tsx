@@ -645,7 +645,14 @@ export const SettingsPage: React.FC = () => {
                     </span>
                   </div>
                 ) : (
-                  <form onSubmit={handleSendMagicLink} className="flex-row gap-2" style={{ flexWrap: "wrap" }}>
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      void handleSendMagicLink(e);
+                    }}
+                    className="flex-row gap-2"
+                    style={{ flexWrap: "wrap" }}
+                  >
                     <input
                       type="email"
                       required
