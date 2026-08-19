@@ -7,6 +7,13 @@ import type {
   ProviderStatus,
   TranslationResult,
 } from "../types/api";
+import type { VocabularyEnrichment } from "../services/languageApi";
+
+export interface VocabularyContext {
+  sentence: string;
+  previousSentence?: string;
+  nextSentence?: string;
+}
 
 export interface CreateReadingInput {
   language: Language;
@@ -28,6 +35,15 @@ export interface SaveSelectionInput extends TranslateSelectionInput {
   meaningVi: string;
   pronunciation?: string;
   partOfSpeech?: string;
+  context?: VocabularyContext;
+}
+
+export interface EnrichFromContextInput {
+  term: string;
+  language: Language;
+  sentence: string;
+  previousSentence?: string;
+  nextSentence?: string;
 }
 
 export const readingApi = {
@@ -56,5 +72,8 @@ export const readingApi = {
     api.post<TranslationResult>("/api/translate-selection", data),
 
   saveFromSelection: (data: SaveSelectionInput) =>
-    api.post<CreateVocabularyResult>("/api/vocabulary/from-selection", data),
+    api.post<CreateVocabularyResult & { contextualSense?: VocabularyEnrichment }>("/api/vocabulary/from-selection", data),
+
+  enrichFromContext: (data: EnrichFromContextInput) =>
+    api.post<VocabularyEnrichment | null>("/api/vocabulary/enrich-context", data),
 };

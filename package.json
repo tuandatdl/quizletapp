@@ -31,7 +31,9 @@
     "smoke:production": "node scripts/smoke-production.mjs",
     "smoke:static": "node scripts/smoke-static.mjs",
     "release:artifact": "node scripts/create-release-artifact.mjs",
-    "verify": "npm run typecheck && npm test"
+    "verify": "npm run typecheck && npm test",
+    "deploy": "npm run build:client && wrangler deploy",
+    "preview": "npm run build:client && wrangler dev"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.112.3",
@@ -43,6 +45,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.53.0",
     "@types/node": "^26.2.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
@@ -51,6 +54,7 @@
     "tsx": "^4.23.12",
     "typescript": "^7.0.2",
     "vite": "^8.2.1",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "wrangler": "^4.124.0"
   }
 }

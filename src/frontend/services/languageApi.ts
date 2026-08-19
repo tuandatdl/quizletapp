@@ -5,6 +5,12 @@ import { getLanguageApiUrl } from "../runtime/runtime";
 export const ENRICHMENT_VERSION = "vocabulary-enrichment-v2";
 export const MAX_ENRICHMENT_BATCH_SIZE = 25;
 
+export interface VocabularyContext {
+  sentence: string;
+  previousSentence?: string;
+  nextSentence?: string;
+}
+
 export interface VocabularySense {
   partOfSpeech?: string;
   meaningVi: string;
@@ -203,5 +209,24 @@ export class LanguageApiClient {
       }
     }
     return uniqueTerms.map((term) => results.get(normalizeTerm(term, language))!);
+  }
+  async enrichTermWithContext(language: Language, term: string, context: VocabularyContext): Promise<VocabularyEnrichment> {
+    // Context-aware enrichment: NEVER reads or writes the generic enrichmentCache.
+    // This ensures contextual results never pollute the generic Quick Add cache.
+    const data = await fetchJson<{ items: unknown[] }>("/v1/vocabulary/enrich", {
+      language,
+      targetLanguage: "vi",
+      terms: [term],
+      enrichmentVersion: ENRICHMENT_VERSION,
+      contexts: [{
+        sentence: context.sentence,
+        ...(context.previousSentence ? { previousSentence: context.previousSentence } : {}),
+        ...(context.nextSentence ? { nextSentence: context.nextSentence } : {}),
+      }],
+    });
+    if (!Array.isArray(data?.items) || data.items.length === 0) {
+      throw new Error("Dịch vụ trả về danh sách không hợp lệ.");
+    }
+    return validateEnrichment(data.items[0], language);
   }
 }
