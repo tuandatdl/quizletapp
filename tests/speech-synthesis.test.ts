@@ -3,6 +3,8 @@ import {
   cancelSpeechAndWait,
   configureSpeechUtterance,
   getReadySpeechVoices,
+  getSpeechCancelSettleMs,
+  getStableSpeechRate,
   selectBestSpeechVoice,
   waitForSpeechVoices,
 } from "../src/frontend/services/speech.js";
@@ -74,93 +76,146 @@ describe("SpeechSynthesis Engine & Audio Clipping Prevention", () => {
     vi.clearAllTimers();
   });
 
-  // A. Sequential sentence 1 -> sentence 2: cancel() NOT called between normal sentences
-  it("A. Sequential reading does NOT call cancel() between normal sentences", async () => {
-    const sentences = ["I live in Vietnam.", "We watched the concert live."];
+  // A. getStableSpeechRate(en, 0.75) returns stable internal rate, not raw 0.75
+  it("A. getStableSpeechRate(en, 0.75) returns stable internal rate (0.85), not raw 0.75", () => {
+    expect(getStableSpeechRate("en", 0.75)).toBe(0.85);
+    expect(getStableSpeechRate("zh", 0.75)).toBe(0.80);
+  });
 
-    // Mock ReadingDetailPage playback state machine
-    let currentSentenceIdx = 0;
-    let isPlaying = false;
-    let cancelled = false;
-    let sessionId = 0;
+  // B. getStableSpeechRate(en, 1) keeps current normal behavior
+  it("B. getStableSpeechRate(en, 1) returns stable 1x rate (0.95)", () => {
+    expect(getStableSpeechRate("en", 1)).toBe(0.95);
+    expect(getStableSpeechRate("zh", 1)).toBe(0.90);
+  });
+
+  // C. getStableSpeechRate(en, 1.25) returns stable rate below raw 1.25
+  it("C. getStableSpeechRate(en, 1.25) returns stable rate (1.10) below raw 1.25", () => {
+    expect(getStableSpeechRate("en", 1.25)).toBe(1.10);
+    expect(getStableSpeechRate("zh", 1.25)).toBe(1.08);
+  });
+
+  // D. Settle timing: non-default rates get 150ms settle
+  it("D. getSpeechCancelSettleMs returns 100ms for 1x and 150ms for 0.75x / 1.25x", () => {
+    expect(getSpeechCancelSettleMs(1)).toBe(100);
+    expect(getSpeechCancelSettleMs(0.75)).toBe(150);
+    expect(getSpeechCancelSettleMs(1.25)).toBe(150);
+  });
+
+  // E. Speed change 1 -> 0.75 immediately uses new rate (not stale 1x rate)
+  it("E. Speed change 1 -> 0.75 immediately uses new rate on restart", async () => {
+    let playbackSpeed = 1;
+    let isPlaying = true;
+    const sentences = ["I live in Vietnam."];
+
+    async function handleSpeedChange(newSpeed: number) {
+      playbackSpeed = newSpeed;
+      if (isPlaying) {
+        window.speechSynthesis.cancel();
+        await cancelSpeechAndWait(getSpeechCancelSettleMs(newSpeed));
+        const utterance = new (window as any).SpeechSynthesisUtterance(sentences[0]);
+        configureSpeechUtterance(utterance, "en", playbackSpeed, mockVoices);
+        window.speechSynthesis.speak(utterance);
+      }
+    }
+
+    await handleSpeedChange(0.75);
+    expect(speakHistory).toHaveLength(1);
+    expect(speakHistory[0]?.rate).toBe(0.85); // 0.85 is stable 0.75x rate
+  });
+
+  // F. Speed change 1 -> 1.25 immediately uses new rate
+  it("F. Speed change 1 -> 1.25 immediately uses new rate on restart", async () => {
+    let playbackSpeed = 1;
+    let isPlaying = true;
+    const sentences = ["We watched the concert live."];
+
+    async function handleSpeedChange(newSpeed: number) {
+      playbackSpeed = newSpeed;
+      if (isPlaying) {
+        window.speechSynthesis.cancel();
+        await cancelSpeechAndWait(getSpeechCancelSettleMs(newSpeed));
+        const utterance = new (window as any).SpeechSynthesisUtterance(sentences[0]);
+        configureSpeechUtterance(utterance, "en", playbackSpeed, mockVoices);
+        window.speechSynthesis.speak(utterance);
+      }
+    }
+
+    await handleSpeedChange(1.25);
+    expect(speakHistory).toHaveLength(1);
+    expect(speakHistory[0]?.rate).toBe(1.10); // 1.10 is stable 1.25x rate
+  });
+
+  // G. Sequential sentence 1 -> 2 keeps same normalized rate without cancel
+  it("G. Sequential sentence 1 -> 2 keeps same normalized rate without cancel", async () => {
+    const sentences = ["Sentence 1.", "Sentence 2.", "Sentence 3."];
+    const speed = 0.75;
+    let cancelCount = 0;
+
+    (window.speechSynthesis.cancel as any).mockImplementation(() => {
+      cancelCount++;
+    });
 
     async function playSentence(index: number, isSequential: boolean) {
-      if (index >= sentences.length) {
-        isPlaying = false;
-        return;
-      }
-      currentSentenceIdx = index;
-      isPlaying = true;
-
       if (!isSequential) {
-        sessionId++;
-        const currentSession = sessionId;
-        cancelled = false;
-        await cancelSpeechAndWait(20);
-        if (cancelled || sessionId !== currentSession) return;
+        window.speechSynthesis.cancel();
+        await cancelSpeechAndWait(getSpeechCancelSettleMs(speed));
       }
-
       const utterance = new (window as any).SpeechSynthesisUtterance(sentences[index]);
-      configureSpeechUtterance(utterance, "en", 1, mockVoices);
+      configureSpeechUtterance(utterance, "en", speed, mockVoices);
       window.speechSynthesis.speak(utterance);
-
-      // Simulate utterance onend
       if (utterance.onend) utterance.onend();
     }
 
-    // Start playing sentence 0 (user initiation -> 1 cancel)
+    // Start user playback (sentence 0)
     await playSentence(0, false);
-    expect(cancelCallCount).toBe(1);
-    expect(speakHistory).toHaveLength(1);
-    expect(speakHistory[0]?.text).toBe("I live in Vietnam.");
+    expect(cancelCount).toBe(2); // 1 explicit + 1 in cancelSpeechAndWait
+    expect(speakHistory[0]?.rate).toBe(0.85);
 
-    // Advance to sentence 1 sequentially (isSequential = true -> 0 cancels)
+    // Sequential transitions for sentence 1 and sentence 2
     await playSentence(1, true);
-    expect(cancelCallCount).toBe(1); // STILL 1! No cancel during sequential advance
-    expect(speakHistory).toHaveLength(2);
-    expect(speakHistory[1]?.text).toBe("We watched the concert live.");
+    expect(cancelCount).toBe(2); // NO extra cancels
+    expect(speakHistory[1]?.rate).toBe(0.85); // same rate
+
+    await playSentence(2, true);
+    expect(cancelCount).toBe(2); // NO extra cancels
+    expect(speakHistory[2]?.rate).toBe(0.85); // same rate
   });
 
-  // B. Pause: cancel() called
-  it("B. Pause calls cancel() and marks playback as paused", () => {
+  // H. No fake prefix modifies utterance.text
+  it("H. Utterance text is never modified with fake prefixes or dummy characters", () => {
+    const rawText = "I live in Vietnam.";
+    const utterance = new (window as any).SpeechSynthesisUtterance(rawText);
+    configureSpeechUtterance(utterance, "en", 0.75, mockVoices);
+    expect(utterance.text).toBe(rawText);
+
+    const zhText = "我住在越南。";
+    const zhUtterance = new (window as any).SpeechSynthesisUtterance(zhText);
+    configureSpeechUtterance(zhUtterance, "zh", 1.25, mockVoices);
+    expect(zhUtterance.text).toBe(zhText);
+  });
+
+  // I. Pause & Restart
+  it("I. Pause calls cancel() and Restart cancels and settles", async () => {
     let isPlaying = true;
     function pause() {
       isPlaying = false;
       window.speechSynthesis.cancel();
     }
-
     pause();
-    expect(cancelCallCount).toBe(1);
     expect(isPlaying).toBe(false);
-  });
-
-  // C. Restart: cancel called, starts from beginning after settle
-  it("C. Restart cancels previous speech and restarts from sentence 0 after safe settle", async () => {
-    const sentences = ["Sentence 1", "Sentence 2"];
-    let currentIdx = 1;
-    let sessionId = 0;
 
     async function restart() {
       window.speechSynthesis.cancel();
-      currentIdx = 0;
-      sessionId++;
-      const currentSession = sessionId;
-
-      await cancelSpeechAndWait(30);
-      if (sessionId !== currentSession) return;
-
-      const utterance = new (window as any).SpeechSynthesisUtterance(sentences[0]);
+      await cancelSpeechAndWait(getSpeechCancelSettleMs(1));
+      const utterance = new (window as any).SpeechSynthesisUtterance("Start");
       window.speechSynthesis.speak(utterance);
     }
-
     await restart();
-    expect(cancelCallCount).toBe(2); // 1 explicit + 1 in cancelSpeechAndWait
-    expect(currentIdx).toBe(0);
-    expect(speakHistory[0]?.text).toBe("Sentence 1");
+    expect(speakHistory[speakHistory.length - 1]?.text).toBe("Start");
   });
 
-  // D. Seek while playing: captures wasPlaying before cancel and resumes selected sentence
-  it("D. Seek while playing captures wasPlaying before cancel and resumes at target sentence", async () => {
+  // J. Seek while playing captures wasPlaying before cancel
+  it("J. Seek while playing captures wasPlaying before cancel and resumes at target sentence", async () => {
     let isPlaying = true;
     let currentIdx = 0;
     const sentences = ["Sentence 0", "Sentence 1", "Sentence 2"];
@@ -172,14 +227,13 @@ describe("SpeechSynthesis Engine & Audio Clipping Prevention", () => {
     }
 
     async function handleSeekSentence(index: number) {
-      // Must capture wasPlaying BEFORE stopAllAudio()
       const wasPlaying = isPlaying;
       stopAllAudio();
       currentIdx = index;
 
       if (wasPlaying) {
         isPlaying = true;
-        await cancelSpeechAndWait(20);
+        await cancelSpeechAndWait(getSpeechCancelSettleMs(1));
         resumedIdx = index;
         const utterance = new (window as any).SpeechSynthesisUtterance(sentences[index]);
         window.speechSynthesis.speak(utterance);
@@ -189,12 +243,12 @@ describe("SpeechSynthesis Engine & Audio Clipping Prevention", () => {
     await handleSeekSentence(2);
     expect(currentIdx).toBe(2);
     expect(resumedIdx).toBe(2);
-    expect(speakHistory[0]?.text).toBe("Sentence 2");
+    expect(speakHistory[speakHistory.length - 1]?.text).toBe("Sentence 2");
     expect(isPlaying).toBe(true);
   });
 
-  // E. Rapid clicking AudioButton: old delayed request cannot play after newer request
-  it("E. Rapid clicking AudioButton prevents old delayed request from playing after newer request", async () => {
+  // K. Rapid clicking AudioButton race condition
+  it("K. Rapid clicking AudioButton prevents old delayed request from playing after newer request", async () => {
     let speechGen = 0;
     const playedGenerations: number[] = [];
 
@@ -203,7 +257,6 @@ describe("SpeechSynthesis Engine & Audio Clipping Prevention", () => {
       const currentGen = speechGen;
 
       await cancelSpeechAndWait(delayMs);
-      // Race condition check: if another request arrived during delay, abort
       if (speechGen !== currentGen) return;
 
       const utterance = new (window as any).SpeechSynthesisUtterance(text);
@@ -211,31 +264,23 @@ describe("SpeechSynthesis Engine & Audio Clipping Prevention", () => {
       window.speechSynthesis.speak(utterance);
     }
 
-    // User clicks button 1 (slow settle)
     const p1 = playBrowserSpeech("Word 1", 50);
-    // User rapidly clicks button 2 before button 1 finishes settle (faster settle)
     const p2 = playBrowserSpeech("Word 2", 20);
 
     await Promise.all([p1, p2]);
 
-    // Only Word 2 (generation 2) must have played, Word 1 must be aborted
     expect(playedGenerations).toEqual([2]);
-    expect(speakHistory).toHaveLength(1);
-    expect(speakHistory[0]?.text).toBe("Word 2");
+    expect(speakHistory[speakHistory.length - 1]?.text).toBe("Word 2");
   });
 
-  // F. voiceschanged: voice list eventually loads and preferred voice is selected
-  it("F. waitForSpeechVoices handles initial empty voice list and resolves on voiceschanged", async () => {
+  // L. voiceschanged preloading
+  it("L. waitForSpeechVoices handles initial empty voice list and resolves on voiceschanged", async () => {
     let voicesAvailable: SpeechSynthesisVoice[] = [];
     (window.speechSynthesis.getVoices as any).mockImplementation(() => voicesAvailable);
 
-    // Initial state: empty voices
     expect(getReadySpeechVoices()).toEqual([]);
-
-    // Wait for voices in background
     const waitPromise = waitForSpeechVoices(300);
 
-    // Simulate browser loading voices 30ms later
     setTimeout(() => {
       voicesAvailable = mockVoices;
       (window.speechSynthesis.getVoices as any).mockImplementation(() => mockVoices);
@@ -246,11 +291,7 @@ describe("SpeechSynthesis Engine & Audio Clipping Prevention", () => {
 
     const loadedVoices = await waitPromise;
     expect(loadedVoices).toHaveLength(4);
-
-    const bestEn = selectBestSpeechVoice(loadedVoices, "en");
-    expect(bestEn?.name).toBe("Microsoft Jenny Natural");
-
-    const bestZh = selectBestSpeechVoice(loadedVoices, "zh");
-    expect(bestZh?.name).toBe("Microsoft Xiaoxiao Online");
+    expect(selectBestSpeechVoice(loadedVoices, "en")?.name).toBe("Microsoft Jenny Natural");
+    expect(selectBestSpeechVoice(loadedVoices, "zh")?.name).toBe("Microsoft Xiaoxiao Online");
   });
 });

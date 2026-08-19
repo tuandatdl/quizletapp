@@ -41,6 +41,7 @@ import {
   cancelSpeechAndWait,
   configureSpeechUtterance,
   getReadySpeechVoices,
+  getSpeechCancelSettleMs,
   waitForSpeechVoices,
 } from "../../services/speech";
 
@@ -102,6 +103,7 @@ export const ReadingDetailPage: React.FC = () => {
   const currentSentenceIdxRef = useRef(0);
   const isPlayingRef = useRef(false);
   const playbackSessionIdRef = useRef(0);
+  const playbackSpeedRef = useRef<number>(settings?.audioSpeed || 1);
   const transitionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const enrichAbortRef = useRef<AbortController | null>(null);
 
@@ -232,6 +234,7 @@ export const ReadingDetailPage: React.FC = () => {
 
   useEffect(() => {
     if (!settings) return;
+    playbackSpeedRef.current = settings.audioSpeed;
     setPlaybackState((prev) => ({ ...prev, speed: settings.audioSpeed }));
     setShowFullTranslation(settings.showTranslation);
   }, [settings]);
@@ -259,7 +262,7 @@ export const ReadingDetailPage: React.FC = () => {
   }, [stopAllAudio]);
 
   const playSentenceAtIndex = useCallback(
-    async (index: number, isSequential = false) => {
+    async (index: number, isSequential = false, speedOverride?: number) => {
       if (!passage || !passage.sentences || index >= passage.sentences.length) {
         setPlaybackState((prev) => ({ ...prev, status: "completed" }));
         isPlayingRef.current = false;
@@ -268,6 +271,8 @@ export const ReadingDetailPage: React.FC = () => {
 
       const sentence = passage.sentences[index];
       if (!sentence) return;
+
+      const effectiveSpeed = speedOverride ?? playbackSpeedRef.current;
 
       if (!isSequential) {
         // User action: play, resume, restart, seek, speed change
@@ -286,8 +291,9 @@ export const ReadingDetailPage: React.FC = () => {
 
         if (!("speechSynthesis" in window)) return;
 
-        // Cancel previous speech and wait for synthesis engine to settle
-        await cancelSpeechAndWait(100);
+        // Cancel previous speech and wait for synthesis engine to settle (100ms for 1x, 150ms for 0.75x/1.25x)
+        const settleMs = getSpeechCancelSettleMs(effectiveSpeed);
+        await cancelSpeechAndWait(settleMs);
         if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId) return;
 
         const voices = await waitForSpeechVoices(200);
@@ -298,7 +304,7 @@ export const ReadingDetailPage: React.FC = () => {
         configureSpeechUtterance(
           utterance,
           passage.language,
-          playbackState.speed,
+          effectiveSpeed,
           voices.length > 0 ? voices : getReadySpeechVoices(),
           preferredVoice
         );
@@ -309,7 +315,7 @@ export const ReadingDetailPage: React.FC = () => {
           if (nextIndex < passage.sentences.length) {
             transitionTimerRef.current = setTimeout(() => {
               if (!playbackCancelledRef.current && playbackSessionIdRef.current === sessionId) {
-                void playSentenceAtIndex(nextIndex, true);
+                void playSentenceAtIndex(nextIndex, true, effectiveSpeed);
               }
             }, 70);
           } else {
@@ -356,7 +362,7 @@ export const ReadingDetailPage: React.FC = () => {
         configureSpeechUtterance(
           utterance,
           passage.language,
-          playbackState.speed,
+          effectiveSpeed,
           getReadySpeechVoices(),
           preferredVoice
         );
@@ -367,7 +373,7 @@ export const ReadingDetailPage: React.FC = () => {
           if (nextIndex < passage.sentences.length) {
             transitionTimerRef.current = setTimeout(() => {
               if (!playbackCancelledRef.current && playbackSessionIdRef.current === sessionId) {
-                void playSentenceAtIndex(nextIndex, true);
+                void playSentenceAtIndex(nextIndex, true, effectiveSpeed);
               }
             }, 70);
           } else {
@@ -396,12 +402,12 @@ export const ReadingDetailPage: React.FC = () => {
         }
       }
     },
-    [passage, playbackState.speed, settings?.preferredVoiceZh, settings?.preferredVoiceEn]
+    [passage, settings?.preferredVoiceZh, settings?.preferredVoiceEn]
   );
 
   const handlePlay = useCallback(() => {
     stopAllAudio();
-    void playSentenceAtIndex(currentSentenceIdxRef.current, false);
+    void playSentenceAtIndex(currentSentenceIdxRef.current, false, playbackSpeedRef.current);
   }, [stopAllAudio, playSentenceAtIndex]);
 
   const handlePause = useCallback(() => {
@@ -411,13 +417,13 @@ export const ReadingDetailPage: React.FC = () => {
 
   const handleResume = useCallback(() => {
     stopAllAudio();
-    void playSentenceAtIndex(currentSentenceIdxRef.current, false);
+    void playSentenceAtIndex(currentSentenceIdxRef.current, false, playbackSpeedRef.current);
   }, [stopAllAudio, playSentenceAtIndex]);
 
   const handleRestart = useCallback(() => {
     stopAllAudio();
     currentSentenceIdxRef.current = 0;
-    void playSentenceAtIndex(0, false);
+    void playSentenceAtIndex(0, false, playbackSpeedRef.current);
   }, [stopAllAudio, playSentenceAtIndex]);
 
   const handleSeekSentence = useCallback(
@@ -432,7 +438,7 @@ export const ReadingDetailPage: React.FC = () => {
         status: wasPlaying ? "playing" : "paused",
       }));
       if (wasPlaying) {
-        void playSentenceAtIndex(index, false);
+        void playSentenceAtIndex(index, false, playbackSpeedRef.current);
       }
     },
     [stopAllAudio, passage, playSentenceAtIndex]
@@ -452,10 +458,11 @@ export const ReadingDetailPage: React.FC = () => {
   const handleSpeedChange = useCallback(
     (newSpeed: 0.75 | 1 | 1.25) => {
       const wasPlaying = isPlayingRef.current;
+      playbackSpeedRef.current = newSpeed;
       if (wasPlaying) stopAllAudio();
       setPlaybackState((prev) => ({ ...prev, speed: newSpeed }));
       if (wasPlaying) {
-        void playSentenceAtIndex(currentSentenceIdxRef.current, false);
+        void playSentenceAtIndex(currentSentenceIdxRef.current, false, newSpeed);
       }
     },
     [stopAllAudio, playSentenceAtIndex]
