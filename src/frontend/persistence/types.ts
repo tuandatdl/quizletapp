@@ -13,6 +13,8 @@ export const STORE_NAMES = [
   "pronunciationHistory",
   "enrichmentCache",
   "meta",
+  "syncQueue",
+  "syncConflicts",
 ] as const;
 
 export type StoreName = (typeof STORE_NAMES)[number];
