@@ -44,6 +44,12 @@ import {
   getSpeechCancelSettleMs,
   waitForSpeechVoices,
 } from "../../services/speech";
+import {
+  synthesizeCloudSpeech,
+  prefetchCloudSpeech,
+  configureAudioElementPlaybackRate,
+  DEFAULT_CLOUD_VOICE_EN,
+} from "../../services/cloudTts";
 
 export const ReadingDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -106,6 +112,9 @@ export const ReadingDetailPage: React.FC = () => {
   const playbackSpeedRef = useRef<number>(settings?.audioSpeed || 1);
   const transitionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const enrichAbortRef = useRef<AbortController | null>(null);
+  const activeAudioRef = useRef<HTMLAudioElement | null>(null);
+  const activeObjectUrlRef = useRef<string | null>(null);
+  const cloudAbortRef = useRef<AbortController | null>(null);
 
   // ---- Context capture helper ----
   function extractSentenceContext(sentences: ReadingPassage["sentences"]): VocabularyContext | null {
@@ -239,7 +248,23 @@ export const ReadingDetailPage: React.FC = () => {
     setShowFullTranslation(settings.showTranslation);
   }, [settings]);
 
-  // Audio Playback Engine (Sequential SpeechSynthesis / Real Audio)
+  // Audio Playback Engine (Cloud TTS First + SpeechSynthesis Fallback)
+  const cleanupActiveAudio = () => {
+    if (activeAudioRef.current) {
+      try {
+        activeAudioRef.current.pause();
+        activeAudioRef.current.src = "";
+      } catch {}
+      activeAudioRef.current = null;
+    }
+    if (activeObjectUrlRef.current) {
+      try {
+        URL.revokeObjectURL(activeObjectUrlRef.current);
+      } catch {}
+      activeObjectUrlRef.current = null;
+    }
+  };
+
   const stopAllAudio = useCallback(() => {
     playbackCancelledRef.current = true;
     playbackSessionIdRef.current += 1;
@@ -248,6 +273,11 @@ export const ReadingDetailPage: React.FC = () => {
       clearTimeout(transitionTimerRef.current);
       transitionTimerRef.current = null;
     }
+    if (cloudAbortRef.current) {
+      cloudAbortRef.current.abort();
+      cloudAbortRef.current = null;
+    }
+    cleanupActiveAudio();
     if ("speechSynthesis" in window) {
       try {
         window.speechSynthesis.cancel();
@@ -261,10 +291,130 @@ export const ReadingDetailPage: React.FC = () => {
     };
   }, [stopAllAudio]);
 
+  const playBrowserSentence = async (
+    index: number,
+    sentence: ReadingSentence,
+    effectiveSpeed: number,
+    sessionId: number
+  ) => {
+    if (!("speechSynthesis" in window)) return;
+
+    const settleMs = getSpeechCancelSettleMs(effectiveSpeed);
+    await cancelSpeechAndWait(settleMs);
+    if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId) return;
+
+    const voices = await waitForSpeechVoices(200);
+    if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId) return;
+
+    const utterance = new SpeechSynthesisUtterance(sentence.text);
+    const preferredVoice = passage?.language === "zh" ? settings?.preferredVoiceZh : settings?.preferredVoiceEn;
+    configureSpeechUtterance(
+      utterance,
+      passage?.language || "en",
+      effectiveSpeed,
+      voices.length > 0 ? voices : getReadySpeechVoices(),
+      preferredVoice
+    );
+
+    utterance.onstart = () => {
+      if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId) return;
+      setPlaybackState((prev) => ({ ...prev, loading: false, status: "playing" }));
+    };
+
+    utterance.onend = () => {
+      if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId) return;
+      const nextIndex = index + 1;
+      if (passage && nextIndex < passage.sentences.length) {
+        transitionTimerRef.current = setTimeout(() => {
+          if (!playbackCancelledRef.current && playbackSessionIdRef.current === sessionId) {
+            void playSentenceAtIndex(nextIndex, true, effectiveSpeed);
+          }
+        }, 70);
+      } else {
+        setPlaybackState((prev) => ({
+          ...prev,
+          status: "completed",
+          loading: false,
+          currentSentenceIndex: (passage?.sentences.length || 1) - 1,
+        }));
+        isPlayingRef.current = false;
+      }
+    };
+
+    utterance.onerror = () => {
+      if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId) return;
+      setPlaybackState((prev) => ({ ...prev, status: "paused", loading: false }));
+      isPlayingRef.current = false;
+    };
+
+    try {
+      window.speechSynthesis.speak(utterance);
+    } catch {
+      if (!playbackCancelledRef.current && playbackSessionIdRef.current === sessionId) {
+        setPlaybackState((prev) => ({ ...prev, status: "paused", loading: false }));
+        isPlayingRef.current = false;
+      }
+    }
+  };
+
+  const playBrowserSentenceSequential = (
+    index: number,
+    sentence: ReadingSentence,
+    effectiveSpeed: number,
+    sessionId: number
+  ) => {
+    if (!("speechSynthesis" in window)) return;
+
+    const utterance = new SpeechSynthesisUtterance(sentence.text);
+    const preferredVoice = passage?.language === "zh" ? settings?.preferredVoiceZh : settings?.preferredVoiceEn;
+    configureSpeechUtterance(
+      utterance,
+      passage?.language || "en",
+      effectiveSpeed,
+      getReadySpeechVoices(),
+      preferredVoice
+    );
+
+    utterance.onend = () => {
+      if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId) return;
+      const nextIndex = index + 1;
+      if (passage && nextIndex < passage.sentences.length) {
+        transitionTimerRef.current = setTimeout(() => {
+          if (!playbackCancelledRef.current && playbackSessionIdRef.current === sessionId) {
+            void playSentenceAtIndex(nextIndex, true, effectiveSpeed);
+          }
+        }, 70);
+      } else {
+        setPlaybackState((prev) => ({
+          ...prev,
+          status: "completed",
+          loading: false,
+          currentSentenceIndex: (passage?.sentences.length || 1) - 1,
+        }));
+        isPlayingRef.current = false;
+      }
+    };
+
+    utterance.onerror = () => {
+      if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId) return;
+      setPlaybackState((prev) => ({ ...prev, status: "paused", loading: false }));
+      isPlayingRef.current = false;
+    };
+
+    try {
+      window.speechSynthesis.speak(utterance);
+    } catch {
+      if (!playbackCancelledRef.current && playbackSessionIdRef.current === sessionId) {
+        setPlaybackState((prev) => ({ ...prev, status: "paused", loading: false }));
+        isPlayingRef.current = false;
+      }
+    }
+  };
+
   const playSentenceAtIndex = useCallback(
     async (index: number, isSequential = false, speedOverride?: number) => {
       if (!passage || !passage.sentences || index >= passage.sentences.length) {
-        setPlaybackState((prev) => ({ ...prev, status: "completed" }));
+        setPlaybackState((prev) => ({ ...prev, status: "completed", loading: false }));
         isPlayingRef.current = false;
         return;
       }
@@ -273,6 +423,7 @@ export const ReadingDetailPage: React.FC = () => {
       if (!sentence) return;
 
       const effectiveSpeed = speedOverride ?? playbackSpeedRef.current;
+      const isCloudPreferred = (settings?.audioEngine !== "BROWSER") && passage.language === "en";
 
       if (!isSequential) {
         // User action: play, resume, restart, seek, speed change
@@ -287,63 +438,88 @@ export const ReadingDetailPage: React.FC = () => {
           status: "playing",
           currentSentenceIndex: index,
           currentSentenceId: sentence.id,
+          loading: isCloudPreferred,
+          engine: isCloudPreferred ? "cloud" : "browser",
         }));
 
-        if (!("speechSynthesis" in window)) return;
+        if (isCloudPreferred) {
+          try {
+            const voice = settings?.preferredCloudVoiceEn || DEFAULT_CLOUD_VOICE_EN;
+            const controller = new AbortController();
+            cloudAbortRef.current?.abort();
+            cloudAbortRef.current = controller;
 
-        // Cancel previous speech and wait for synthesis engine to settle (100ms for 1x, 150ms for 0.75x/1.25x)
-        const settleMs = getSpeechCancelSettleMs(effectiveSpeed);
-        await cancelSpeechAndWait(settleMs);
-        if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId) return;
+            // Prefetch next sentence in background
+            if (index + 1 < passage.sentences.length) {
+              void prefetchCloudSpeech({
+                text: passage.sentences[index + 1]!.text,
+                language: "en",
+                voice,
+              });
+            }
 
-        const voices = await waitForSpeechVoices(200);
-        if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId) return;
+            const blob = await synthesizeCloudSpeech({
+              text: sentence.text,
+              language: "en",
+              voice,
+              signal: controller.signal,
+            });
 
-        const utterance = new SpeechSynthesisUtterance(sentence.text);
-        const preferredVoice = passage.language === "zh" ? settings?.preferredVoiceZh : settings?.preferredVoiceEn;
-        configureSpeechUtterance(
-          utterance,
-          passage.language,
-          effectiveSpeed,
-          voices.length > 0 ? voices : getReadySpeechVoices(),
-          preferredVoice
-        );
+            if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId) return;
 
-        utterance.onend = () => {
-          if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId) return;
-          const nextIndex = index + 1;
-          if (nextIndex < passage.sentences.length) {
-            transitionTimerRef.current = setTimeout(() => {
-              if (!playbackCancelledRef.current && playbackSessionIdRef.current === sessionId) {
-                void playSentenceAtIndex(nextIndex, true, effectiveSpeed);
+            cleanupActiveAudio();
+
+            const objectUrl = URL.createObjectURL(blob);
+            activeObjectUrlRef.current = objectUrl;
+            const audio = new Audio(objectUrl);
+            activeAudioRef.current = audio;
+
+            configureAudioElementPlaybackRate(audio, effectiveSpeed);
+
+            audio.onplay = () => {
+              if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId) return;
+              setPlaybackState((prev) => ({ ...prev, loading: false, status: "playing" }));
+            };
+
+            audio.onended = () => {
+              cleanupActiveAudio();
+              if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId) return;
+              const nextIndex = index + 1;
+              if (nextIndex < passage.sentences.length) {
+                transitionTimerRef.current = setTimeout(() => {
+                  if (!playbackCancelledRef.current && playbackSessionIdRef.current === sessionId) {
+                    void playSentenceAtIndex(nextIndex, true, effectiveSpeed);
+                  }
+                }, 70);
+              } else {
+                setPlaybackState((prev) => ({
+                  ...prev,
+                  status: "completed",
+                  loading: false,
+                  currentSentenceIndex: passage.sentences.length - 1,
+                }));
+                isPlayingRef.current = false;
               }
-            }, 70);
-          } else {
-            setPlaybackState((prev) => ({
-              ...prev,
-              status: "completed",
-              currentSentenceIndex: passage.sentences.length - 1,
-            }));
-            isPlayingRef.current = false;
-          }
-        };
+            };
 
-        utterance.onerror = () => {
-          if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId) return;
-          setPlaybackState((prev) => ({ ...prev, status: "paused" }));
-          isPlayingRef.current = false;
-        };
+            audio.onerror = () => {
+              cleanupActiveAudio();
+              if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId) return;
+              void playBrowserSentence(index, sentence, effectiveSpeed, sessionId);
+            };
 
-        try {
-          window.speechSynthesis.speak(utterance);
-        } catch {
-          if (!playbackCancelledRef.current && playbackSessionIdRef.current === sessionId) {
-            setPlaybackState((prev) => ({ ...prev, status: "paused" }));
-            isPlayingRef.current = false;
+            await audio.play();
+            return;
+          } catch {
+            if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId) return;
+            void playBrowserSentence(index, sentence, effectiveSpeed, sessionId);
+            return;
           }
+        } else {
+          void playBrowserSentence(index, sentence, effectiveSpeed, sessionId);
         }
       } else {
-        // Sequential sentence transition: DO NOT cancel speech engine
+        // Sequential sentence transition
         const sessionId = playbackSessionIdRef.current;
         if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId) return;
 
@@ -353,56 +529,83 @@ export const ReadingDetailPage: React.FC = () => {
           status: "playing",
           currentSentenceIndex: index,
           currentSentenceId: sentence.id,
+          engine: isCloudPreferred ? "cloud" : "browser",
         }));
 
-        if (!("speechSynthesis" in window)) return;
+        if (isCloudPreferred) {
+          try {
+            const voice = settings?.preferredCloudVoiceEn || DEFAULT_CLOUD_VOICE_EN;
+            const controller = new AbortController();
+            cloudAbortRef.current?.abort();
+            cloudAbortRef.current = controller;
 
-        const utterance = new SpeechSynthesisUtterance(sentence.text);
-        const preferredVoice = passage.language === "zh" ? settings?.preferredVoiceZh : settings?.preferredVoiceEn;
-        configureSpeechUtterance(
-          utterance,
-          passage.language,
-          effectiveSpeed,
-          getReadySpeechVoices(),
-          preferredVoice
-        );
+            // Prefetch next sentence in background
+            if (index + 1 < passage.sentences.length) {
+              void prefetchCloudSpeech({
+                text: passage.sentences[index + 1]!.text,
+                language: "en",
+                voice,
+              });
+            }
 
-        utterance.onend = () => {
-          if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId) return;
-          const nextIndex = index + 1;
-          if (nextIndex < passage.sentences.length) {
-            transitionTimerRef.current = setTimeout(() => {
-              if (!playbackCancelledRef.current && playbackSessionIdRef.current === sessionId) {
-                void playSentenceAtIndex(nextIndex, true, effectiveSpeed);
+            const blob = await synthesizeCloudSpeech({
+              text: sentence.text,
+              language: "en",
+              voice,
+              signal: controller.signal,
+            });
+
+            if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId) return;
+
+            cleanupActiveAudio();
+
+            const objectUrl = URL.createObjectURL(blob);
+            activeObjectUrlRef.current = objectUrl;
+            const audio = new Audio(objectUrl);
+            activeAudioRef.current = audio;
+
+            configureAudioElementPlaybackRate(audio, effectiveSpeed);
+
+            audio.onended = () => {
+              cleanupActiveAudio();
+              if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId) return;
+              const nextIndex = index + 1;
+              if (nextIndex < passage.sentences.length) {
+                transitionTimerRef.current = setTimeout(() => {
+                  if (!playbackCancelledRef.current && playbackSessionIdRef.current === sessionId) {
+                    void playSentenceAtIndex(nextIndex, true, effectiveSpeed);
+                  }
+                }, 70);
+              } else {
+                setPlaybackState((prev) => ({
+                  ...prev,
+                  status: "completed",
+                  loading: false,
+                  currentSentenceIndex: passage.sentences.length - 1,
+                }));
+                isPlayingRef.current = false;
               }
-            }, 70);
-          } else {
-            setPlaybackState((prev) => ({
-              ...prev,
-              status: "completed",
-              currentSentenceIndex: passage.sentences.length - 1,
-            }));
-            isPlayingRef.current = false;
-          }
-        };
+            };
 
-        utterance.onerror = () => {
-          if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId) return;
-          setPlaybackState((prev) => ({ ...prev, status: "paused" }));
-          isPlayingRef.current = false;
-        };
+            audio.onerror = () => {
+              cleanupActiveAudio();
+              if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId) return;
+              void playBrowserSentenceSequential(index, sentence, effectiveSpeed, sessionId);
+            };
 
-        try {
-          window.speechSynthesis.speak(utterance);
-        } catch {
-          if (!playbackCancelledRef.current && playbackSessionIdRef.current === sessionId) {
-            setPlaybackState((prev) => ({ ...prev, status: "paused" }));
-            isPlayingRef.current = false;
+            await audio.play();
+            return;
+          } catch {
+            if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId) return;
+            void playBrowserSentenceSequential(index, sentence, effectiveSpeed, sessionId);
+            return;
           }
+        } else {
+          void playBrowserSentenceSequential(index, sentence, effectiveSpeed, sessionId);
         }
       }
     },
-    [passage, settings?.preferredVoiceZh, settings?.preferredVoiceEn]
+    [passage, settings?.preferredVoiceZh, settings?.preferredVoiceEn, settings?.preferredCloudVoiceEn, settings?.audioEngine]
   );
 
   const handlePlay = useCallback(() => {
@@ -412,7 +615,7 @@ export const ReadingDetailPage: React.FC = () => {
 
   const handlePause = useCallback(() => {
     stopAllAudio();
-    setPlaybackState((prev) => ({ ...prev, status: "paused" }));
+    setPlaybackState((prev) => ({ ...prev, status: "paused", loading: false }));
   }, [stopAllAudio]);
 
   const handleResume = useCallback(() => {
@@ -459,10 +662,16 @@ export const ReadingDetailPage: React.FC = () => {
     (newSpeed: 0.75 | 1 | 1.25) => {
       const wasPlaying = isPlayingRef.current;
       playbackSpeedRef.current = newSpeed;
-      if (wasPlaying) stopAllAudio();
       setPlaybackState((prev) => ({ ...prev, speed: newSpeed }));
+
       if (wasPlaying) {
-        void playSentenceAtIndex(currentSentenceIdxRef.current, false, newSpeed);
+        if (activeAudioRef.current && !activeAudioRef.current.paused) {
+          // Live rate update on active HTMLAudioElement with pitch preservation
+          configureAudioElementPlaybackRate(activeAudioRef.current, newSpeed);
+        } else {
+          stopAllAudio();
+          void playSentenceAtIndex(currentSentenceIdxRef.current, false, newSpeed);
+        }
       }
     },
     [stopAllAudio, playSentenceAtIndex]

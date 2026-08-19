@@ -7,6 +7,7 @@
   "include": [
     "tests/static-edition.test.ts",
     "tests/supabase-sync.test.ts",
+    "tests/cloud-tts.test.ts",
     "src/frontend/**/*.ts",
     "src/shared/**/*.ts",
     "cloudflare/worker/src/**/*.ts"

@@ -40,6 +40,12 @@ import { getIndexedDbAdapter } from "../../persistence/indexedDb";
 import { backupFileName, exportBackup, importBackup, previewBackup, validateBackup, type BackupPreview } from "../../persistence/backup";
 import type { StaticBackup } from "../../persistence/types";
 import { configureSpeechUtterance, getAvailableVoicesForLanguage } from "../../services/speech";
+import {
+  CLOUD_VOICES_EN,
+  DEFAULT_CLOUD_VOICE_EN,
+  synthesizeCloudSpeech,
+  configureAudioElementPlaybackRate,
+} from "../../services/cloudTts";
 import { getCloudAuthService } from "../../services/cloudAuth";
 import type { SyncMeta, SyncStatus } from "../../persistence/sync";
 import type { User } from "@supabase/supabase-js";
@@ -179,24 +185,69 @@ export const SettingsPage: React.FC = () => {
     setForm((prev) => ({ ...prev, [key]: value }));
   };
 
-  const handleTestVoice = (lang: "en" | "zh") => {
+  const previewAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  const testBrowserVoice = (lang: "en" | "zh", testText: string, currentSpeed: number) => {
     if (typeof window === "undefined" || !("speechSynthesis" in window)) {
       error("Trình duyệt không hỗ trợ phát âm (SpeechSynthesis).");
+      setIsPlayingPreview(null);
       return;
     }
-    window.speechSynthesis.cancel();
-    const testText = lang === "en"
-      ? "Hello! Learning languages every day brings great results."
-      : "你好！每天坚持学习语言会带来很大的进步。";
     const utterance = new SpeechSynthesisUtterance(testText);
     const preferredVoice = lang === "en" ? form.preferredVoiceEn : form.preferredVoiceZh;
-    const currentSpeed = form.audioSpeed || 1;
     configureSpeechUtterance(utterance, lang, currentSpeed, voices, preferredVoice);
 
     setIsPlayingPreview(lang);
     utterance.onend = () => setIsPlayingPreview(null);
     utterance.onerror = () => setIsPlayingPreview(null);
     window.speechSynthesis.speak(utterance);
+  };
+
+  const handleTestVoice = async (lang: "en" | "zh") => {
+    if (previewAudioRef.current) {
+      try {
+        previewAudioRef.current.pause();
+      } catch {}
+      previewAudioRef.current = null;
+    }
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
+
+    const testText = lang === "en"
+      ? "Hello! Learning languages every day brings great results."
+      : "你好！每天坚持学习语言会带来很大的进步。";
+    const currentSpeed = form.audioSpeed || 1;
+    const isCloud = (form.audioEngine !== "BROWSER") && lang === "en";
+
+    setIsPlayingPreview(lang);
+
+    if (isCloud) {
+      try {
+        const voice = form.preferredCloudVoiceEn || DEFAULT_CLOUD_VOICE_EN;
+        const blob = await synthesizeCloudSpeech({ text: testText, language: "en", voice });
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        previewAudioRef.current = audio;
+        configureAudioElementPlaybackRate(audio, currentSpeed);
+        audio.onended = () => {
+          setIsPlayingPreview(null);
+          URL.revokeObjectURL(url);
+        };
+        audio.onerror = () => {
+          setIsPlayingPreview(null);
+          URL.revokeObjectURL(url);
+          testBrowserVoice(lang, testText, currentSpeed);
+        };
+        await audio.play();
+        return;
+      } catch {
+        testBrowserVoice(lang, testText, currentSpeed);
+        return;
+      }
+    }
+
+    testBrowserVoice(lang, testText, currentSpeed);
   };
 
   const handleSave = async (e: React.FormEvent) => {
@@ -390,7 +441,7 @@ export const SettingsPage: React.FC = () => {
           </div>
         </Card>
 
-        {/* 3. Audio & Text to Speech (Natural Voices) */}
+        {/* 3. Audio & Text to Speech (Cloud TTS First) */}
         <Card className="flex-col gap-5">
           <div className="flex-row items-center justify-between" style={{ flexWrap: "wrap", gap: "8px" }}>
             <div className="flex-row items-center gap-2">
@@ -398,21 +449,45 @@ export const SettingsPage: React.FC = () => {
               <div>
                 <h2 style={{ fontSize: "var(--text-base)", fontWeight: 700 }}>Âm thanh & Giọng đọc</h2>
                 <p style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)" }}>
-                  Tự động ưu tiên giọng đọc chuẩn tự nhiên (Natural/Neural/Online) từ hệ điều hành
+                  Giọng đọc đồng nhất trên điện thoại và máy tính (Cloud TTS)
                 </p>
               </div>
             </div>
             <Badge variant="en" size="sm">
               <Sparkles size={12} style={{ marginRight: "4px" }} />
-              Auto Natural Voice
+              Cloud TTS First
             </Badge>
           </div>
 
-          {/* Voice selector for English */}
+          {/* Engine Selector */}
+          <div>
+            <label style={{ display: "block", fontSize: "var(--text-xs)", fontWeight: 700, marginBottom: "6px" }}>
+              Cơ chế phát âm (Audio Engine)
+            </label>
+            <select
+              value={form.audioEngine || "AUTO"}
+              onChange={(e) => handleChange("audioEngine", e.target.value)}
+              style={{
+                width: "100%",
+                padding: "10px 12px",
+                borderRadius: "var(--radius-md)",
+                border: "1px solid var(--border-default)",
+                backgroundColor: "var(--bg-surface)",
+                fontSize: "var(--text-sm)",
+                fontWeight: 600,
+              }}
+            >
+              <option value="AUTO">✨ [Tự động - Khuyên dùng] Cloud TTS (Đồng nhất mọi thiết bị, tự động chuyển giọng thiết bị khi offline)</option>
+              <option value="CLOUD">☁️ Chỉ dùng Cloud TTS (Âm thanh studio cao cấp)</option>
+              <option value="BROWSER">💻 Chỉ dùng giọng trình duyệt (Web Speech API thiết bị)</option>
+            </select>
+          </div>
+
+          {/* English Cloud Voice Selector */}
           <div style={{ backgroundColor: "var(--bg-muted)", padding: "14px 16px", borderRadius: "var(--radius-md)", border: "1px solid var(--border-default)" }}>
             <div className="flex-row justify-between items-center" style={{ marginBottom: "8px", flexWrap: "wrap", gap: "6px" }}>
               <label style={{ fontSize: "var(--text-xs)", fontWeight: 700, color: "var(--text-primary)" }}>
-                🇬🇧 Giọng đọc Tiếng Anh (English Voice)
+                🇬🇧 Giọng đọc Tiếng Anh (English Cloud Voice)
               </label>
               <Button
                 type="button"
@@ -426,8 +501,8 @@ export const SettingsPage: React.FC = () => {
               </Button>
             </div>
             <select
-              value={form.preferredVoiceEn || "AUTO"}
-              onChange={(e) => handleChange("preferredVoiceEn", e.target.value)}
+              value={form.preferredCloudVoiceEn || DEFAULT_CLOUD_VOICE_EN}
+              onChange={(e) => handleChange("preferredCloudVoiceEn", e.target.value)}
               style={{
                 width: "100%",
                 padding: "8px 12px",
@@ -437,21 +512,25 @@ export const SettingsPage: React.FC = () => {
                 fontSize: "var(--text-sm)",
               }}
             >
-              <option value="AUTO">✨ [Tự động - Khuyên dùng] Ưu tiên giọng tự nhiên tốt nhất (en-US / en-GB)</option>
-              {enVoices.map((v) => (
-                <option key={v.name} value={v.name}>
-                  {v.name} ({v.lang}) {v.localService ? "• Thiết bị" : "• Online/Natural"}
+              {CLOUD_VOICES_EN.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.label} — {v.description}
                 </option>
               ))}
             </select>
           </div>
 
-          {/* Voice selector for Chinese */}
+          {/* Chinese Voice Selector (SpeechSynthesis fallback) */}
           <div style={{ backgroundColor: "var(--bg-muted)", padding: "14px 16px", borderRadius: "var(--radius-md)", border: "1px solid var(--border-default)" }}>
             <div className="flex-row justify-between items-center" style={{ marginBottom: "8px", flexWrap: "wrap", gap: "6px" }}>
-              <label style={{ fontSize: "var(--text-xs)", fontWeight: 700, color: "var(--text-primary)" }}>
-                🇨🇳 Giọng đọc Tiếng Trung (Chinese Voice)
-              </label>
+              <div>
+                <label style={{ fontSize: "var(--text-xs)", fontWeight: 700, color: "var(--text-primary)" }}>
+                  🇨🇳 Giọng đọc Tiếng Trung (Chinese Voice)
+                </label>
+                <span style={{ fontSize: "0.75rem", color: "var(--text-tertiary)", marginLeft: "6px" }}>
+                  (Giọng trình duyệt)
+                </span>
+              </div>
               <Button
                 type="button"
                 variant="secondary"
@@ -475,7 +554,7 @@ export const SettingsPage: React.FC = () => {
                 fontSize: "var(--text-sm)",
               }}
             >
-              <option value="AUTO">✨ [Tự động - Khuyên dùng] Ưu tiên giọng tự nhiên tốt nhất (zh-CN / zh-TW)</option>
+              <option value="AUTO">✨ [Tự động] Ưu tiên giọng tự nhiên tốt nhất của thiết bị (zh-CN / zh-TW)</option>
               {zhVoices.map((v) => (
                 <option key={v.name} value={v.name}>
                   {v.name} ({v.lang}) {v.localService ? "• Thiết bị" : "• Online/Natural"}
@@ -483,6 +562,35 @@ export const SettingsPage: React.FC = () => {
               ))}
             </select>
           </div>
+
+          {/* Advanced / Fallback Section */}
+          <details style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)", border: "1px solid var(--border-default)", borderRadius: "var(--radius-md)", padding: "10px 14px" }}>
+            <summary style={{ fontWeight: 700, cursor: "pointer", color: "var(--text-primary)" }}>
+              ⚙️ Tùy chọn nâng cao: Giọng trình duyệt khi ngoại tuyến
+            </summary>
+            <div style={{ marginTop: "10px", display: "flex", flexDirection: "column", gap: "8px" }}>
+              <label style={{ fontWeight: 600 }}>Giọng tiếng Anh thiết bị dự phòng:</label>
+              <select
+                value={form.preferredVoiceEn || "AUTO"}
+                onChange={(e) => handleChange("preferredVoiceEn", e.target.value)}
+                style={{
+                  width: "100%",
+                  padding: "8px 12px",
+                  borderRadius: "var(--radius-sm)",
+                  border: "1px solid var(--border-default)",
+                  backgroundColor: "var(--bg-surface)",
+                  fontSize: "var(--text-xs)",
+                }}
+              >
+                <option value="AUTO">✨ [Tự động] Giọng mặc định thiết bị</option>
+                {enVoices.map((v) => (
+                  <option key={v.name} value={v.name}>
+                    {v.name} ({v.lang}) {v.localService ? "• Thiết bị" : "• Online"}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </details>
 
           <div className="settings-two-col" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
             <div>

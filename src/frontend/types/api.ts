@@ -53,6 +53,9 @@ export interface UserSettings {
   dailyGoal: number;
   audioSpeed: 0.75 | 1 | 1.25;
   autoPlayAudio: boolean;
+  audioEngine?: "AUTO" | "CLOUD" | "BROWSER";
+  preferredCloudVoiceEn?: string;
+  preferredCloudVoiceZh?: string;
   preferredVoiceEn?: string;
   preferredVoiceZh?: string;
   showTranslation: boolean;
@@ -270,6 +273,8 @@ export interface SpeechSynthesisPlaybackState {
   currentSentenceId: string | null;
   totalSentences: number;
   speed: 0.75 | 1 | 1.25;
+  loading?: boolean;
+  engine?: "cloud" | "browser";
 }
 
 export interface AudioPlaybackState {

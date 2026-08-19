@@ -12,6 +12,8 @@ export interface Env {
   ALLOWED_ORIGINS: string;
   ENRICHMENT_MODEL?: string;
   TRANSLATION_MODEL?: string;
+  TTS_MODEL_EN?: string;
+  TTS_MODEL_ZH?: string;
 }
 
 type Language = "en" | "zh";
@@ -22,9 +24,29 @@ const MAX_TERM_LENGTH = 200;
 const MAX_CONTEXT_SENTENCE_LENGTH = 600;
 const MAX_CONTEXT_COMBINED_LENGTH = 2_000;
 const MAX_TRANSLATION_LENGTH = 20_000;
+const MAX_TTS_TEXT_LENGTH = 2_000;
 const ENRICHMENT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8-fast";
 const TRANSLATION_MODEL = "@cf/meta/llama-3.2-3b-instruct";
+const TTS_MODEL_EN = "@cf/deepgram/aura-2-en";
+const TTS_MODEL_ZH = "@cf/myshell-ai/melotts";
 const memoryRate = new Map<string, { count: number; resetAt: number }>();
+
+const ALLOWED_EN_VOICES = [
+  "aura-asteria-en",
+  "aura-luna-en",
+  "aura-stella-en",
+  "aura-orion-en",
+  "aura-arcas-en",
+  "aura-perseus-en",
+  "aura-angus-en",
+  "aura-orpheus-en",
+  "aura-helios-en",
+  "aura-zeus-en",
+  "aura-athena-en",
+  "aura-hera-en",
+  "default",
+  "AUTO",
+];
 
 interface VocabularyContext {
   sentence: string;
@@ -433,6 +455,149 @@ async function translate(body: Record<string, unknown>, env: Env): Promise<strin
   }
 }
 
+const VALID_DEEPGRAM_SPEAKERS = [
+  "asteria",
+  "luna",
+  "athena",
+  "orion",
+  "arcas",
+  "orpheus",
+  "apollo",
+  "zeus",
+  "hera",
+  "aurora",
+  "thalia",
+  "hermes",
+  "iris",
+  "callista",
+  "cordelia",
+  "hyperion",
+  "jupiter",
+  "mars",
+  "neptune",
+  "odysseus",
+  "ophelia",
+  "pandora",
+  "phoebe",
+  "pluto",
+  "saturn",
+  "theia",
+  "vesta",
+  "amalthea",
+  "andromeda",
+  "aries",
+  "atlas",
+  "cora",
+  "delia",
+  "draco",
+  "electra",
+  "harmonia",
+  "helena",
+  "janus",
+  "juno",
+  "minerva",
+];
+
+function resolveEnglishSpeaker(voice?: string): string {
+  if (!voice || voice === "AUTO" || voice === "default") return "asteria";
+  const clean = voice.toLowerCase().trim();
+  const stripped = clean.replace(/^aura-/, "").replace(/-en$/, "");
+  if (VALID_DEEPGRAM_SPEAKERS.includes(stripped)) return stripped;
+  if (VALID_DEEPGRAM_SPEAKERS.includes(clean)) return clean;
+  if (stripped === "stella") return "thalia";
+  if (stripped === "perseus") return "orpheus";
+  if (stripped === "angus") return "arcas";
+  if (stripped === "helios") return "apollo";
+  return "asteria";
+}
+
+async function tts(body: Record<string, unknown>, env: Env, origin: string): Promise<Response> {
+  if (!hasOnlyKeys(body, ["text", "language", "voice"])) {
+    throw new TypeError("Yêu cầu TTS chứa trường không hợp lệ.");
+  }
+  const text = cleanString(body.text, MAX_TTS_TEXT_LENGTH);
+  if (!text) {
+    throw new TypeError("Văn bản phát âm không hợp lệ.");
+  }
+  const language = body.language;
+  if (language !== "en" && language !== "zh") {
+    throw new TypeError("Ngôn ngữ không được hỗ trợ.");
+  }
+
+  let voice = cleanString(body.voice, 100);
+  let model: string;
+  let input: Record<string, unknown>;
+
+  if (language === "en") {
+    model = env.TTS_MODEL_EN || TTS_MODEL_EN;
+    if (voice && voice !== "AUTO" && voice !== "default") {
+      if (!ALLOWED_EN_VOICES.includes(voice)) {
+        throw new TypeError(`Giọng đọc tiếng Anh '${voice}' không được hỗ trợ.`);
+      }
+    }
+    const speaker = resolveEnglishSpeaker(voice);
+    voice = voice || `aura-${speaker}-en`;
+    input = {
+      text,
+      speaker,
+    };
+  } else {
+    model = env.TTS_MODEL_ZH || TTS_MODEL_ZH;
+    voice = voice || "default";
+    input = {
+      prompt: text,
+      text,
+      lang: "zh",
+    };
+  }
+
+  try {
+    const result = await env.AI.run(model, input);
+
+    let audioData: BodyInit | null = null;
+    let contentType = "audio/mpeg";
+
+    if (result instanceof ReadableStream || result instanceof ArrayBuffer || result instanceof Uint8Array) {
+      audioData = result as BodyInit;
+    } else if (result instanceof Response) {
+      audioData = result.body;
+      const resType = result.headers.get("Content-Type");
+      if (resType) contentType = resType;
+    } else if (result && typeof result === "object") {
+      const resObj = result as Record<string, unknown>;
+      if (resObj.audio instanceof Uint8Array || resObj.audio instanceof ArrayBuffer || resObj.audio instanceof ReadableStream) {
+        audioData = resObj.audio as BodyInit;
+      } else if (typeof resObj.audio === "string") {
+        const binaryString = atob(resObj.audio);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        audioData = bytes;
+      }
+    }
+
+    if (!audioData) {
+      throw new TypeError(`AI TTS model '${model}' returned empty or invalid audio stream.`);
+    }
+
+    return new Response(audioData, {
+      status: 200,
+      headers: {
+        ...corsHeaders(origin),
+        "Content-Type": contentType,
+        "X-TTS-Provider": "cloudflare-workers-ai",
+        "X-TTS-Model": model,
+        "X-TTS-Voice": voice,
+        "Cache-Control": "public, max-age=86400, immutable",
+      },
+    });
+  } catch (caught) {
+    console.error(JSON.stringify({ event: "tts_failed", model, voice, reason: errorSummary(caught) }));
+    throw new AiOutputError("AI TTS generation failed.", { cause: caught });
+  }
+}
+
 export async function handleRequest(request: Request, env: Env): Promise<Response> {
   const origin = allowedOrigin(request, env);
   if (!origin) {
@@ -449,10 +614,11 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     const path = new URL(request.url).pathname;
     if (path === "/v1/vocabulary/enrich") return json(origin, 200, { data: { items: await enrich(body, env) } });
     if (path === "/v1/translate") return json(origin, 200, { data: { translation: await translate(body, env) } });
+    if (path === "/v1/tts") return await tts(body, env, origin);
     return error(origin, 404, "NOT_FOUND", "Không tìm thấy endpoint.");
   } catch (caught) {
     if (caught instanceof RangeError) return error(origin, 413, "PAYLOAD_TOO_LARGE", caught.message);
-    if (caught instanceof AiOutputError) return error(origin, 502, "AI_RESPONSE_INVALID", "Dịch vụ AI trả về dữ liệu không hợp lệ.");
+    if (caught instanceof AiOutputError) return error(origin, 502, "AI_RESPONSE_INVALID", caught.message + (caught.cause ? ": " + String((caught.cause as any).message || caught.cause) : ""));
     if (caught instanceof SyntaxError || caught instanceof TypeError) return error(origin, 400, "VALIDATION_ERROR", (caught as Error).message);
     return error(origin, 502, "AI_RESPONSE_INVALID", "Dịch vụ AI trả về dữ liệu không hợp lệ.");
   }
