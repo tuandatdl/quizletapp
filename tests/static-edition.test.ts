@@ -147,7 +147,7 @@ describe("static navigation and speech", () => {
     // Custom preferred voice override
     const customUtterance = { lang: "", rate: 0, pitch: 0, volume: 0, voice: null } as unknown as SpeechSynthesisUtterance;
     configureSpeechUtterance(customUtterance, "en", 1.25, voices, "Google UK English");
-    expect(customUtterance).toMatchObject({ lang: "en-GB", rate: 1.25, pitch: 1, volume: 1, voice: voices[2] });
+    expect(customUtterance).toMatchObject({ lang: "en-GB", rate: 1.1, pitch: 1, volume: 1, voice: voices[2] });
 
     // Fallback when custom voice doesn't exist
     const fallbackUtterance = { lang: "", rate: 0, pitch: 0, volume: 0, voice: null } as unknown as SpeechSynthesisUtterance;

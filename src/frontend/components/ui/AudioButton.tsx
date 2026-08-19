@@ -4,7 +4,13 @@ import { ttsApi } from "../../api/tts.api";
 import { useToast } from "../../context/ToastContext";
 import { useLanguage } from "../../context/LanguageContext";
 import type { Language } from "../../types/api";
-import { cancelSpeechAndWait, configureSpeechUtterance, getReadySpeechVoices, waitForSpeechVoices } from "../../services/speech";
+import {
+  cancelSpeechAndWait,
+  configureSpeechUtterance,
+  getReadySpeechVoices,
+  getSpeechCancelSettleMs,
+  waitForSpeechVoices,
+} from "../../services/speech";
 
 let activeHtmlAudio: HTMLAudioElement | null = null;
 
@@ -84,7 +90,7 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
     const currentGen = speechGenRef.current;
     setIsLoading(true);
 
-    await cancelSpeechAndWait(100);
+    await cancelSpeechAndWait(getSpeechCancelSettleMs(currentSpeed));
     if (!mountedRef.current || speechGenRef.current !== currentGen) return;
 
     const voices = await waitForSpeechVoices(200);

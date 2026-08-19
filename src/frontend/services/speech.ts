@@ -36,6 +36,22 @@ export function getAvailableVoicesForLanguage(voices: readonly SpeechSynthesisVo
     .map(({ voice }) => voice);
 }
 
+export function getStableSpeechRate(language: Language, uiSpeed: number): number {
+  if (language === "zh") {
+    if (uiSpeed <= 0.8) return 0.80;
+    if (uiSpeed >= 1.2) return 1.08;
+    return 0.90;
+  }
+  // English & general languages
+  if (uiSpeed <= 0.8) return 0.85;
+  if (uiSpeed >= 1.2) return 1.10;
+  return 0.95;
+}
+
+export function getSpeechCancelSettleMs(uiSpeed: number): number {
+  return uiSpeed === 1 ? 100 : 150;
+}
+
 export function configureSpeechUtterance(
   utterance: SpeechSynthesisUtterance,
   language: Language,
@@ -44,7 +60,7 @@ export function configureSpeechUtterance(
   preferredVoiceName?: string
 ): void {
   utterance.lang = preferredSpeechLocales(language)[0]!;
-  utterance.rate = speed === 1 ? (language === "zh" ? 0.9 : 0.95) : speed;
+  utterance.rate = getStableSpeechRate(language, speed);
   utterance.pitch = 1;
   utterance.volume = 1;
 
