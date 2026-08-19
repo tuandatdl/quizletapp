@@ -15,7 +15,11 @@ export function getSupabaseUrl(): string | undefined {
 }
 
 export function getSupabaseAnonKey(): string | undefined {
-  return getEnvValue("VITE_SUPABASE_ANON_KEY");
+  return (
+    getEnvValue("VITE_SUPABASE_ANON_KEY") ||
+    getEnvValue("VITE_SUPABASE_PUBLISHABLE_KEY") ||
+    getEnvValue("VITE_SUPABASE_PUBLIC_KEY")
+  );
 }
 
 export function cloudSyncAvailable(): boolean {
