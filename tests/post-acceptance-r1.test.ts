@@ -79,7 +79,7 @@ describe("post-acceptance feature fix R1",()=>{
     const preview=await c.app.inject({method:"POST",url:"/api/vocabulary/bulk-preview",headers:c.headers,payload:{language:"en",input:"GO, car, give up"}});
     expect(preview.statusCode).toBe(200);const data=preview.json().data;
     expect(data.enrichment).toEqual({configured:false,provider:null});
-    expect(data.items[0]).toMatchObject({term:"GO",normalizedTerm:"go",duplicate:true,status:"EXISTS"});
+    expect(data.items[0]).toMatchObject({term:"GO",normalizedTerm:"go",duplicate:true,status:"EXISTS",suggestion:{meaningVi:"đi"}});
     expect(data.items[1]).toMatchObject({term:"car",duplicate:false,status:"NEEDS_ENRICHMENT",suggestion:{meaningVi:null,ipa:null,synonyms:[],senses:[]}});
     expect(JSON.stringify(data.items[1].suggestion)).not.toContain("car");
   });
@@ -121,7 +121,7 @@ describe("post-acceptance feature fix R1",()=>{
     const response=await c.app.inject({method:"POST",url:"/api/vocabulary/bulk",headers:c.headers,payload:{language:"zh",items:[{term:"学习",meaningVi:"học tập",pinyin:"xuéxí",simplified:"学习",traditional:"學習",hskLevel:1,toneData:[2,2]}]}});
     expect(response.json().data.created[0]).toMatchObject({language:"zh",term:"学习",pronunciation:"xuéxí",level:"HSK1",metadata:{simplified:"学习",traditional:"學習",pinyin:"xuéxí",hskLevel:1,toneData:[2,2]}});
     const preview=(await c.app.inject({method:"POST",url:"/api/vocabulary/bulk-preview",headers:c.headers,payload:{language:"zh",input:"学 习"}})).json().data;
-    expect(preview.items[0]).toMatchObject({normalizedTerm:"学习",duplicate:true,status:"EXISTS"});
+    expect(preview.items[0]).toMatchObject({normalizedTerm:"学习",duplicate:true,status:"EXISTS",suggestion:{meaningVi:"học tập",pinyin:"xuéxí",traditional:"學習",hskLevel:1,toneData:[2,2]}});
   });
 
   it("exposes actionable pronunciation availability without invoking assessment",async()=>{const c=await testContext();contexts.push(c);

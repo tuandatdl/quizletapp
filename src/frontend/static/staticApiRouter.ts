@@ -105,6 +105,29 @@ function suggestion(enriched?: VocabularyEnrichment) {
   };
 }
 
+function suggestionFromExisting(item: VocabularyItem) {
+  const meta = (item.metadata || {}) as Record<string, unknown>;
+  const clean = (val: unknown) => (typeof val === "string" && val.trim() ? val.trim() : null);
+  return {
+    pronunciation: clean(item.pronunciation) ?? clean(meta.pinyin) ?? clean(meta.ipa) ?? null,
+    ipa: clean(meta.ipa) ?? (item.language === "en" ? clean(item.pronunciation) : null),
+    pinyin: clean(meta.pinyin) ?? (item.language === "zh" ? clean(item.pronunciation) : null),
+    simplified: clean(meta.simplified) ?? (item.language === "zh" ? clean(item.term) : null),
+    traditional: clean(meta.traditional) ?? null,
+    partOfSpeech: clean(item.partOfSpeech),
+    meaningVi: clean(item.meaningVi),
+    synonyms: Array.isArray(meta.synonyms) ? (meta.synonyms as string[]) : [],
+    example: clean(item.example),
+    exampleTranslation: clean(item.exampleTranslation),
+    topic: clean(item.topic),
+    cefr: clean(meta.cefr) ?? (item.language === "en" && item.level && !item.level.startsWith("HSK") ? clean(item.level) : null),
+    toeicLevel: clean(meta.toeicLevel),
+    hskLevel: typeof meta.hskLevel === "number" ? meta.hskLevel : (item.level?.match(/^HSK(\d+)$/)?.[1] ? Number(item.level.replace("HSK", "")) : null),
+    toneData: Array.isArray(meta.toneData) ? (meta.toneData as Array<0 | 1 | 2 | 3 | 4>) : [],
+    senses: Array.isArray(meta.senses) ? (meta.senses as VocabularyItem["metadata"]["senses"]) : [],
+  };
+}
+
 export class StaticApiRouter {
   private readonly languageApi: LanguageApiClient;
   private readonly syncCoordinator: LocalFirstSyncCoordinator;
@@ -228,7 +251,12 @@ export class StaticApiRouter {
   private async bulkPreview(language: Language, input: string, refresh = false): Promise<BulkVocabularyPreview> {
     const terms = parseLocalQuickInput(input, language);
     const existing = await this.persistence.getAll<VocabularyItem>("vocabulary");
-    const newTerms = terms.filter((term) => !existing.some((item) => item.language === language && item.normalizedTerm === normalizeLocalTerm(term, language)));
+    const existingMap = new Map(
+      existing
+        .filter((item) => item.language === language)
+        .map((item) => [item.normalizedTerm, item])
+    );
+    const newTerms = terms.filter((term) => !existingMap.has(normalizeLocalTerm(term, language)));
     let enrichment = new Map<string, VocabularyEnrichment>();
     let enrichmentError: Error | undefined;
     if (this.languageApi.configured && newTerms.length) {
@@ -240,13 +268,14 @@ export class StaticApiRouter {
       enrichment: { configured: this.languageApi.configured, provider: this.languageApi.configured ? "cloudflare-workers-ai" : null },
       items: terms.map((term) => {
         const normalizedTerm = normalizeLocalTerm(term, language);
-        const duplicate = existing.some((item) => item.language === language && item.normalizedTerm === normalizedTerm);
+        const existingItem = existingMap.get(normalizedTerm);
+        const duplicate = Boolean(existingItem);
         const enriched = enrichment.get(normalizedTerm);
         return {
           term, normalizedTerm, duplicate,
           status: duplicate ? "EXISTS" : enriched?.meaningVi ? "READY" : "NEEDS_ENRICHMENT",
-          suggestion: suggestion(enriched),
-          ...(enrichmentError ? { error: { code: "EXTERNAL_SERVICE_ERROR" as const, message: enrichmentError.message } } : {}),
+          suggestion: duplicate && existingItem ? suggestionFromExisting(existingItem) : suggestion(enriched),
+          ...(enrichmentError && !duplicate ? { error: { code: "EXTERNAL_SERVICE_ERROR" as const, message: enrichmentError.message } } : {}),
         };
       }),
     };
