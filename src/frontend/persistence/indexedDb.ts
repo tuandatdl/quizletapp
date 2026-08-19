@@ -35,7 +35,7 @@ export class IndexedDbAdapter implements PersistenceAdapter {
 
   private open(): Promise<IDBDatabase> {
     if (this.databasePromise) return this.databasePromise;
-    this.databasePromise = new Promise((resolve, reject) => {
+    this.databasePromise = new Promise<IDBDatabase>((resolve, reject) => {
       const request = this.indexedDb.open(this.databaseName, INDEXED_DB_SCHEMA_VERSION);
       request.onupgradeneeded = () => {
         const db = request.result;
@@ -43,9 +43,34 @@ export class IndexedDbAdapter implements PersistenceAdapter {
           if (!db.objectStoreNames.contains(store)) db.createObjectStore(store, { keyPath: "id" });
         }
       };
-      request.onsuccess = () => {
+      request.onsuccess = async () => {
         const db = request.result;
         db.onversionchange = () => db.close();
+
+        // Auto-heal if database was already open at a previous version and missing any stores
+        const missingStores = STORE_NAMES.filter((store) => !db.objectStoreNames.contains(store));
+        if (missingStores.length > 0) {
+          db.close();
+          const upgradeVersion = Math.max(db.version + 1, INDEXED_DB_SCHEMA_VERSION + 1);
+          const upgradeRequest = this.indexedDb.open(this.databaseName, upgradeVersion);
+          upgradeRequest.onupgradeneeded = () => {
+            const upgradedDb = upgradeRequest.result;
+            for (const store of STORE_NAMES) {
+              if (!upgradedDb.objectStoreNames.contains(store)) {
+                upgradedDb.createObjectStore(store, { keyPath: "id" });
+              }
+            }
+          };
+          upgradeRequest.onsuccess = () => {
+            const upgradedDb = upgradeRequest.result;
+            upgradedDb.onversionchange = () => upgradedDb.close();
+            resolve(upgradedDb);
+          };
+          upgradeRequest.onerror = () => reject(upgradeRequest.error ?? new Error("Không thể nâng cấp IndexedDB."));
+          upgradeRequest.onblocked = () => reject(new Error("IndexedDB đang bị khóa bởi tab khác."));
+          return;
+        }
+
         resolve(db);
       };
       request.onerror = () => reject(request.error ?? new Error("Không thể mở IndexedDB."));
