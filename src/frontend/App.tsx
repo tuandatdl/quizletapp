@@ -24,6 +24,7 @@ import { GamesPage } from "./pages/games/GamesPage";
 import { ProgressPage } from "./pages/progress/ProgressPage";
 import { SettingsPage } from "./pages/settings/SettingsPage";
 import { isStaticRuntime } from "./runtime/runtime";
+import { handleAuthRedirect } from "./persistence/supabaseClient";
 
 const NotFoundPage: React.FC = () => (
   <main style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: "var(--space-6)", textAlign: "center" }}>
@@ -39,6 +40,12 @@ const NotFoundPage: React.FC = () => (
 export const App: React.FC = () => {
   const staticMode = isStaticRuntime();
   const Router = staticMode ? HashRouter : BrowserRouter;
+
+  React.useEffect(() => {
+    if (staticMode) {
+      void handleAuthRedirect();
+    }
+  }, [staticMode]);
   return (
     <ThemeProvider>
       <AuthProvider>

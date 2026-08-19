@@ -20,6 +20,7 @@ import type {
 } from "../types/api";
 import { getIndexedDbAdapter } from "../persistence/indexedDb";
 import type { PersistenceAdapter, StoredRecord } from "../persistence/types";
+import { LocalFirstSyncCoordinator } from "../persistence/syncEngine";
 import { STATIC_LOCAL_USER } from "../runtime/runtime";
 import { LanguageApiClient, type VocabularyEnrichment } from "../services/languageApi";
 import { buildGameItems, isGameType, publicGameItem, scoreGameAnswer, type GeneratedGameItem } from "../../shared/gameModes";
@@ -106,9 +107,11 @@ function suggestion(enriched?: VocabularyEnrichment) {
 
 export class StaticApiRouter {
   private readonly languageApi: LanguageApiClient;
+  private readonly syncCoordinator: LocalFirstSyncCoordinator;
 
   constructor(private readonly persistence: PersistenceAdapter = getIndexedDbAdapter()) {
     this.languageApi = new LanguageApiClient(persistence);
+    this.syncCoordinator = new LocalFirstSyncCoordinator(persistence);
   }
 
   async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
@@ -126,6 +129,7 @@ export class StaticApiRouter {
       if (method === "PATCH") {
         const updated = { ...current, ...body, nativeLanguage: "vi" } as UserSettings;
         await this.persistence.put("settings", { id: "local-settings", ...updated });
+        void this.syncCoordinator.queueLocalChange("settings", "local-settings", { id: "local-settings", ...updated }, false);
         return updated as T;
       }
       return current as T;
@@ -217,6 +221,7 @@ export class StaticApiRouter {
       progress: { status: "NEW", ease: 2.5, intervalDays: 0, repetitions: 0, nextReviewAt: null, lastReviewedAt: null, correctCount: 0, incorrectCount: 0 },
     };
     await this.persistence.put("vocabulary", asVocabularyRecord(item));
+    void this.syncCoordinator.queueLocalChange("vocabulary", item.id, item as unknown as StoredRecord, false);
     return { item, duplicate: false };
   }
 
@@ -268,21 +273,28 @@ export class StaticApiRouter {
   private async vocabularyItemRequest(id: string, action: string | undefined, method: string, body: any): Promise<unknown> {
     const item = await this.persistence.get<VocabularyItem>("vocabulary", id);
     if (!item) throw new Error("Không tìm thấy từ vựng.");
-    if (method === "DELETE") { await this.persistence.delete("vocabulary", id); return undefined; }
+    if (method === "DELETE") {
+      await this.persistence.delete("vocabulary", id);
+      void this.syncCoordinator.queueLocalChange("vocabulary", id, undefined, true);
+      return undefined;
+    }
     if (action === "review" || action === "answer") {
       const reviewed = reviewLocalVocabulary(item, body.action as ReviewAction);
       await this.persistence.put("vocabulary", asVocabularyRecord(reviewed));
+      void this.syncCoordinator.queueLocalChange("vocabulary", reviewed.id, reviewed as unknown as StoredRecord, false);
       await this.recordActivity({ studySeconds: 30 });
       return reviewed;
     }
     if (action === "favorite") {
       const updated = { ...item, favorite: Boolean(body.favorite), updatedAt: new Date().toISOString() };
       await this.persistence.put("vocabulary", asVocabularyRecord(updated));
+      void this.syncCoordinator.queueLocalChange("vocabulary", updated.id, updated as unknown as StoredRecord, false);
       return updated;
     }
     if (method === "PATCH") {
       const updated = { ...item, ...body, id: item.id, language: item.language, term: item.term, normalizedTerm: item.normalizedTerm, updatedAt: new Date().toISOString() };
       await this.persistence.put("vocabulary", asVocabularyRecord(updated));
+      void this.syncCoordinator.queueLocalChange("vocabulary", updated.id, updated as unknown as StoredRecord, false);
       return updated;
     }
     return item;
@@ -314,6 +326,7 @@ export class StaticApiRouter {
       wordCount: localWordCount(input.content, input.language), createdAt: now, updatedAt: now, sentences,
     };
     await this.persistence.put("readings", passage as ReadingPassage & StoredRecord);
+    void this.syncCoordinator.queueLocalChange("readings", passage.id, passage as unknown as StoredRecord, false);
     return passage;
   }
 
@@ -327,11 +340,16 @@ export class StaticApiRouter {
   private async readingRequest(id: string, action: string | undefined, method: string, body: any): Promise<unknown> {
     const passage = await this.persistence.get<ReadingPassage>("readings", id);
     if (!passage) throw new Error("Không tìm thấy bài đọc.");
-    if (method === "DELETE") { await this.persistence.delete("readings", id); return undefined; }
+    if (method === "DELETE") {
+      await this.persistence.delete("readings", id);
+      void this.syncCoordinator.queueLocalChange("readings", id, undefined, true);
+      return undefined;
+    }
     if (action === "translate") {
       const translation = await this.languageApi.translate(passage.content, passage.language);
       const updated = { ...passage, translationVi: translation, updatedAt: new Date().toISOString() };
       await this.persistence.put("readings", updated as ReadingPassage & StoredRecord);
+      void this.syncCoordinator.queueLocalChange("readings", updated.id, updated as unknown as StoredRecord, false);
       return { passageId: id, original: passage.content, translation, sourceLanguage: passage.language, targetLanguage: "vi" };
     }
     if (method === "PATCH") {
@@ -345,6 +363,7 @@ export class StaticApiRouter {
           : passage.sentences,
       };
       await this.persistence.put("readings", updated as ReadingPassage & StoredRecord);
+      void this.syncCoordinator.queueLocalChange("readings", updated.id, updated as unknown as StoredRecord, false);
       return updated;
     }
     return passage;
@@ -364,6 +383,7 @@ export class StaticApiRouter {
       quizzes: current.quizzes + Number(input.quizzes ?? 0),
     };
     await this.persistence.put("activities", updated);
+    void this.syncCoordinator.queueLocalChange("activities", updated.id, updated, false);
     return updated;
   }
 
@@ -437,7 +457,11 @@ export class StaticApiRouter {
     const next = stored.questions[currentIndex];
     const session: QuizSession = { ...stored.public, currentIndex, correct: correctCount, incorrect: stored.public.incorrect + (correct ? 0 : 1), score: Math.round(correctCount / stored.questions.length * 100), status: done ? "COMPLETED" : "ACTIVE", completedAt: done ? new Date().toISOString() : null, currentQuestion: next ? (({ answer: _, ...question }) => question)(next) : null };
     await this.persistence.put("quizSessions", { ...stored, public: session });
-    if (done) { await this.persistence.put("quizHistory", { ...session }); await this.recordActivity({ quizzes: 1, studySeconds: 60 }); }
+    if (done) {
+      await this.persistence.put("quizHistory", { ...session });
+      void this.syncCoordinator.queueLocalChange("quizHistory", session.id, { ...session }, false);
+      await this.recordActivity({ quizzes: 1, studySeconds: 60 });
+    }
     return { correct, expectedAnswer: current.answer, session };
   }
 

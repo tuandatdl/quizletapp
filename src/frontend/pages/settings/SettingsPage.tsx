@@ -19,6 +19,12 @@ import {
   Cloud,
   HelpCircle,
   Loader2,
+  RefreshCw,
+  LogIn,
+  LogOut,
+  Check,
+  AlertCircle,
+  AlertTriangle,
 } from "lucide-react";
 import { useLanguage } from "../../context/LanguageContext";
 import { useTheme } from "../../context/ThemeContext";
@@ -34,6 +40,9 @@ import { getIndexedDbAdapter } from "../../persistence/indexedDb";
 import { backupFileName, exportBackup, importBackup, previewBackup, validateBackup, type BackupPreview } from "../../persistence/backup";
 import type { StaticBackup } from "../../persistence/types";
 import { configureSpeechUtterance, getAvailableVoicesForLanguage } from "../../services/speech";
+import { getCloudAuthService } from "../../services/cloudAuth";
+import type { SyncMeta, SyncStatus } from "../../persistence/sync";
+import type { User } from "@supabase/supabase-js";
 
 export const SettingsPage: React.FC = () => {
   const { settings, updateSettings, isLoadingSettings } = useLanguage();
@@ -46,6 +55,104 @@ export const SettingsPage: React.FC = () => {
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [isPlayingPreview, setIsPlayingPreview] = useState<"en" | "zh" | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Cloud Sync state
+  const cloudAuth = getCloudAuthService();
+  const [cloudAvailable] = useState<boolean>(() => cloudAuth.isAvailable());
+  const [cloudUser, setCloudUser] = useState<User | null>(null);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>(() => cloudAuth.getSyncStatus());
+  const [syncMeta, setSyncMeta] = useState<SyncMeta | null>(null);
+  const [pendingCount, setPendingCount] = useState<number>(0);
+  const [emailInput, setEmailInput] = useState<string>("");
+  const [isSendingMagicLink, setIsSendingMagicLink] = useState<boolean>(false);
+  const [magicLinkSent, setMagicLinkSent] = useState<boolean>(false);
+  const [isSyncingManual, setIsSyncingManual] = useState<boolean>(false);
+
+  const refreshCloudState = async () => {
+    if (!cloudAuth.isAvailable()) return;
+    const user = await cloudAuth.getCurrentUser();
+    setCloudUser(user);
+    const meta = await cloudAuth.getSyncMeta();
+    setSyncMeta(meta);
+    const pending = await cloudAuth.getPendingCount();
+    setPendingCount(pending);
+  };
+
+  useEffect(() => {
+    if (!cloudAuth.isAvailable()) return;
+
+    void refreshCloudState();
+
+    const unsubscribeStatus = cloudAuth.onSyncStatusChange((status) => {
+      setSyncStatus(status);
+      void refreshCloudState();
+    });
+
+    const unsubscribeAuth = cloudAuth.onAuthStateChange((_event, session) => {
+      setCloudUser(session?.user ?? null);
+      void refreshCloudState();
+    });
+
+    const handleSyncComplete = () => {
+      void refreshCloudState();
+    };
+
+    window.addEventListener("tutrinh:sync-complete", handleSyncComplete);
+
+    return () => {
+      unsubscribeStatus();
+      unsubscribeAuth?.();
+      window.removeEventListener("tutrinh:sync-complete", handleSyncComplete);
+    };
+  }, []);
+
+  const handleSendMagicLink = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!emailInput.trim()) return;
+    setIsSendingMagicLink(true);
+    try {
+      const res = await cloudAuth.signInWithEmail(emailInput);
+      if (!res.success) {
+        error(res.error || "Không thể gửi email đăng nhập.");
+      } else {
+        setMagicLinkSent(true);
+        success("Đã gửi liên kết đăng nhập tới " + emailInput + ". Vui lòng kiểm tra hộp thư!");
+      }
+    } catch (err: any) {
+      error(getFriendlyErrorMessage(err));
+    } finally {
+      setIsSendingMagicLink(false);
+    }
+  };
+
+  const handleSignOutCloud = async () => {
+    try {
+      await cloudAuth.signOut();
+      setCloudUser(null);
+      setMagicLinkSent(false);
+      setEmailInput("");
+      success("Đã đăng xuất khỏi đám mây. Dữ liệu trên thiết bị được giữ nguyên.");
+    } catch (err: any) {
+      error(getFriendlyErrorMessage(err));
+    }
+  };
+
+  const handleManualSync = async () => {
+    setIsSyncingManual(true);
+    try {
+      const res = await cloudAuth.syncNow(true);
+      if (res.success) {
+        success(`Đồng bộ thành công! (+${res.pulledCount} từ đám mây, +${res.pushedCount} tải lên)`);
+      } else {
+        error(res.error || "Đồng bộ thất bại.");
+      }
+      await refreshCloudState();
+    } catch (err: any) {
+      error(getFriendlyErrorMessage(err));
+    } finally {
+      setIsSyncingManual(false);
+    }
+  };
 
   useEffect(() => {
     if (settings) {
@@ -464,47 +571,179 @@ export const SettingsPage: React.FC = () => {
           </div>
         </Card>
 
-        {/* 5. Local Storage & Cross-device Disclosure */}
+        {/* 5. Cloud Sync & Local Storage */}
         {isStaticRuntime() && (
-          <Card className="flex-col gap-4">
+          <Card className="flex-col gap-5">
             <div className="flex-row items-center justify-between" style={{ flexWrap: "wrap", gap: "8px" }}>
               <div className="flex-row items-center gap-2">
-                <Database size={20} color="var(--accent-en-primary)" />
+                <Cloud size={20} color="var(--accent-en-primary)" />
                 <div>
-                  <h2 style={{ fontSize: "var(--text-base)", fontWeight: 700 }}>Dữ liệu trên thiết bị</h2>
+                  <h2 style={{ fontSize: "var(--text-base)", fontWeight: 700 }}>Đồng bộ đám mây (Cloud Sync)</h2>
                   <p style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)" }}>
-                    Hiện tại dữ liệu học tập được lưu trữ cục bộ trong trình duyệt này (IndexedDB).
+                    Đồng bộ vốn từ vựng, tiến độ học tập và bài đọc đa thiết bị qua Supabase (Local-First)
                   </p>
                 </div>
               </div>
-              <Badge variant="default" size="sm">Cục bộ (IndexedDB)</Badge>
+
+              {!cloudAvailable ? (
+                <Badge variant="default" size="sm">Chưa cấu hình Supabase</Badge>
+              ) : syncStatus === "SYNCING" ? (
+                <Badge variant="en" size="sm">
+                  <Loader2 size={12} className="animate-spin" style={{ marginRight: "4px" }} />
+                  Đang đồng bộ...
+                </Badge>
+              ) : syncStatus === "IDLE" ? (
+                <Badge variant="en" size="sm">
+                  <Check size={12} style={{ marginRight: "4px" }} />
+                  Đã đồng bộ
+                </Badge>
+              ) : syncStatus === "PENDING_CHANGES" ? (
+                <Badge variant="default" size="sm">
+                  <RefreshCw size={12} style={{ marginRight: "4px" }} />
+                  {pendingCount > 0 ? `${pendingCount} thay đổi chưa tải lên` : "Có thay đổi chờ đồng bộ"}
+                </Badge>
+              ) : syncStatus === "OFFLINE" ? (
+                <Badge variant="default" size="sm">Đang ngoại tuyến</Badge>
+              ) : syncStatus === "ERROR" ? (
+                <Badge variant="error" size="sm">
+                  <AlertCircle size={12} style={{ marginRight: "4px" }} />
+                  Lỗi đồng bộ
+                </Badge>
+              ) : syncStatus === "ACCOUNT_MISMATCH" ? (
+                <Badge variant="error" size="sm">
+                  <AlertTriangle size={12} style={{ marginRight: "4px" }} />
+                  Khác tài khoản
+                </Badge>
+              ) : (
+                <Badge variant="default" size="sm">Chưa đăng nhập</Badge>
+              )}
             </div>
 
-            <p style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)" }}>
-              <strong>Đổi thiết bị?</strong> Hãy xuất file sao lưu bên dưới và nhập trên thiết bị mới để bảo toàn vốn từ vựng và tiến độ học tập.
-            </p>
-
-            <input ref={fileInputRef} type="file" accept="application/json,.json" hidden onChange={handleBackupFile} />
-            <div className="flex-row gap-3" style={{ flexWrap: "wrap" }}>
-              <Button type="button" variant="secondary" leftIcon={<Download size={16} />} onClick={handleExport}>
-                Xuất bản sao lưu
-              </Button>
-              <Button type="button" variant="secondary" leftIcon={<Upload size={16} />} onClick={() => fileInputRef.current?.click()}>
-                Nhập bản sao lưu
-              </Button>
-              <Button type="button" variant="danger" leftIcon={<Trash2 size={16} />} onClick={handleDeleteLocalData}>
-                Xóa dữ liệu trên thiết bị
-              </Button>
-            </div>
-
-            {/* Coming soon future cloud sync notice */}
-            <div style={{ marginTop: "8px", padding: "12px 14px", borderRadius: "var(--radius-md)", border: "1px dashed var(--border-strong)", backgroundColor: "var(--bg-muted)", display: "flex", alignItems: "flex-start", gap: "10px" }}>
-              <Cloud size={18} color="var(--text-tertiary)" style={{ flexShrink: 0, marginTop: "2px" }} />
-              <div style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)" }}>
-                <strong style={{ color: "var(--text-primary)" }}>Đồng bộ đám mây (Cloud Sync) — Sắp ra mắt</strong>
-                <p style={{ marginTop: "2px", color: "var(--text-tertiary)" }}>
-                  Tính năng đăng nhập tài khoản và tự động đồng bộ thời gian thực qua Supabase sẽ được ra mắt trong giai đoạn tiếp theo.
+            {/* Cloud Sync State Body */}
+            {!cloudAvailable ? (
+              <div style={{ padding: "14px 16px", borderRadius: "var(--radius-md)", backgroundColor: "var(--bg-muted)", border: "1px dashed var(--border-strong)" }}>
+                <p style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)", lineHeight: "1.5" }}>
+                  Đồng bộ đám mây chưa được kích hoạt cho bản dựng này (cần cung cấp <code>VITE_SUPABASE_URL</code> và <code>VITE_SUPABASE_ANON_KEY</code>).
+                  Toàn bộ dữ liệu của bạn đang được lưu an toàn 100% trong trình duyệt (IndexedDB).
                 </p>
+              </div>
+            ) : !cloudUser ? (
+              /* Signed Out State -> Email Magic Link Sign In */
+              <div style={{ padding: "16px", borderRadius: "var(--radius-md)", backgroundColor: "var(--bg-muted)", border: "1px solid var(--border-default)" }} className="flex-col gap-3">
+                <div style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)" }}>
+                  <strong style={{ color: "var(--text-primary)" }}>Đăng nhập để đồng bộ dữ liệu đa thiết bị</strong>
+                  <p style={{ marginTop: "2px" }}>
+                    Nhập email của bạn để nhận liên kết đăng nhập nhanh (Magic Link). Bạn vẫn có thể sử dụng toàn bộ tính năng mà không cần đăng nhập.
+                  </p>
+                </div>
+
+                {magicLinkSent ? (
+                  <div style={{ padding: "12px", backgroundColor: "var(--accent-en-subtle)", borderRadius: "var(--radius-sm)", border: "1px solid var(--accent-en-border)", display: "flex", alignItems: "center", gap: "8px" }}>
+                    <Check size={16} color="var(--accent-en-primary)" />
+                    <span style={{ fontSize: "var(--text-sm)", color: "var(--accent-en-text)", fontWeight: 600 }}>
+                      Đã gửi email đăng nhập tới <strong>{emailInput}</strong>. Hãy mở email để xác nhận!
+                    </span>
+                  </div>
+                ) : (
+                  <form onSubmit={handleSendMagicLink} className="flex-row gap-2" style={{ flexWrap: "wrap" }}>
+                    <input
+                      type="email"
+                      required
+                      placeholder="vidu@gmail.com"
+                      value={emailInput}
+                      onChange={(e) => setEmailInput(e.target.value)}
+                      style={{
+                        flex: 1,
+                        minWidth: "220px",
+                        padding: "8px 12px",
+                        borderRadius: "var(--radius-sm)",
+                        border: "1px solid var(--border-default)",
+                        backgroundColor: "var(--bg-surface)",
+                        color: "var(--text-primary)",
+                        fontSize: "var(--text-sm)",
+                      }}
+                    />
+                    <Button
+                      type="submit"
+                      variant="primary"
+                      size="sm"
+                      isLoading={isSendingMagicLink}
+                      leftIcon={<LogIn size={15} />}
+                    >
+                      Gửi liên kết đăng nhập
+                    </Button>
+                  </form>
+                )}
+              </div>
+            ) : (
+              /* Signed In State */
+              <div style={{ padding: "16px", borderRadius: "var(--radius-md)", backgroundColor: "var(--bg-surface)", border: "1px solid var(--border-strong)" }} className="flex-col gap-3">
+                <div className="flex-row justify-between items-center" style={{ flexWrap: "wrap", gap: "8px" }}>
+                  <div>
+                    <span style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)" }}>Tài khoản đám mây:</span>
+                    <p style={{ fontSize: "var(--text-sm)", fontWeight: 700, color: "var(--text-primary)" }}>{cloudUser.email}</p>
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <span style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)" }}>Đồng bộ lần cuối:</span>
+                    <p style={{ fontSize: "var(--text-xs)", color: "var(--text-primary)", fontWeight: 600 }}>
+                      {syncMeta?.lastSyncAt ? new Date(syncMeta.lastSyncAt).toLocaleString("vi-VN") : "Chưa có"}
+                    </p>
+                  </div>
+                </div>
+
+                {syncMeta?.lastSyncError && (
+                  <div style={{ padding: "8px 12px", borderRadius: "var(--radius-sm)", backgroundColor: "var(--accent-zh-subtle)", border: "1px solid var(--accent-zh-border)", fontSize: "var(--text-xs)", color: "var(--accent-zh-text)" }}>
+                    ⚠️ {syncMeta.lastSyncError}
+                  </div>
+                )}
+
+                <div className="flex-row gap-2" style={{ marginTop: "4px", flexWrap: "wrap" }}>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleManualSync}
+                    isLoading={isSyncingManual || syncStatus === "SYNCING"}
+                    leftIcon={<RefreshCw size={14} />}
+                  >
+                    Đồng bộ ngay
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleSignOutCloud}
+                    leftIcon={<LogOut size={14} />}
+                  >
+                    Đăng xuất
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {/* Local Backup / Restore Section */}
+            <div style={{ borderTop: "1px solid var(--border-default)", paddingTop: "14px" }} className="flex-col gap-3">
+              <div className="flex-row items-center justify-between" style={{ flexWrap: "wrap", gap: "8px" }}>
+                <div>
+                  <h3 style={{ fontSize: "var(--text-sm)", fontWeight: 700 }}>Sao lưu & Dữ liệu cục bộ (IndexedDB)</h3>
+                  <p style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)" }}>
+                    Xuất hoặc nhập file sao lưu JSON an toàn trên máy
+                  </p>
+                </div>
+                <Badge variant="default" size="sm">Local Storage</Badge>
+              </div>
+
+              <input ref={fileInputRef} type="file" accept="application/json,.json" hidden onChange={handleBackupFile} />
+              <div className="flex-row gap-3" style={{ flexWrap: "wrap" }}>
+                <Button type="button" variant="secondary" size="sm" leftIcon={<Download size={15} />} onClick={handleExport}>
+                  Xuất file JSON
+                </Button>
+                <Button type="button" variant="secondary" size="sm" leftIcon={<Upload size={15} />} onClick={() => fileInputRef.current?.click()}>
+                  Nhập file JSON
+                </Button>
+                <Button type="button" variant="danger" size="sm" leftIcon={<Trash2 size={15} />} onClick={handleDeleteLocalData}>
+                  Xóa dữ liệu cục bộ
+                </Button>
               </div>
             </div>
 

@@ -5,7 +5,7 @@ import {
   type PersistenceAdapter,
   type StoreName,
   type StoredRecord,
-} from "./types";
+} from "./types.js";
 
 function requestResult<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -30,7 +30,7 @@ export class IndexedDbAdapter implements PersistenceAdapter {
     private readonly databaseName = INDEXED_DB_NAME,
     private readonly indexedDb: IDBFactory = globalThis.indexedDB,
   ) {
-    if (!indexedDb) throw new Error("Trình duyệt không hỗ trợ IndexedDB.");
+    if (!indexedDb && typeof window !== "undefined") throw new Error("Trình duyệt không hỗ trợ IndexedDB.");
   }
 
   private open(): Promise<IDBDatabase> {
