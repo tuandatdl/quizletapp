@@ -68,10 +68,11 @@ export const FlashcardPage: React.FC = () => {
     if (!settings?.autoPlayAudio || !isFlipped || !currentCard || !("speechSynthesis" in window)) return;
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(currentCard.term);
-    configureSpeechUtterance(utterance, currentCard.language, settings.audioSpeed, window.speechSynthesis.getVoices());
+    const preferredVoice = currentCard.language === "zh" ? settings.preferredVoiceZh : settings.preferredVoiceEn;
+    configureSpeechUtterance(utterance, currentCard.language, settings.audioSpeed, window.speechSynthesis.getVoices(), preferredVoice);
     window.speechSynthesis.speak(utterance);
     return () => window.speechSynthesis.cancel();
-  }, [currentCard?.id, isFlipped, settings?.autoPlayAudio, settings?.audioSpeed]);
+  }, [currentCard?.id, isFlipped, settings?.autoPlayAudio, settings?.audioSpeed, settings?.preferredVoiceEn, settings?.preferredVoiceZh]);
 
   const handleFlip = () => {
     setIsFlipped((prev) => !prev);

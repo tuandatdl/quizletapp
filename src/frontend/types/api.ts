@@ -53,6 +53,8 @@ export interface UserSettings {
   dailyGoal: number;
   audioSpeed: 0.75 | 1 | 1.25;
   autoPlayAudio: boolean;
+  preferredVoiceEn?: string;
+  preferredVoiceZh?: string;
   showTranslation: boolean;
   showPinyin: boolean;
   showHanzi: boolean;

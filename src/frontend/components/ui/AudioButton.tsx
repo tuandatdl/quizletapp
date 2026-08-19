@@ -81,7 +81,8 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(speechText);
     utteranceRef.current = utterance;
-    configureSpeechUtterance(utterance, lang, currentSpeed, window.speechSynthesis.getVoices());
+    const preferredVoice = lang === "zh" ? settings?.preferredVoiceZh : settings?.preferredVoiceEn;
+    configureSpeechUtterance(utterance, lang, currentSpeed, window.speechSynthesis.getVoices(), preferredVoice);
 
     utterance.onstart = () => mountedRef.current && setIsPlaying(true);
     utterance.onend = () => {
@@ -95,7 +96,6 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
     };
 
     window.speechSynthesis.speak(utterance);
-    toastInfo("Đang phát âm bằng giọng đọc trình duyệt (Fallback)");
   };
 
   const playHtmlAudio = async (url: string, fallbackText?: string) => {
