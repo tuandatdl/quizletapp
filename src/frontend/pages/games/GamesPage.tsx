@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   Gamepad2,
@@ -22,6 +22,7 @@ import { Badge } from "../../components/ui/Badge";
 import { AudioButton } from "../../components/ui/AudioButton";
 import { getFriendlyErrorMessage } from "../../api/client";
 import type { GameSession, Language } from "../../types/api";
+import type { GameType } from "../../../shared/gameModes";
 
 const GAME_TYPES = [
   {
@@ -33,7 +34,7 @@ const GAME_TYPES = [
   {
     id: "MEMORY" as const,
     title: "Thẻ bài trí nhớ (Memory Cards)",
-    desc: "Lật mở và ghi nhớ vị trí các cặp từ",
+    desc: "Lật thẻ và tự đánh giá mức độ ghi nhớ",
     icon: Sparkles,
   },
   {
@@ -73,6 +74,8 @@ export const GamesPage: React.FC = () => {
     correct: boolean;
     expected: string;
   } | null>(null);
+  const [memoryRevealed, setMemoryRevealed] = useState(false);
+  const [secondsRemaining, setSecondsRemaining] = useState<number | null>(null);
 
   const isZh = (session?.language ?? language) === "zh";
 
@@ -87,6 +90,8 @@ export const GamesPage: React.FC = () => {
         count: 10,
       });
       setSession(newSession);
+      setMemoryRevealed(false);
+      setSecondsRemaining(newSession.timerSeconds);
     } catch (err: any) {
       error(getFriendlyErrorMessage(err));
     } finally {
@@ -94,16 +99,15 @@ export const GamesPage: React.FC = () => {
     }
   };
 
-  const handleAnswer = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!session || !session.currentItem || !inputAnswer.trim() || isSubmitting) return;
+  const submitAnswer = async (answer: string) => {
+    if (!session || !session.currentItem || !answer.trim() || isSubmitting) return;
 
     setIsSubmitting(true);
     try {
       const res = await gamesApi.answer(
         session.id,
         session.currentItem.id,
-        inputAnswer.trim()
+        answer.trim()
       );
       setFeedback({
         correct: res.correct,
@@ -121,7 +125,23 @@ export const GamesPage: React.FC = () => {
   const handleNext = () => {
     setFeedback(null);
     setInputAnswer("");
+    setMemoryRevealed(false);
   };
+
+  const handleAnswer = (event: React.FormEvent) => {
+    event.preventDefault();
+    void submitAnswer(inputAnswer);
+  };
+
+  useEffect(() => {
+    if (session?.type !== "SPEED_CHALLENGE" || !session.currentItem || feedback || secondsRemaining === null || secondsRemaining <= 0) return;
+    const timer = window.setInterval(() => setSecondsRemaining((value) => Math.max(0, (value ?? 0) - 1)), 1000);
+    return () => window.clearInterval(timer);
+  }, [feedback, secondsRemaining, session?.currentItem?.id, session?.type]);
+
+  useEffect(() => {
+    if (session?.type === "SPEED_CHALLENGE" && secondsRemaining === 0 && !feedback && !isSubmitting) void submitAnswer("__timeout__");
+  }, [feedback, isSubmitting, secondsRemaining, session?.type]);
 
   // 1. Game Selection Screen
   if (!session) {
@@ -276,6 +296,8 @@ export const GamesPage: React.FC = () => {
 
   // 3. Active Gameplay Shell
   const item = session.currentItem;
+  const gameType = session.type as GameType;
+  const modeTitle = GAME_TYPES.find((mode) => mode.id === gameType)?.title ?? "Trò chơi";
 
   return (
     <div className="page-container flex-col gap-6 animate-fade-in" style={{ maxWidth: "680px" }}>
@@ -292,10 +314,14 @@ export const GamesPage: React.FC = () => {
           <span style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>
             Đã qua: {session.completedCount} từ
           </span>
+          {gameType === "SPEED_CHALLENGE" && (
+            <Badge variant="default">⏱ {secondsRemaining ?? session.timerSeconds ?? 0}s</Badge>
+          )}
         </div>
       </div>
 
       <Card elevated className="flex-col gap-6" style={{ padding: "var(--space-8)" }}>
+        <div style={{ textAlign: "center", fontWeight: 700, color: isZh ? "var(--accent-zh-text)" : "var(--accent-en-text)" }}>{modeTitle}</div>
         <div style={{ textAlign: "center", padding: "var(--space-4) 0" }}>
           <div
             className={isZh ? "hanzi" : ""}
@@ -309,13 +335,35 @@ export const GamesPage: React.FC = () => {
             {item?.prompt}
           </div>
 
-          <div className="flex-row justify-center">
+          {item?.hint && <p style={{ color: "var(--text-secondary)", fontSize: "var(--text-sm)", marginBottom: "var(--space-3)" }}>{item.hint}</p>}
+          {(gameType === "LISTENING_CHOICE" || item?.audioText) && <div className="flex-row justify-center">
             <AudioButton text={item?.audioText || item?.prompt} language={session.language} size="md" />
-          </div>
+          </div>}
         </div>
 
-        {/* Input Form */}
+        {/* Each game type intentionally uses a distinct interaction, data prompt and answer direction. */}
         {!feedback ? (
+          gameType === "MATCHING" || gameType === "LISTENING_CHOICE" ? (
+            <div className="flex-col gap-3">
+              <p style={{ textAlign: "center", fontSize: "var(--text-sm)", color: "var(--text-secondary)" }}>
+                {gameType === "MATCHING" ? "Chọn nghĩa tiếng Việt khớp với từ trên." : "Nghe trước, rồi chọn nghĩa đúng."}
+              </p>
+              {item?.choices?.map((choice, index) => (
+                <Button key={`${choice}-${index}`} variant="secondary" size="lg" onClick={() => void submitAnswer(choice)}>{choice}</Button>
+              ))}
+            </div>
+          ) : gameType === "MEMORY" ? (
+            <div className="flex-col gap-4" style={{ textAlign: "center" }}>
+              {!memoryRevealed ? <Button size="lg" variant={isZh ? "zh" : "primary"} onClick={() => setMemoryRevealed(true)}>Lật thẻ</Button> : <>
+                <div className={isZh ? "hanzi" : ""} style={{ fontSize: "2rem", fontWeight: 800 }}>{item?.revealText}</div>
+                <p style={{ color: "var(--text-secondary)" }}>{item?.hint}</p>
+                <div className="flex-row gap-3 justify-center">
+                  <Button variant="primary" onClick={() => void submitAnswer(item?.revealText ?? "__forgot__")}>Đã nhớ</Button>
+                  <Button variant="secondary" onClick={() => void submitAnswer("__forgot__")}>Cần ôn lại</Button>
+                </div>
+              </>}
+            </div>
+          ) : (
           <form onSubmit={handleAnswer} className="flex-col gap-4">
             <input
               type="text"
@@ -323,7 +371,7 @@ export const GamesPage: React.FC = () => {
               required
               value={inputAnswer}
               onChange={(e) => setInputAnswer(e.target.value)}
-              placeholder="Nhập nghĩa hoặc từ vựng tương ứng..."
+              placeholder={gameType === "FILL_WORD" ? "Nhập từ hoàn chỉnh..." : "Nhập từ/cụm từ tương ứng..."}
               style={{
                 width: "100%",
                 padding: "14px 16px",
@@ -346,6 +394,7 @@ export const GamesPage: React.FC = () => {
               Gửi câu trả lời
             </Button>
           </form>
+          )
         ) : (
           <div
             className="animate-pop-in flex-col gap-4"

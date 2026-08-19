@@ -4,6 +4,7 @@ import { ttsApi } from "../../api/tts.api";
 import { useToast } from "../../context/ToastContext";
 import { useLanguage } from "../../context/LanguageContext";
 import type { Language } from "../../types/api";
+import { configureSpeechUtterance } from "../../services/speech";
 
 let activeHtmlAudio: HTMLAudioElement | null = null;
 
@@ -80,8 +81,7 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(speechText);
     utteranceRef.current = utterance;
-    utterance.lang = lang === "zh" ? "zh-CN" : "en-US";
-    utterance.rate = currentSpeed;
+    configureSpeechUtterance(utterance, lang, currentSpeed, window.speechSynthesis.getVoices());
 
     utterance.onstart = () => mountedRef.current && setIsPlaying(true);
     utterance.onend = () => {

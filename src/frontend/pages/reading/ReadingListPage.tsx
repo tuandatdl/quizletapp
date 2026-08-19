@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { FileText, Plus, BookOpen, Clock, ArrowRight, Trash2 } from "lucide-react";
 import { readingApi } from "../../api/reading.api";
 import { useLanguage } from "../../context/LanguageContext";
@@ -13,8 +13,10 @@ import { EmptyState } from "../../components/ui/EmptyState";
 import { CardSkeleton } from "../../components/ui/Skeleton";
 import { LanguageSelector } from "../../components/ui/LanguageSelector";
 import type { Language, ReadingPassageSummary } from "../../types/api";
+import { APP_ROUTES } from "../../runtime/routes";
 
 export const ReadingListPage: React.FC = () => {
+  const navigate = useNavigate();
   const { language } = useLanguage();
   const { success, error } = useToast();
 
@@ -78,7 +80,7 @@ export const ReadingListPage: React.FC = () => {
             ariaLabel="Lọc theo ngôn ngữ"
           />
 
-          <Link to="/reading/new">
+          <Link to={APP_ROUTES.addReading}>
             <Button variant="primary" size="md" leftIcon={<Plus size={16} />}>
               Thêm bài đọc
             </Button>
@@ -99,7 +101,7 @@ export const ReadingListPage: React.FC = () => {
           title="Bạn chưa có bài đọc nào"
           description="Hãy tạo bài đọc mới để bắt đầu trải nghiệm đọc tương tác, bôi đen dịch và luyện phát âm."
           actionText="+ Thêm bài đọc đầu tiên"
-          onAction={() => (window.location.href = "/reading/new")}
+          onAction={() => navigate(APP_ROUTES.addReading)}
         />
       ) : (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))", gap: "20px" }}>
