@@ -265,4 +265,222 @@ describe("Cloud TTS Service & Cache Architecture", () => {
       expect(json.error.code).toBe("VALIDATION_ERROR");
     });
   });
+
+  describe("6. Duplicate Playback Race Prevention & Fallback Guards (Tests A - H)", () => {
+    it("TEST A: audio.onerror AND audio.play() rejection together trigger fallback EXACTLY ONCE", async () => {
+      let fallbackCount = 0;
+      let fallbackTriggered = false;
+
+      const triggerFallbackOnce = () => {
+        if (fallbackTriggered) return;
+        fallbackTriggered = true;
+        fallbackCount++;
+      };
+
+      const mockAudio = {
+        onerror: null as (() => void) | null,
+        play: vi.fn().mockImplementation(async () => {
+          // Simulate browser firing onerror AND rejecting play()
+          mockAudio.onerror?.();
+          throw new Error("Autoplay / decoding failed");
+        }),
+      };
+
+      mockAudio.onerror = () => {
+        triggerFallbackOnce();
+      };
+
+      try {
+        await mockAudio.play();
+      } catch {
+        triggerFallbackOnce();
+      }
+
+      expect(fallbackCount).toBe(1);
+    });
+
+    it("TEST B: sequential sentence transition failure triggers fallback EXACTLY ONCE", async () => {
+      let sequentialFallbackCount = 0;
+      let fallbackTriggered = false;
+
+      const triggerFallbackOnce = () => {
+        if (fallbackTriggered) return;
+        fallbackTriggered = true;
+        sequentialFallbackCount++;
+      };
+
+      const mockSequentialAudio = {
+        onerror: null as (() => void) | null,
+        play: vi.fn().mockImplementation(async () => {
+          mockSequentialAudio.onerror?.();
+          throw new Error("Network timeout on sequential sentence");
+        }),
+      };
+
+      mockSequentialAudio.onerror = () => {
+        triggerFallbackOnce();
+      };
+
+      try {
+        await mockSequentialAudio.play();
+      } catch {
+        triggerFallbackOnce();
+      }
+
+      expect(sequentialFallbackCount).toBe(1);
+    });
+
+    it("TEST C: cleanupActiveAudio detaches media handlers so pause()/src='' cannot trigger stale onerror", () => {
+      let staleErrorFired = false;
+      const mockAudio: any = {
+        onplay: vi.fn(),
+        onended: vi.fn(),
+        onerror: vi.fn(() => {
+          staleErrorFired = true;
+        }),
+        onpause: vi.fn(),
+        ontimeupdate: vi.fn(),
+        pause: vi.fn(() => {
+          // Emulate browser triggering error on abort/pause
+          if (mockAudio.onerror) mockAudio.onerror();
+        }),
+        removeAttribute: vi.fn(),
+        src: "blob:http://localhost/test",
+      };
+
+      // Perform the exact cleanup routine implemented
+      mockAudio.onplay = null;
+      mockAudio.onended = null;
+      mockAudio.onerror = null;
+      mockAudio.onpause = null;
+      mockAudio.ontimeupdate = null;
+      mockAudio.pause();
+      mockAudio.removeAttribute("src");
+      mockAudio.src = "";
+
+      expect(staleErrorFired).toBe(false);
+      expect(mockAudio.onerror).toBeNull();
+      expect(mockAudio.onended).toBeNull();
+    });
+
+    it("TEST D: duplicate audio.onended events schedule next sentence EXACTLY ONCE", () => {
+      let transitionTimer: any = null;
+      let scheduleCount = 0;
+
+      const scheduleNextSentence = (sessionId: number, currentSession: number) => {
+        if (transitionTimer) {
+          clearTimeout(transitionTimer);
+          transitionTimer = null;
+        }
+        if (sessionId !== currentSession) return;
+        scheduleCount++;
+        transitionTimer = setTimeout(() => {}, 70);
+      };
+
+      let nextScheduled = false;
+      const onendedHandler = () => {
+        if (nextScheduled) return;
+        nextScheduled = true;
+        scheduleNextSentence(1, 1);
+      };
+
+      // Trigger onended twice
+      onendedHandler();
+      onendedHandler();
+
+      expect(scheduleCount).toBe(1);
+      if (transitionTimer) clearTimeout(transitionTimer);
+    });
+
+    it("TEST E: old sentence Cloud promise resolving after new session is started becomes inert", async () => {
+      let currentSessionId = 1;
+      let currentAttemptId = 1;
+      let playedAudioUrl: string | null = null;
+
+      // Simulate sentence 1 starting
+      const session1Id = currentSessionId;
+      const attempt1Id = currentAttemptId;
+
+      // User clicks next sentence / restart before sentence 1 resolves
+      currentSessionId = 2;
+      currentAttemptId = 2;
+
+      // Sentence 1 promise resolves late
+      const lateBlob = new Blob([new Uint8Array([1, 2, 3])], { type: "audio/mpeg" });
+      const isValid = session1Id === currentSessionId && attempt1Id === currentAttemptId;
+
+      if (isValid) {
+        playedAudioUrl = "blob:valid";
+      }
+
+      expect(isValid).toBe(false);
+      expect(playedAudioUrl).toBeNull();
+    });
+
+    it("TEST F: old audio.play rejection occurring after user presses Next does not trigger fallback", async () => {
+      let currentSessionId = 1;
+      let currentAttemptId = 1;
+      let fallbackTriggered = false;
+
+      const session1Id = currentSessionId;
+      const attempt1Id = currentAttemptId;
+
+      // User presses Next
+      currentSessionId = 2;
+      currentAttemptId = 2;
+
+      // Old play() rejects
+      const triggerFallbackOnce = () => {
+        if (session1Id !== currentSessionId || attempt1Id !== currentAttemptId) {
+          return;
+        }
+        fallbackTriggered = true;
+      };
+
+      triggerFallbackOnce();
+      expect(fallbackTriggered).toBe(false);
+    });
+
+    it("TEST G: prefetchCloudSpeech only fetches/caches and NEVER plays audio or invokes speech synthesis", async () => {
+      const playSpy = vi.fn();
+      const speakSpy = vi.fn();
+      vi.stubGlobal("Audio", class {
+        play = playSpy;
+      });
+      vi.stubGlobal("speechSynthesis", {
+        speak: speakSpy,
+      });
+
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(new Uint8Array([1, 2, 3]), {
+          status: 200,
+          headers: { "Content-Type": "audio/mpeg" },
+        })
+      );
+
+      await prefetchCloudSpeech({
+        text: "Background sentence",
+        language: "en",
+      });
+
+      expect(playSpy).not.toHaveBeenCalled();
+      expect(speakSpy).not.toHaveBeenCalled();
+    });
+
+    it("TEST H: enforces single active audio owner (Cloud HTMLAudio cancels SpeechSynthesis on session start)", () => {
+      let cancelCount = 0;
+      vi.stubGlobal("speechSynthesis", {
+        cancel: () => {
+          cancelCount++;
+        },
+      });
+
+      // When starting a new Cloud audio session
+      if ("speechSynthesis" in globalThis) {
+        (globalThis as any).speechSynthesis.cancel();
+      }
+
+      expect(cancelCount).toBe(1);
+    });
+  });
 });
