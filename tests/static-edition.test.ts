@@ -193,6 +193,183 @@ describe("automatic enrichment", () => {
     expect(preview.items.map((item: any) => item.suggestion.meaningVi)).toEqual(["đi", "từ bỏ"]);
   });
 
+  it("populates duplicate suggestion from existing local vocabulary without calling enrichment API for duplicates", async () => {
+    vi.stubEnv("VITE_LANGUAGE_API_URL", "https://worker.test");
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ data: { items: [
+      { term: "car", language: "en", meaningVi: "xe hơi", partOfSpeech: "noun" },
+    ] } }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const persistence = adapter();
+    await persistence.put("vocabulary", {
+      id: "word-go",
+      userId: "local-user",
+      language: "en",
+      term: "go",
+      normalizedTerm: "go",
+      pronunciation: "/ɡoʊ/",
+      meaningVi: "đi",
+      partOfSpeech: "verb",
+      example: "I go to school",
+      exampleTranslation: "Tôi đi học",
+      topic: "daily",
+      level: "A1",
+      note: null,
+      source: "MANUAL",
+      sourceReadingId: null,
+      audioUrl: null,
+      audioAvailable: false,
+      favorite: false,
+      metadata: { ipa: "/ɡoʊ/", cefr: "A1", synonyms: ["move", "travel"] },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      progress: { status: "NEW", ease: 2.5, intervalDays: 0, repetitions: 0, nextReviewAt: null, lastReviewedAt: null, correctCount: 0, incorrectCount: 0 },
+    });
+
+    const router = new StaticApiRouter(persistence);
+    const preview = await router.request<any>("/api/vocabulary/bulk-preview", {
+      method: "POST",
+      body: JSON.stringify({ language: "en", input: "go\ncar" }),
+    });
+
+    // 1. Existing word "go" must be marked duplicate=true, status=EXISTS, and have populated suggestion
+    const goItem = preview.items.find((item: any) => item.normalizedTerm === "go");
+    expect(goItem).toBeDefined();
+    expect(goItem.duplicate).toBe(true);
+    expect(goItem.status).toBe("EXISTS");
+    expect(goItem.suggestion).toMatchObject({
+      meaningVi: "đi",
+      pronunciation: "/ɡoʊ/",
+      partOfSpeech: "verb",
+      example: "I go to school",
+      exampleTranslation: "Tôi đi học",
+      topic: "daily",
+      cefr: "A1",
+      synonyms: ["move", "travel"],
+    });
+
+    // 2. New word "car" is enriched via API
+    const carItem = preview.items.find((item: any) => item.normalizedTerm === "car");
+    expect(carItem).toBeDefined();
+    expect(carItem.duplicate).toBe(false);
+    expect(carItem.status).toBe("READY");
+    expect(carItem.suggestion.meaningVi).toBe("xe hơi");
+
+    // 3. API was ONLY called for "car", not "go"
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const bodySent = JSON.parse(String((fetchMock.mock.calls as any)[0][1].body));
+    expect(bodySent.terms).toEqual(["car"]);
+  });
+
+  it("populates Chinese metadata in duplicate suggestion from existing local vocabulary", async () => {
+    const persistence = adapter();
+    await persistence.put("vocabulary", {
+      id: "word-zh-1",
+      userId: "local-user",
+      language: "zh",
+      term: "学习",
+      normalizedTerm: "学习",
+      pronunciation: "xuéxí",
+      meaningVi: "học tập",
+      partOfSpeech: "verb",
+      example: "我喜欢学习中文",
+      exampleTranslation: "Tôi thích học tiếng Trung",
+      topic: null,
+      level: "HSK1",
+      note: null,
+      source: "MANUAL",
+      sourceReadingId: null,
+      audioUrl: null,
+      audioAvailable: false,
+      favorite: false,
+      metadata: { pinyin: "xuéxí", simplified: "学习", traditional: "學習", hskLevel: 1, toneData: [2, 2] },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      progress: { status: "NEW", ease: 2.5, intervalDays: 0, repetitions: 0, nextReviewAt: null, lastReviewedAt: null, correctCount: 0, incorrectCount: 0 },
+    });
+
+    const router = new StaticApiRouter(persistence);
+    const preview = await router.request<any>("/api/vocabulary/bulk-preview", {
+      method: "POST",
+      body: JSON.stringify({ language: "zh", input: "学 习" }),
+    });
+
+    expect(preview.items[0]).toMatchObject({
+      term: "学 习",
+      normalizedTerm: "学习",
+      duplicate: true,
+      status: "EXISTS",
+      suggestion: {
+        meaningVi: "học tập",
+        pinyin: "xuéxí",
+        traditional: "學習",
+        hskLevel: 1,
+        toneData: [2, 2],
+      },
+    });
+  });
+
+  it("passes refresh=true on retry to re-enrich newly failed terms", async () => {
+    vi.stubEnv("VITE_LANGUAGE_API_URL", "https://worker.test");
+    const persistence = adapter();
+    // Cache a previous enrichment in IndexedDB
+    await persistence.put("enrichmentCache", {
+      id: "vocabulary-enrichment-v1:en:car",
+      version: "vocabulary-enrichment-v1",
+      language: "en",
+      normalizedTerm: "car",
+      value: { term: "car", language: "en", meaningVi: "xe hơi cũ", partOfSpeech: "noun" },
+      updatedAt: new Date().toISOString(),
+    });
+
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ data: { items: [
+      { term: "car", language: "en", meaningVi: "xe ô tô mới", partOfSpeech: "noun" },
+    ] } }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const router = new StaticApiRouter(persistence);
+
+    // Without refresh: should use cache, fetch not called
+    const normalPreview = await router.request<any>("/api/vocabulary/bulk-preview", {
+      method: "POST",
+      body: JSON.stringify({ language: "en", input: "car", refresh: false }),
+    });
+    expect(normalPreview.items[0].suggestion.meaningVi).toBe("xe hơi cũ");
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // With refresh=true: should bypass cache and call worker API
+    const refreshedPreview = await router.request<any>("/api/vocabulary/bulk-preview", {
+      method: "POST",
+      body: JSON.stringify({ language: "en", input: "car", refresh: true }),
+    });
+    expect(refreshedPreview.items[0].suggestion.meaningVi).toBe("xe ô tô mới");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("correctly filters retry candidates (excludes duplicates, includes new failed items)", () => {
+    const needsEnrichmentRetry = (item: { duplicate: boolean; enrichmentState: string; meaningVi: string }) =>
+      !item.duplicate &&
+      (
+        item.enrichmentState === "failed" ||
+        !item.meaningVi.trim()
+      );
+
+    // Duplicate with meaning -> NO retry
+    expect(needsEnrichmentRetry({ duplicate: true, enrichmentState: "exists", meaningVi: "đi" })).toBe(false);
+
+    // Duplicate with empty meaning (legacy/corrupt) -> NO generic retry
+    expect(needsEnrichmentRetry({ duplicate: true, enrichmentState: "exists", meaningVi: "" })).toBe(false);
+
+    // New item failed -> MUST retry
+    expect(needsEnrichmentRetry({ duplicate: false, enrichmentState: "failed", meaningVi: "" })).toBe(true);
+
+    // New item with partial empty meaning -> MUST retry
+    expect(needsEnrichmentRetry({ duplicate: false, enrichmentState: "partial", meaningVi: "" })).toBe(true);
+
+    // New item ready with meaning -> NO retry
+    expect(needsEnrichmentRetry({ duplicate: false, enrichmentState: "ready", meaningVi: "xe hơi" })).toBe(false);
+  });
+
   it("does not lose a saved reading when translation is offline", async () => {
     vi.stubEnv("VITE_LANGUAGE_API_URL", "https://worker.test");
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));

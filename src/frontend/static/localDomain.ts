@@ -5,7 +5,9 @@ export function createLocalId(): string {
 }
 
 export function normalizeLocalTerm(value: string, language: Language): string {
-  return value.normalize("NFKC").trim().replace(/\s+/gu, " ").toLocaleLowerCase(language === "zh" ? "zh-CN" : "en-US");
+  return language === "en"
+    ? value.normalize("NFKC").trim().replace(/\s+/gu, " ").toLocaleLowerCase("en-US")
+    : value.normalize("NFKC").replace(/\s+/gu, "").trim();
 }
 
 export function parseLocalQuickInput(input: string, language: Language): string[] {

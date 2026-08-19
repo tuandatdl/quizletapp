@@ -86,6 +86,13 @@ const toEditablePreview = (item: BulkVocabularyPreview["items"][number], idx: nu
   enrichmentError: item.error?.message,
 });
 
+const needsEnrichmentRetry = (item: EditablePreviewItem): boolean =>
+  !item.duplicate &&
+  (
+    item.enrichmentState === "failed" ||
+    !item.meaningVi.trim()
+  );
+
 export const AddVocabularyPage: React.FC = () => {
   const { language: currentAppLang } = useLanguage();
   const { success, error, info } = useToast();
@@ -97,6 +104,7 @@ export const AddVocabularyPage: React.FC = () => {
   // Quick Add State
   const [quickInput, setQuickInput] = useState("");
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
+  const [isRetryingEnrichment, setIsRetryingEnrichment] = useState(false);
   const [enrichmentConfigured, setEnrichmentConfigured] = useState<boolean>(true);
   const [previewItems, setPreviewItems] = useState<EditablePreviewItem[]>([]);
   const [hasParsed, setHasParsed] = useState(false);
@@ -162,9 +170,10 @@ export const AddVocabularyPage: React.FC = () => {
   };
 
   const handleRetryEnrichment = async (terms?: string[]) => {
-    const targets = terms ?? previewItems.filter((item) => item.enrichmentState === "failed" || !item.meaningVi.trim()).map((item) => item.term);
+    const targets = terms ?? previewItems.filter(needsEnrichmentRetry).map((item) => item.term);
     if (!targets.length) return;
     const normalizedTargets = new Set(targets.map((term) => term.normalize("NFKC").trim().toLocaleLowerCase()));
+    setIsRetryingEnrichment(true);
     setPreviewItems((items) => items.map((item) => normalizedTargets.has(item.normalizedTerm) ? { ...item, enrichmentState: "loading", enrichmentError: undefined } : item));
     try {
       const res = await vocabularyApi.bulkPreview(formLang, targets.join("\n"), true);
@@ -176,6 +185,8 @@ export const AddVocabularyPage: React.FC = () => {
     } catch (caught) {
       setPreviewItems((items) => items.map((item) => normalizedTargets.has(item.normalizedTerm) ? { ...item, enrichmentState: "failed", enrichmentError: getFriendlyErrorMessage(caught) } : item));
       error(getFriendlyErrorMessage(caught));
+    } finally {
+      setIsRetryingEnrichment(false);
     }
   };
 
@@ -545,9 +556,16 @@ export const AddVocabularyPage: React.FC = () => {
                 </div>
 
                 <div className="flex-row items-center gap-2">
-                  {previewItems.some((item) => item.enrichmentState === "failed" || !item.meaningVi.trim()) && (
-                    <Button variant="outline" size="sm" onClick={() => handleRetryEnrichment()} leftIcon={<Sparkles size={14} />}>
-                      Thử lại các từ lỗi
+                  {previewItems.some(needsEnrichmentRetry) && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      isLoading={isRetryingEnrichment}
+                      disabled={isRetryingEnrichment || isPreviewLoading || isBulkSaving}
+                      onClick={() => handleRetryEnrichment()}
+                      leftIcon={<Sparkles size={14} />}
+                    >
+                      {isRetryingEnrichment ? "Đang thử lại..." : "Thử lại các từ lỗi"}
                     </Button>
                   )}
                   <Button variant="ghost" size="sm" onClick={handleToggleSelectAll}>
@@ -684,7 +702,11 @@ export const AddVocabularyPage: React.FC = () => {
                           {item.enrichmentState === "failed" && (
                             <button type="button" onClick={() => handleRetryEnrichment([item.term])} style={{ color: "inherit", textDecoration: "underline" }}>Thử lại</button>
                           )}
-                          {item.enrichmentState === "exists" && "Đã có trong kho"}
+                          {item.enrichmentState === "exists" && (
+                            !item.meaningVi.trim()
+                              ? <span style={{ color: "var(--color-warning, #d97706)" }}>Từ này đã có trong kho nhưng thiếu thông tin</span>
+                              : "Đã có trong kho"
+                          )}
                         </div>
                       </div>
 

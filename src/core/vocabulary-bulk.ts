@@ -34,7 +34,7 @@ export function parseQuickVocabularyInput(input: string, language: Language): st
   return terms;
 }
 
-const clean = (value: string | undefined): string | null => value?.trim() || null;
+const clean = (value: string | null | undefined): string | null => (typeof value === "string" && value.trim() ? value.trim() : null);
 const emptySuggestion = () => ({
   pronunciation: null,
   ipa: null,
@@ -73,6 +73,28 @@ function publicSuggestion(suggestion?: VocabularyEnrichmentSuggestion) {
     hskLevel: suggestion.hskLevel ?? null,
     toneData: suggestion.toneData ?? [],
     senses: suggestion.senses ?? []
+  };
+}
+
+function suggestionFromExisting(item: { language: Language; term: string; pronunciation: string | null; meaningVi: string; partOfSpeech: string | null; example: string | null; exampleTranslation: string | null; topic: string | null; level: string | null; metadata?: Record<string, unknown> }) {
+  const meta = (item.metadata || {}) as Record<string, unknown>;
+  return {
+    pronunciation: clean(item.pronunciation) ?? clean(meta.pinyin as string | undefined) ?? clean(meta.ipa as string | undefined) ?? null,
+    ipa: clean(meta.ipa as string | undefined) ?? (item.language === "en" ? clean(item.pronunciation) : null),
+    pinyin: clean(meta.pinyin as string | undefined) ?? (item.language === "zh" ? clean(item.pronunciation) : null),
+    simplified: clean(meta.simplified as string | undefined) ?? (item.language === "zh" ? clean(item.term) : null),
+    traditional: clean(meta.traditional as string | undefined) ?? null,
+    partOfSpeech: clean(item.partOfSpeech),
+    meaningVi: clean(item.meaningVi),
+    synonyms: Array.isArray(meta.synonyms) ? (meta.synonyms as string[]) : [],
+    example: clean(item.example),
+    exampleTranslation: clean(item.exampleTranslation),
+    topic: clean(item.topic),
+    cefr: clean(meta.cefr as string | undefined) ?? (item.language === "en" && item.level && !item.level.startsWith("HSK") ? clean(item.level) : null),
+    toeicLevel: clean(meta.toeicLevel as string | undefined),
+    hskLevel: typeof meta.hskLevel === "number" ? meta.hskLevel : (item.level?.match(/^HSK(\d+)$/)?.[1] ? Number(item.level.replace("HSK", "")) : null),
+    toneData: Array.isArray(meta.toneData) ? (meta.toneData as Array<0 | 1 | 2 | 3 | 4>) : [],
+    senses: Array.isArray(meta.senses) ? (meta.senses as NonNullable<VocabularyEnrichmentSuggestion["senses"]>) : []
   };
 }
 
@@ -117,9 +139,10 @@ export class VocabularyBulkService {
 
     for (const term of terms) {
       const normalizedTerm = normalizeTerm(term, language);
-      const duplicate = Boolean(this.vocabulary.findByNormalized(userId, language, normalizedTerm));
-      if (duplicate) {
-        items.push({ term, normalizedTerm, duplicate: true, status: "EXISTS" as const, suggestion: emptySuggestion() });
+      const existingItem = this.vocabulary.findByNormalized(userId, language, normalizedTerm);
+      const duplicate = Boolean(existingItem);
+      if (duplicate && existingItem) {
+        items.push({ term, normalizedTerm, duplicate: true, status: "EXISTS" as const, suggestion: suggestionFromExisting(existingItem) });
         continue;
       }
       if (!this.enrichment.configured) {
