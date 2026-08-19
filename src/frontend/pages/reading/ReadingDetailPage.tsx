@@ -105,18 +105,21 @@ export const ReadingDetailPage: React.FC = () => {
       const selection = window.getSelection();
       if (!selection || selection.rangeCount === 0) return null;
       const range = selection.getRangeAt(0);
-      // Walk up from startContainer to find a span with data-sentence-index
-      let node: Node | null = range.startContainer;
+      const startEl = range.startContainer.nodeType === Node.ELEMENT_NODE
+        ? (range.startContainer as Element)
+        : range.startContainer.parentElement;
+      const sentenceEl = startEl?.closest("[data-sentence-index]");
       let foundIdx: number | null = null;
-      while (node) {
-        if (node instanceof Element) {
-          const attr = (node as Element).getAttribute("data-sentence-index");
-          if (attr !== null) { foundIdx = Number(attr); break; }
+      if (sentenceEl) {
+        const attr = sentenceEl.getAttribute("data-sentence-index");
+        if (attr !== null && attr !== "") {
+          const parsed = Number(attr);
+          if (!Number.isNaN(parsed) && parsed >= 0 && parsed < sentences.length) {
+            foundIdx = parsed;
+          }
         }
-        node = node.parentNode;
       }
       if (foundIdx === null) {
-        // Fallback: find first sentence containing the selected text
         const selText = selection.toString().trim().toLowerCase();
         foundIdx = sentences.findIndex((s) => s.text.toLowerCase().includes(selText));
         if (foundIdx === -1) foundIdx = 0;
@@ -154,6 +157,36 @@ export const ReadingDetailPage: React.FC = () => {
     setContextEnrichError(null);
     setDuplicateContextualSense(null);
   }
+
+  const triggerContextualEnrichment = (text: string, ctx: VocabularyContext | null) => {
+    if (!passage || !ctx) return;
+    if (enrichAbortRef.current) enrichAbortRef.current.abort();
+    const controller = new AbortController();
+    enrichAbortRef.current = controller;
+    setIsEnrichingContext(true);
+    setContextEnrichError(null);
+    void readingApi.enrichFromContext({
+      term: text,
+      language: passage.language,
+      sentence: ctx.sentence,
+      previousSentence: ctx.previousSentence,
+      nextSentence: ctx.nextSentence,
+    }).then((result) => {
+      if (controller.signal.aborted) return;
+      if (!result) {
+        setContextEnrichError("Không thể tra nghĩa theo ngữ cảnh. Thử lại.");
+        return;
+      }
+      setContextualEnrichment(result);
+      if (result.meaningVi) setManualMeaningVi(result.meaningVi);
+    }).catch(() => {
+      if (controller.signal.aborted) return;
+      setContextEnrichError("Không thể tra nghĩa theo ngữ cảnh. Thử lại.");
+    }).finally(() => {
+      if (!controller.signal.aborted) setIsEnrichingContext(false);
+    });
+  };
+
 
 
   // Fetch passage & translation availability
@@ -396,26 +429,7 @@ export const ReadingDetailPage: React.FC = () => {
       if (passage && ctx) {
         const selType = classifyLocalSelection(text, passage.language);
         if ((selType === "word" || selType === "phrase") && text.split(/\s+/).length <= 6) {
-          if (enrichAbortRef.current) enrichAbortRef.current.abort();
-          const controller = new AbortController();
-          enrichAbortRef.current = controller;
-          setIsEnrichingContext(true);
-          void readingApi.enrichFromContext({
-            term: text,
-            language: passage.language,
-            sentence: ctx.sentence,
-            previousSentence: ctx.previousSentence,
-            nextSentence: ctx.nextSentence,
-          }).then((result) => {
-            if (controller.signal.aborted) return;
-            setContextualEnrichment(result);
-            if (result?.meaningVi) setManualMeaningVi(result.meaningVi);
-          }).catch(() => {
-            if (controller.signal.aborted) return;
-            setContextEnrichError("Tra từ theo ngữ cảnh tạm thời không khả dụng.");
-          }).finally(() => {
-            if (!controller.signal.aborted) setIsEnrichingContext(false);
-          });
+          triggerContextualEnrichment(text, ctx);
         }
       }
     }, 50);
@@ -424,6 +438,11 @@ export const ReadingDetailPage: React.FC = () => {
   // Selection Translation Action
   const handleTranslateSelection = async () => {
     if (!selectedText || !passage) return;
+    const isWordOrPhrase = selectedContext && (classifyLocalSelection(selectedText, passage.language) !== "sentence") && selectedText.split(/\s+/).length <= 6;
+    if (isWordOrPhrase) {
+      triggerContextualEnrichment(selectedText, selectedContext);
+      return;
+    }
     if (!translationAvailability.configured) {
       setTranslationUnavailableNotice(true);
       return;
@@ -441,7 +460,6 @@ export const ReadingDetailPage: React.FC = () => {
       setManualMeaningVi(res.translation);
       setTranslationUnavailableNotice(false);
     } catch (err: any) {
-      // Map cleanly without raw error
       setTranslationUnavailableNotice(true);
     } finally {
       setIsTranslatingSelection(false);
@@ -452,13 +470,14 @@ export const ReadingDetailPage: React.FC = () => {
   const handleSaveSelectionToVocab = async () => {
     if (!selectedText || !passage) return;
 
-    // Prefer contextual enrichment meaning, then manual input, then translation fallback
+    // Prefer manual input, then contextual enrichment sense
     const activeSense = contextualEnrichment ? getActiveSense(contextualEnrichment, selectedSenseIndex) : null;
-    let meaning = manualMeaningVi.trim() ||
-      activeSense?.meaningVi ||
-      translationResult?.translation?.trim();
+    const isWordOrPhrase = selectedContext && (classifyLocalSelection(selectedText, passage.language) !== "sentence") && selectedText.split(/\s+/).length <= 6;
 
-    if (!meaning && translationAvailability.configured) {
+    let meaning = manualMeaningVi.trim() || activeSense?.meaningVi || "";
+
+    // For long selections without word context: allow translation fallback
+    if (!meaning && !isWordOrPhrase && translationAvailability.configured) {
       try {
         const translated = await readingApi.translateSelection({
           text: selectedText,
@@ -472,7 +491,7 @@ export const ReadingDetailPage: React.FC = () => {
       } catch {}
     }
     if (!meaning) {
-      info("Không thể tự động dịch lúc này. Bạn có thể nhập nghĩa tiếng Việt rồi thử lưu lại.");
+      info("Vui lòng nhập nghĩa tiếng Việt để lưu vào kho từ vựng.");
       return;
     }
 
@@ -921,10 +940,28 @@ export const ReadingDetailPage: React.FC = () => {
               </div>
             )}
 
-            {/* Error */}
+            {/* Error with Retry & manual fallback */}
             {!isEnrichingContext && contextEnrichError && !contextualEnrichment && (
-              <div style={{ fontSize: "var(--text-xs)", color: "var(--color-warning-text)", backgroundColor: "var(--color-warning-bg)", padding: "8px 10px", borderRadius: "var(--radius-md)", marginBottom: "8px" }}>
-                {contextEnrichError}
+              <div style={{ marginBottom: "10px" }}>
+                <div style={{ fontSize: "var(--text-xs)", color: "var(--color-warning-text)", backgroundColor: "var(--color-warning-bg)", padding: "8px 10px", borderRadius: "var(--radius-md)", marginBottom: "8px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span>{contextEnrichError}</span>
+                  <button
+                    type="button"
+                    onClick={() => triggerContextualEnrichment(selectedText, selectedContext)}
+                    style={{ fontSize: "var(--text-xs)", fontWeight: 700, textDecoration: "underline", color: "var(--color-warning-text)", background: "none", border: "none", cursor: "pointer", padding: "2px 4px" }}
+                  >
+                    Thử lại
+                  </button>
+                </div>
+                <div style={{ marginBottom: "8px" }}>
+                  <label style={{ display: "block", fontSize: "var(--text-xs)", fontWeight: 700, color: "var(--text-secondary)", marginBottom: "3px" }}>Tự nhập nghĩa tiếng Việt:</label>
+                  <input type="text" value={manualMeaningVi} onChange={(e) => setManualMeaningVi(e.target.value)} placeholder="Nhập nghĩa tiếng Việt..." style={{ width: "100%", padding: "6px 8px", borderRadius: "var(--radius-md)", border: "1px solid var(--border-default)", backgroundColor: "var(--bg-surface)", fontSize: "var(--text-xs)" }} />
+                </div>
+                <div className="flex-row" style={{ gap: "6px", justifyContent: "flex-end" }}>
+                  <Button variant={isZh ? "zh" : "primary"} size="sm" isLoading={isSavingVocab} disabled={!manualMeaningVi.trim()} onClick={handleSaveSelectionToVocab} leftIcon={<Bookmark size={12} />}>
+                    Lưu vào kho
+                  </Button>
+                </div>
               </div>
             )}
 
@@ -1003,8 +1040,8 @@ export const ReadingDetailPage: React.FC = () => {
           </div>
         )}
 
-        {/* ================= CLASSIC TRANSLATION POPOVER (long selections / no enrichment) ================= */}
-        {(translationResult || translationUnavailableNotice) && toolbarCoords && !contextualEnrichment && !isEnrichingContext && (
+        {/* ================= CLASSIC TRANSLATION POPOVER (long selections / no word context) ================= */}
+        {(translationResult || translationUnavailableNotice) && toolbarCoords && !selectedContext && !contextualEnrichment && !isEnrichingContext && (
 
           <div
             className="floating-selection-toolbar animate-pop-in"

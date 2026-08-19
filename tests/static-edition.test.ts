@@ -829,4 +829,138 @@ describe("Context-aware enrichment: cache isolation", () => {
     expect(res.item.metadata?.contextAware).toBe(true);
     expect(res.item.metadata?.sourceContext?.sentence).toBe("They sat on the river bank.");
   });
+
+  it("enrichFromContext propagates API errors rather than silently returning null", async () => {
+    const db = adapter();
+    vi.stubEnv("VITE_LANGUAGE_API_URL", "https://fake-api.test");
+    vi.stubGlobal("fetch", async () => {
+      return {
+        ok: false,
+        status: 500,
+        json: async () => ({ error: { code: "SERVER_ERROR", message: "Enrichment failed" } }),
+      } as unknown as Response;
+    });
+
+    const router = new StaticApiRouter(db);
+    await expect(router.request("/api/vocabulary/enrich-context", {
+      method: "POST",
+      body: JSON.stringify({
+        term: "bank",
+        language: "en",
+        sentence: "They sat on the river bank.",
+      }),
+    })).rejects.toThrow();
+
+    vi.unstubAllGlobals();
+  });
+});
+
+// ============================================================
+// DOM Context Capture & Disambiguation Tests
+// ============================================================
+
+describe("DOM Context Capture & Disambiguation", () => {
+  const samplePassage = {
+    id: "passage-1",
+    language: "en" as const,
+    title: "Sample",
+    content: "I live in Vietnam. We watched the concert live. She deposited money in the bank. They sat on the river bank.",
+    sentences: [
+      { id: "s-0", orderIndex: 0, text: "I live in Vietnam.", tokens: [{ type: "word", text: "I" }, { type: "word", text: "live" }, { type: "word", text: "in" }, { type: "word", text: "Vietnam" }] },
+      { id: "s-1", orderIndex: 1, text: "We watched the concert live.", tokens: [{ type: "word", text: "We" }, { type: "word", text: "watched" }, { type: "word", text: "the" }, { type: "word", text: "concert" }, { type: "word", text: "live" }] },
+      { id: "s-2", orderIndex: 2, text: "She deposited money in the bank.", tokens: [{ type: "word", text: "She" }, { type: "word", text: "deposited" }, { type: "word", text: "money" }, { type: "word", text: "in" }, { type: "word", text: "the" }, { type: "word", text: "bank" }] },
+      { id: "s-3", orderIndex: 3, text: "They sat on the river bank.", tokens: [{ type: "word", text: "They" }, { type: "word", text: "sat" }, { type: "word", text: "on" }, { type: "word", text: "the" }, { type: "word", text: "river" }, { type: "word", text: "bank" }] },
+    ],
+  };
+
+  interface MockElement {
+    getAttribute(attr: string): string | null;
+    closest(selector: string): MockElement | null;
+  }
+
+  function createMockElement(attributes: Record<string, string> = {}, parent?: MockElement): MockElement {
+    const el: MockElement = {
+      getAttribute: (attr: string) => attributes[attr] ?? null,
+      closest: (selector: string) => {
+        if (selector === "[data-sentence-index]" && attributes["data-sentence-index"] !== undefined) {
+          return el;
+        }
+        return parent ? parent.closest(selector) : null;
+      },
+    };
+    return el;
+  }
+
+  // Logic mirroring extractSentenceContext in ReadingDetailPage
+  function simulateExtractContext(
+    sentences: typeof samplePassage.sentences,
+    selectedElement: MockElement | null,
+    selectedText: string
+  ) {
+    if (!sentences || sentences.length === 0) return null;
+    const sentenceEl = selectedElement?.closest("[data-sentence-index]");
+    let foundIdx: number | null = null;
+    if (sentenceEl) {
+      const attr = sentenceEl.getAttribute("data-sentence-index");
+      if (attr !== null && attr !== "") {
+        const parsed = Number(attr);
+        if (!Number.isNaN(parsed) && parsed >= 0 && parsed < sentences.length) {
+          foundIdx = parsed;
+        }
+      }
+    }
+    if (foundIdx === null) {
+      const selText = selectedText.trim().toLowerCase();
+      foundIdx = sentences.findIndex((s) => s.text.toLowerCase().includes(selText));
+      if (foundIdx === -1) foundIdx = 0;
+    }
+    const idx = Math.max(0, Math.min(foundIdx, sentences.length - 1));
+    return {
+      sentenceIndex: idx,
+      sentence: sentences[idx]!.text,
+      previousSentence: idx > 0 ? sentences[idx - 1]!.text : undefined,
+      nextSentence: idx < sentences.length - 1 ? sentences[idx + 1]!.text : undefined,
+    };
+  }
+
+  it("captures exact sentence index for repeated word 'live' occurrence #1 vs #2", () => {
+    const span0 = createMockElement({ "data-sentence-index": "0" });
+    const tokenLive0 = createMockElement({}, span0);
+
+    const span1 = createMockElement({ "data-sentence-index": "1" });
+    const tokenLive1 = createMockElement({}, span1);
+
+    // Selection 1: inside sentence 0
+    const ctx0 = simulateExtractContext(samplePassage.sentences, tokenLive0, "live");
+    expect(ctx0?.sentenceIndex).toBe(0);
+    expect(ctx0?.sentence).toBe("I live in Vietnam.");
+    expect(ctx0?.previousSentence).toBeUndefined();
+    expect(ctx0?.nextSentence).toBe("We watched the concert live.");
+
+    // Selection 2: inside sentence 1
+    const ctx1 = simulateExtractContext(samplePassage.sentences, tokenLive1, "live");
+    expect(ctx1?.sentenceIndex).toBe(1);
+    expect(ctx1?.sentence).toBe("We watched the concert live.");
+    expect(ctx1?.previousSentence).toBe("I live in Vietnam.");
+    expect(ctx1?.nextSentence).toBe("She deposited money in the bank.");
+  });
+
+  it("captures exact sentence index for repeated word 'bank' finance (#2) vs river (#3)", () => {
+    const span2 = createMockElement({ "data-sentence-index": "2" });
+    const tokenBank2 = createMockElement({}, span2);
+
+    const span3 = createMockElement({ "data-sentence-index": "3" });
+    const tokenBank3 = createMockElement({}, span3);
+
+    // Selection 1: finance bank (sentence 2)
+    const ctx2 = simulateExtractContext(samplePassage.sentences, tokenBank2, "bank");
+    expect(ctx2?.sentenceIndex).toBe(2);
+    expect(ctx2?.sentence).toBe("She deposited money in the bank.");
+
+    // Selection 2: river bank (sentence 3)
+    const ctx3 = simulateExtractContext(samplePassage.sentences, tokenBank3, "bank");
+    expect(ctx3?.sentenceIndex).toBe(3);
+    expect(ctx3?.sentence).toBe("They sat on the river bank.");
+    expect(ctx3?.nextSentence).toBeUndefined();
+  });
 });
