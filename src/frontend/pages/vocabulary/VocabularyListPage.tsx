@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useMemo } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import {
   Search,
   Plus,
@@ -25,8 +25,10 @@ import { LanguageSelector } from "../../components/ui/LanguageSelector";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { CardSkeleton } from "../../components/ui/Skeleton";
 import type { Language, VocabularyItem, VocabularyStatus } from "../../types/api";
+import { APP_ROUTES } from "../../runtime/routes";
 
 export const VocabularyListPage: React.FC = () => {
+  const navigate = useNavigate();
   const { language: currentAppLanguage } = useLanguage();
   const { success, error } = useToast();
 
@@ -343,7 +345,7 @@ export const VocabularyListPage: React.FC = () => {
               : "Bạn chưa có từ vựng nào trong kho. Hãy thêm từ mới hoặc trích xuất từ bài đọc."
           }
           actionText="+ Thêm từ vựng mới"
-          onAction={() => (window.location.href = "/add")}
+          onAction={() => navigate(APP_ROUTES.addVocabulary)}
         />
       ) : viewMode === "grid" ? (
         <div

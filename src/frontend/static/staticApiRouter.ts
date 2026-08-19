@@ -22,6 +22,7 @@ import { getIndexedDbAdapter } from "../persistence/indexedDb";
 import type { PersistenceAdapter, StoredRecord } from "../persistence/types";
 import { STATIC_LOCAL_USER } from "../runtime/runtime";
 import { LanguageApiClient, type VocabularyEnrichment } from "../services/languageApi";
+import { buildGameItems, isGameType, publicGameItem, scoreGameAnswer, type GeneratedGameItem } from "../../shared/gameModes";
 import {
   classifyLocalSelection,
   createLocalId,
@@ -68,7 +69,7 @@ interface StoredQuizSession extends StoredRecord {
 
 interface StoredGameSession extends StoredRecord {
   public: GameSession;
-  items: Array<{ id: string; vocabularyId: string; prompt: string; answer: string; answered: boolean }>;
+  items: GeneratedGameItem[];
 }
 
 function asBody(options: RequestInit): any {
@@ -441,12 +442,12 @@ export class StaticApiRouter {
   }
 
   private async startGame(body: any): Promise<GameSession> {
+    if (!isGameType(body.type)) throw new Error("Loại trò chơi không hợp lệ.");
     const vocab = (await this.persistence.getAll<VocabularyItem>("vocabulary")).filter((item) => item.language === body.language).slice(0, body.count ?? 10);
     if (vocab.length < 2) throw new Error("Cần ít nhất hai từ vựng để bắt đầu trò chơi.");
-    const items = vocab.map((item) => ({ id: createLocalId(), vocabularyId: item.id, prompt: item.term, answer: item.meaningVi, answered: false }));
+    const items = buildGameItems(body.type, vocab.map((item) => ({ id: item.id, term: item.term, meaningVi: item.meaningVi })), createLocalId);
     const id = createLocalId();
-    const { answer: _answer, ...firstItem } = items[0]!;
-    const session: GameSession = { id, language: body.language, type: body.type, score: 0, timerSeconds: body.timerSeconds ?? null, status: "ACTIVE", startedAt: new Date().toISOString(), completedAt: null, currentItem: firstItem, completedCount: 0 };
+    const session: GameSession = { id, language: body.language, type: body.type, score: 0, timerSeconds: body.timerSeconds ?? (body.type === "SPEED_CHALLENGE" ? 45 : null), status: "ACTIVE", startedAt: new Date().toISOString(), completedAt: null, currentItem: publicGameItem(items[0]!), completedCount: 0 };
     await this.persistence.put("gameSessions", { id, public: session, items } as StoredGameSession);
     return session;
   }
@@ -462,12 +463,12 @@ export class StaticApiRouter {
     if (!stored || stored.public.status !== "ACTIVE") throw new Error("Phiên trò chơi không tồn tại hoặc đã kết thúc.");
     const item = stored.items[stored.public.completedCount];
     if (!item || item.id !== itemId) throw new Error("Câu trả lời không khớp lượt hiện tại.");
-    const correct = item.answer.normalize("NFKC").trim().toLocaleLowerCase() === answer.normalize("NFKC").trim().toLocaleLowerCase();
+    const correct = scoreGameAnswer(item.answer, answer);
     item.answered = true;
     const completedCount = stored.public.completedCount + 1;
     const done = completedCount >= stored.items.length;
     const next = stored.items[completedCount];
-    const nextPublic = next ? (({ answer: _answer, ...publicItem }) => publicItem)(next) : null;
+    const nextPublic = next ? publicGameItem(next) : null;
     const session: GameSession = { ...stored.public, score: stored.public.score + (correct ? 10 : 0), completedCount, status: done ? "COMPLETED" : "ACTIVE", completedAt: done ? new Date().toISOString() : null, currentItem: nextPublic };
     await this.persistence.put("gameSessions", { ...stored, public: session, items: stored.items });
     if (done) await this.recordActivity({ studySeconds: 60 });

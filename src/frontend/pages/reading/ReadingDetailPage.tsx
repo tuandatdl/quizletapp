@@ -34,6 +34,7 @@ import type {
   Token,
   TranslationResult,
 } from "../../types/api";
+import { configureSpeechUtterance } from "../../services/speech";
 
 export const ReadingDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -161,8 +162,7 @@ export const ReadingDetailPage: React.FC = () => {
 
       window.speechSynthesis.cancel();
       const utterance = new SpeechSynthesisUtterance(sentence.text);
-      utterance.lang = passage.language === "zh" ? "zh-CN" : "en-US";
-      utterance.rate = playbackState.speed;
+      configureSpeechUtterance(utterance, passage.language, playbackState.speed, window.speechSynthesis.getVoices());
 
       utterance.onend = () => {
         if (playbackCancelledRef.current) return;

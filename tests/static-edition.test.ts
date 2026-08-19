@@ -7,6 +7,8 @@ import { LanguageApiClient, validateEnrichment } from "../src/frontend/services/
 import { parseLocalQuickInput } from "../src/frontend/static/localDomain.js";
 import { StaticApiRouter } from "../src/frontend/static/staticApiRouter.js";
 import { request as frontendRequest } from "../src/frontend/api/client.js";
+import { toStaticHashRoute } from "../src/frontend/runtime/routes.js";
+import { configureSpeechUtterance, selectBestSpeechVoice } from "../src/frontend/services/speech.js";
 import { createEnrichmentSchema, handleRequest, validateEnrichmentItems, type Env } from "../cloudflare/worker/src/index.js";
 import type { VocabularyItem } from "../src/frontend/types/api.js";
 
@@ -85,6 +87,33 @@ describe("IndexedDB static persistence", () => {
     expect(gameAnswer.session.currentItem).not.toHaveProperty("answer");
   });
 
+  it("generates a distinct prompt and interaction payload for every game mode", async () => {
+    const router = new StaticApiRouter(adapter());
+    for (const [term, meaningVi] of [["go", "đi"], ["car", "xe hơi"], ["live", "sống"], ["total", "tổng cộng"]]) {
+      await router.request("/api/vocabulary", { method: "POST", body: JSON.stringify({ language: "en", term, meaningVi }) });
+    }
+    const start = (type: string) => router.request<any>("/api/games", { method: "POST", body: JSON.stringify({ language: "en", type, count: 4 }) });
+    const [matching, memory, listening, fillWord, speed] = await Promise.all([
+      start("MATCHING"), start("MEMORY"), start("LISTENING_CHOICE"), start("FILL_WORD"), start("SPEED_CHALLENGE"),
+    ]);
+
+    const terms = ["go", "car", "live", "total"];
+    const meanings = ["đi", "xe hơi", "sống", "tổng cộng"];
+    expect(matching.currentItem).toEqual(expect.objectContaining({ choices: expect.arrayContaining(meanings) }));
+    expect(terms).toContain(matching.currentItem.prompt);
+    expect(memory.currentItem).toEqual(expect.objectContaining({ prompt: "Lật thẻ để xem từ" }));
+    expect(terms).toContain(memory.currentItem.revealText);
+    expect(meanings).toContain(memory.currentItem.hint);
+    expect(listening.currentItem).toEqual(expect.objectContaining({ prompt: "Nghe phát âm và chọn nghĩa đúng", choices: expect.arrayContaining(meanings) }));
+    expect(terms).toContain(listening.currentItem.audioText);
+    expect(fillWord.currentItem).toEqual(expect.objectContaining({ hint: expect.stringMatching(/^Nghĩa tiếng Việt:/u) }));
+    expect(fillWord.currentItem.prompt).toMatch(/_/u);
+    expect(speed.currentItem).toEqual(expect.objectContaining({ hint: expect.stringContaining("Nhập từ") }));
+    expect(meanings).toContain(speed.currentItem.prompt);
+    expect(speed.timerSeconds).toBe(45);
+    for (const session of [matching, memory, listening, fillWord, speed]) expect(session.currentItem).not.toHaveProperty("answer");
+  });
+
   it("routes static frontend requests without calling Fastify auth", async () => {
     vi.stubEnv("VITE_RUNTIME_MODE", "static");
     const fetchMock = vi.fn();
@@ -92,6 +121,28 @@ describe("IndexedDB static persistence", () => {
     vi.stubGlobal("indexedDB", indexedDB);
     expect(await frontendRequest<any>("/api/me")).toEqual(expect.objectContaining({ id: "local-profile", name: "Tú Trinh" }));
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("static navigation and speech", () => {
+  it("generates a HashRouter-compatible vocabulary URL for Pages", () => {
+    expect(toStaticHashRoute("/add")).toBe("#/add");
+    expect(toStaticHashRoute("reading/new")).toBe("#/reading/new");
+  });
+
+  it("prefers natural matching-locale browser voices and applies safe defaults", () => {
+    const voices = [
+      { name: "System Default", lang: "en-US", localService: true },
+      { name: "Microsoft Jenny Natural", lang: "en-US", localService: false },
+      { name: "Google UK English", lang: "en-GB", localService: true },
+      { name: "Microsoft Xiaoxiao Online", lang: "zh-CN", localService: false },
+    ] as SpeechSynthesisVoice[];
+    expect(selectBestSpeechVoice(voices, "en")?.name).toBe("Microsoft Jenny Natural");
+    expect(selectBestSpeechVoice(voices, "zh")?.name).toBe("Microsoft Xiaoxiao Online");
+
+    const utterance = { lang: "", rate: 0, pitch: 0, volume: 0, voice: null } as unknown as SpeechSynthesisUtterance;
+    configureSpeechUtterance(utterance, "en", 1, voices);
+    expect(utterance).toMatchObject({ lang: "en-US", rate: 0.95, pitch: 1, volume: 1, voice: voices[1] });
   });
 });
 

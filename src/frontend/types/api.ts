@@ -373,6 +373,9 @@ export interface GameItem {
   vocabularyId: string;
   prompt: string;
   audioText?: string;
+  choices?: string[];
+  hint?: string;
+  revealText?: string;
   answer?: string;
   answered: boolean;
 }

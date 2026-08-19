@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import {
   RotateCw,
   Volume2,
@@ -20,8 +20,11 @@ import { AudioButton } from "../../components/ui/AudioButton";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { CardSkeleton } from "../../components/ui/Skeleton";
 import type { ReviewAction, VocabularyItem } from "../../types/api";
+import { configureSpeechUtterance } from "../../services/speech";
+import { APP_ROUTES } from "../../runtime/routes";
 
 export const FlashcardPage: React.FC = () => {
+  const navigate = useNavigate();
   const { language, settings } = useLanguage();
   const { success, error } = useToast();
 
@@ -65,8 +68,7 @@ export const FlashcardPage: React.FC = () => {
     if (!settings?.autoPlayAudio || !isFlipped || !currentCard || !("speechSynthesis" in window)) return;
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(currentCard.term);
-    utterance.lang = currentCard.language === "zh" ? "zh-CN" : "en-US";
-    utterance.rate = settings.audioSpeed;
+    configureSpeechUtterance(utterance, currentCard.language, settings.audioSpeed, window.speechSynthesis.getVoices());
     window.speechSynthesis.speak(utterance);
     return () => window.speechSynthesis.cancel();
   }, [currentCard?.id, isFlipped, settings?.autoPlayAudio, settings?.audioSpeed]);
@@ -205,7 +207,7 @@ export const FlashcardPage: React.FC = () => {
           actionText={filterMode === "due" ? "Ôn tập tất cả từ vựng" : "+ Thêm từ vựng mới"}
           onAction={() => {
             if (filterMode === "due") setFilterMode("all");
-            else window.location.href = "/add";
+            else navigate(APP_ROUTES.addVocabulary);
           }}
         />
       </div>
