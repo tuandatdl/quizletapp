@@ -3,23 +3,17 @@ import { createClient, type SupabaseClient, type User, type Session } from "@sup
 let clientInstance: SupabaseClient | null = null;
 let clientInitialized = false;
 
-function getEnvValue(key: string): string | undefined {
-  const meta = typeof import.meta !== "undefined" ? (import.meta as unknown as { env?: Record<string, string | undefined> }) : undefined;
-  const proc = typeof globalThis !== "undefined" && "process" in globalThis ? (globalThis as Record<string, any>).process : undefined;
-  const value = meta?.env?.[key] ?? proc?.env?.[key];
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
 export function getSupabaseUrl(): string | undefined {
-  return getEnvValue("VITE_SUPABASE_URL");
+  const url = import.meta.env.VITE_SUPABASE_URL;
+  return typeof url === "string" && url.trim() ? url.trim() : undefined;
 }
 
 export function getSupabaseAnonKey(): string | undefined {
-  return (
-    getEnvValue("VITE_SUPABASE_ANON_KEY") ||
-    getEnvValue("VITE_SUPABASE_PUBLISHABLE_KEY") ||
-    getEnvValue("VITE_SUPABASE_PUBLIC_KEY")
-  );
+  const key =
+    import.meta.env.VITE_SUPABASE_ANON_KEY ||
+    import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
+    import.meta.env.VITE_SUPABASE_PUBLIC_KEY;
+  return typeof key === "string" && key.trim() ? key.trim() : undefined;
 }
 
 export function cloudSyncAvailable(): boolean {

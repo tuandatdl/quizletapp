@@ -1,5 +1,5 @@
 export const INDEXED_DB_NAME = "tu-trinh-language";
-export const INDEXED_DB_SCHEMA_VERSION = 1;
+export const INDEXED_DB_SCHEMA_VERSION = 2;
 
 export const STORE_NAMES = [
   "profile",
