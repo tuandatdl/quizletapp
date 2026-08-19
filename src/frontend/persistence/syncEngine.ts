@@ -131,7 +131,7 @@ export class LocalFirstSyncCoordinator implements SyncCoordinator {
       id: queueId,
       store,
       recordId,
-      updatedAt: new Date().toISOString(),
+      updatedAt: typeof record?.updatedAt === "string" ? record.updatedAt : new Date().toISOString(),
       deleted,
       record: deleted ? undefined : record,
     };

@@ -194,7 +194,19 @@ export const AddVocabularyPage: React.FC = () => {
     setPreviewItems((items) => items.map((item) => {
       if (item.id !== id) return item;
       const sense = item.senses[senseIndex];
-      return sense ? { ...item, meaningVi: sense.meaningVi || item.meaningVi, partOfSpeech: sense.partOfSpeech || item.partOfSpeech, synonyms: (sense.synonyms || []).join(", ") } : item;
+      if (!sense) return item;
+      const newPronunciation = sense.ipa || sense.pinyin || sense.pronunciation || item.pronunciation;
+      return {
+        ...item,
+        meaningVi: sense.meaningVi || item.meaningVi,
+        partOfSpeech: sense.partOfSpeech || item.partOfSpeech,
+        pronunciation: newPronunciation,
+        ipa: sense.ipa || (formLang === "en" ? newPronunciation : item.ipa),
+        pinyin: sense.pinyin || (formLang === "zh" ? newPronunciation : item.pinyin),
+        synonyms: sense.synonyms ? sense.synonyms.join(", ") : item.synonyms,
+        example: sense.example !== undefined ? sense.example : item.example,
+        exampleTranslation: sense.exampleTranslation !== undefined ? sense.exampleTranslation : item.exampleTranslation,
+      };
     }));
   };
 
@@ -662,7 +674,7 @@ export const AddVocabularyPage: React.FC = () => {
                     <div
                       style={{
                         display: "grid",
-                        gridTemplateColumns: "auto 1.2fr 1fr 1.5fr auto auto",
+                        gridTemplateColumns: "auto 1.2fr 0.9fr 1fr 1.5fr auto auto",
                         alignItems: "center",
                         gap: "10px",
                       }}
@@ -730,8 +742,39 @@ export const AddVocabularyPage: React.FC = () => {
                           <option value="verb">Động từ (verb)</option>
                           <option value="adjective">Tính từ (adj)</option>
                           <option value="adverb">Phó từ (adv)</option>
+                          <option value="phrasal verb">Cụm ĐT (phrasal verb)</option>
                           <option value="phrase">Cụm từ (phrase)</option>
+                          <option value="idiom">Thành ngữ (idiom)</option>
+                          <option value="pronoun">Đại từ (pronoun)</option>
+                          <option value="preposition">Giới từ (prep)</option>
+                          <option value="conjunction">Liên từ (conj)</option>
+                          <option value="determiner">Từ hạn định (det)</option>
+                          <option value="interjection">Thán từ (interj)</option>
+                          {item.partOfSpeech && !["noun", "verb", "adjective", "adverb", "phrasal verb", "phrase", "idiom", "pronoun", "preposition", "conjunction", "determiner", "interjection"].includes(item.partOfSpeech) && (
+                            <option value={item.partOfSpeech}>{item.partOfSpeech}</option>
+                          )}
                         </select>
+                      </div>
+
+                      {/* Pronunciation / IPA */}
+                      <div>
+                        <label style={{ display: "block", fontSize: "0.7rem", color: "var(--text-tertiary)", fontWeight: 700 }}>
+                          {isZh ? "PINYIN" : "PHIÊN ÂM (IPA)"}
+                        </label>
+                        <input
+                          type="text"
+                          value={item.pronunciation}
+                          onChange={(e) => handleUpdateItemField(item.id, "pronunciation", e.target.value)}
+                          placeholder={isZh ? "xuéxí" : "/ɡoʊ/"}
+                          style={{
+                            width: "100%",
+                            padding: "6px 8px",
+                            borderRadius: "var(--radius-md)",
+                            border: "1px solid var(--border-default)",
+                            backgroundColor: "var(--bg-surface)",
+                            fontSize: "var(--text-xs)",
+                          }}
+                        />
                       </div>
 
                       {/* Vietnamese Meaning (Required) */}
@@ -755,14 +798,27 @@ export const AddVocabularyPage: React.FC = () => {
                           }}
                         />
                         {item.senses.length > 1 && (
-                          <select
-                            aria-label={`Chọn nghĩa cho ${item.term}`}
-                            defaultValue="0"
-                            onChange={(event) => handleChooseSense(item.id, Number(event.target.value))}
-                            style={{ width: "100%", marginTop: "4px", padding: "4px 6px", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-default)", fontSize: "0.7rem" }}
-                          >
-                            {item.senses.map((sense, senseIndex) => <option key={`${item.id}-sense-${senseIndex}`} value={senseIndex}>{sense.partOfSpeech ? `${sense.partOfSpeech}: ` : ""}{sense.meaningVi}</option>)}
-                          </select>
+                          <div style={{ marginTop: "4px" }}>
+                            <select
+                              aria-label={`Chọn nghĩa cho ${item.term}`}
+                              defaultValue="0"
+                              onChange={(event) => handleChooseSense(item.id, Number(event.target.value))}
+                              style={{
+                                width: "100%",
+                                padding: "4px 6px",
+                                borderRadius: "var(--radius-sm)",
+                                border: "1px solid var(--border-default)",
+                                fontSize: "0.7rem",
+                                backgroundColor: "var(--bg-surface)",
+                              }}
+                            >
+                              {item.senses.map((sense, senseIndex) => (
+                                <option key={`${item.id}-sense-${senseIndex}`} value={senseIndex}>
+                                  {senseIndex + 1}. {sense.partOfSpeech ? `[${sense.partOfSpeech}] ` : ""}{sense.ipa || sense.pinyin ? `${sense.ipa || sense.pinyin} ` : ""}{sense.meaningVi}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
                         )}
                       </div>
 

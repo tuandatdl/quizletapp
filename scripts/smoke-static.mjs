@@ -18,7 +18,7 @@ const source = (await Promise.all(scripts.map((file) => readFile(path.join(asset
 for (const forbidden of ["http://127.0.0.1:3000", "http://localhost:3000", "better-sqlite3"]) {
   if (source.includes(forbidden)) throw new Error(`Static bundle contains forbidden server dependency: ${forbidden}`);
 }
-for (const required of ["local-profile", "tu-trinh-language-backup", "vocabulary-enrichment-v1", "IndexedDB"]) {
+for (const required of ["local-profile", "tu-trinh-language-backup", "vocabulary-enrichment-v2", "IndexedDB"]) {
   if (!source.includes(required)) throw new Error(`Static bundle is missing required capability marker: ${required}`);
 }
 
