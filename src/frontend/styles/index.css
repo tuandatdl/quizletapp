@@ -395,3 +395,299 @@ button:disabled {
   .header-streak { padding-left: 8px !important; padding-right: 8px !important; }
   .mobile-only-nav a, .mobile-only-nav > button { padding-left: 7px !important; padding-right: 7px !important; }
 }
+
+/* ==========================================================================
+   Reading Player Component
+   ========================================================================== */
+
+/* Base card shell */
+.reading-mini-player {
+  background-color: var(--bg-muted);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xl);
+  padding: 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: var(--shadow-xs);
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+/* ── Status row: icon + text side-by-side on desktop ── */
+.rp-status-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.rp-volume-icon {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-full);
+  color: #FFFFFF;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.rp-status-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.rp-status-primary {
+  font-size: var(--text-sm);
+  font-weight: 700;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rp-status-secondary {
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+}
+
+/* Long/short label toggling */
+.rp-engine-label-short { display: none; }
+.rp-engine-label-long  { display: inline; }
+
+/* ── Speed row ── */
+.rp-speed-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.rp-speed-label {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.rp-speed-buttons {
+  display: flex;
+  gap: 4px;
+}
+
+.rp-speed-btn {
+  padding: 4px 10px;
+  font-size: var(--text-xs);
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ── Progress row ── */
+.rp-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.rp-progress-label {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  font-weight: 600;
+  white-space: nowrap;
+  min-width: 44px;
+}
+
+.rp-slider {
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+  width: 100%;
+}
+
+.rp-progress-total {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  font-weight: 600;
+  white-space: nowrap;
+  min-width: 32px;
+  text-align: right;
+}
+
+/* ── Playback controls row ── */
+.rp-controls-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding-top: 2px;
+  min-width: 0;
+}
+
+.rp-icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 6px 12px;
+  min-height: 40px;
+  cursor: pointer;
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+
+.rp-btn-label {
+  /* shown on desktop, hidden on mobile */
+}
+
+.rp-play-btn {
+  min-width: 120px;
+}
+
+/* ── Reading passage text: safe wrapping ── */
+.reading-passage-area {
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  white-space: normal;
+  overflow-x: hidden;
+}
+
+/* ==========================================================================
+   Mobile Responsive: Reading Player (<= 600px)
+   ========================================================================== */
+
+@media (max-width: 600px) {
+  /* Tighter card padding on mobile */
+  .reading-mini-player {
+    padding: 12px;
+    gap: 10px;
+    border-radius: var(--radius-lg);
+  }
+
+  /* Status: icon + status on one line, cloud label below */
+  .rp-status-primary {
+    font-size: 14px;
+  }
+  .rp-status-secondary {
+    font-size: 12px;
+  }
+  .rp-engine-label-long  { display: none; }
+  .rp-engine-label-short { display: inline; }
+
+  /* Speed: label on its own row, buttons fill width evenly */
+  .rp-speed-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+  }
+
+  .rp-speed-buttons {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+  }
+
+  .rp-speed-btn {
+    height: 40px;
+    padding: 0;
+    font-size: 13px;
+  }
+
+  /* Progress row: grid keeps slider from overflowing */
+  .rp-progress-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 8px;
+  }
+
+  .rp-slider {
+    width: 100%;
+    min-width: 0;
+  }
+
+  /* Controls row: grid layout  ↻  ◀  [Play]  ▶ */
+  .rp-controls-row {
+    display: grid;
+    grid-template-columns: 44px 44px minmax(0, 1fr) 44px;
+    gap: 8px;
+    justify-items: stretch;
+  }
+
+  /* When only Restart + Play (no speech nav), span play button wider */
+  .rp-controls-row:not(:has(.rp-icon-btn:nth-of-type(2))) {
+    grid-template-columns: 44px minmax(0, 1fr);
+  }
+
+  .rp-icon-btn {
+    padding: 6px;
+    min-height: 44px;
+    width: 100%;
+    font-size: 0;       /* icon only */
+  }
+
+  .rp-btn-label {
+    display: none;      /* hide text labels on mobile */
+  }
+
+  .rp-play-btn {
+    min-width: 0;
+    width: 100%;
+    font-size: 14px;
+  }
+
+  /* Page container: correct padding for mobile header + bottom nav */
+  .reading-page-container {
+    padding-top: calc(var(--header-height) + var(--space-4));
+    padding-bottom: calc(var(--mobile-nav-height) + env(safe-area-inset-bottom, 0px) + var(--space-6));
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  /* Main reading card: no horizontal overflow */
+  .reading-main-card {
+    padding: var(--space-4) !important;
+    max-width: 100%;
+    box-sizing: border-box;
+    overflow-x: hidden;
+  }
+
+  /* Tighter title */
+  .reading-main-card h1 {
+    font-size: 1.375rem !important;
+    margin-bottom: var(--space-3) !important;
+  }
+
+  /* Reduce action bar gap */
+  .reading-action-bar {
+    gap: 8px !important;
+    margin-bottom: var(--space-4) !important;
+  }
+
+  /* Reading passage text: never overflow */
+  .reading-passage-area {
+    overflow-wrap: break-word;
+    word-break: break-word;
+    white-space: normal;
+    overflow-x: hidden;
+    max-width: 100%;
+    font-size: 1rem !important;
+    line-height: 1.85 !important;
+  }
+}
+
+/* Ensure bottom nav safe area on all mobile widths */
+@media (max-width: 768px) {
+  .reading-page-container {
+    padding-bottom: calc(var(--mobile-nav-height) + env(safe-area-inset-bottom, 0px) + var(--space-4));
+  }
+}

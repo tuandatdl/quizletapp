@@ -859,7 +859,7 @@ export const ReadingDetailPage: React.FC = () => {
   const isZh = passage.language === "zh";
 
   return (
-    <div className="page-container flex-col gap-6 animate-fade-in" style={{ maxWidth: "var(--reading-max-width)" }}>
+    <div className="page-container reading-page-container flex-col gap-6 animate-fade-in" style={{ maxWidth: "var(--reading-max-width)" }}>
       {/* Top Navigation & Metadata */}
       <div className="flex-row justify-between items-center" style={{ flexWrap: "wrap", gap: "12px" }}>
         <Link to="/reading">
@@ -882,12 +882,16 @@ export const ReadingDetailPage: React.FC = () => {
 
       {/* Main Reading Card */}
       <div
+        className="reading-main-card"
         style={{
           backgroundColor: "var(--bg-surface)",
           borderRadius: "var(--radius-xl)",
           border: "1px solid var(--border-default)",
           padding: "var(--space-8)",
           boxShadow: "var(--shadow-sm)",
+          maxWidth: "100%",
+          boxSizing: "border-box" as const,
+          overflowX: "hidden" as const,
         }}
       >
         {/* Title */}
@@ -990,6 +994,7 @@ export const ReadingDetailPage: React.FC = () => {
           ref={readingAreaRef}
           onMouseUp={handleMouseUp}
           onTouchEnd={handleMouseUp}
+          className="reading-passage-area"
           style={{
             fontSize: isZh ? "1.375rem" : "1.125rem",
             lineHeight: isZh ? "2.3" : "1.9",
