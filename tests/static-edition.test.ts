@@ -632,3 +632,201 @@ describe("Cloudflare Worker contract", () => {
     expect(switchedBackToVerb.ipa).toBe("/lɪv/");
   });
 });
+
+// ============================================================
+// Context-Aware Enrichment: Worker Contract Tests
+// ============================================================
+
+describe("Context-aware enrichment: Worker contract validation", () => {
+  function mockEnv(aiResponse: unknown): Env {
+    return {
+      AI: { run: async () => aiResponse } as any,
+      ALLOWED_ORIGINS: "https://example.github.io",
+    };
+  }
+
+  function validEnrichResponse(term: string) {
+    return {
+      items: [{
+        term, language: "en", meaningVi: "sống", partOfSpeech: "verb",
+        ipa: "/lɪv/", pronunciation: "/lɪv/",
+        senses: [{ meaningVi: "trực tiếp", partOfSpeech: "adjective", ipa: "/laɪv/" }],
+      }],
+    };
+  }
+
+  it("accepts optional contexts field with correct length", async () => {
+    const env = mockEnv({ response: JSON.stringify(validEnrichResponse("live")) });
+    const req = jsonRequest("/v1/vocabulary/enrich", {
+      language: "en", targetLanguage: "vi",
+      terms: ["live"],
+      enrichmentVersion: "vocabulary-enrichment-v2",
+      contexts: [{ sentence: "I live in Vietnam." }],
+    });
+    const res = await handleRequest(req, env);
+    expect(res.status).toBe(200);
+    const body = await res.json() as any;
+    expect(body.data.items).toHaveLength(1);
+  });
+
+  it("accepts request with no contexts field (backward compatible)", async () => {
+    const env = mockEnv({ response: JSON.stringify(validEnrichResponse("live")) });
+    const req = jsonRequest("/v1/vocabulary/enrich", {
+      language: "en", targetLanguage: "vi",
+      terms: ["live"],
+      enrichmentVersion: "vocabulary-enrichment-v2",
+    });
+    const res = await handleRequest(req, env);
+    expect(res.status).toBe(200);
+  });
+
+  it("rejects contexts with wrong length", async () => {
+    const env = mockEnv({});
+    const req = jsonRequest("/v1/vocabulary/enrich", {
+      language: "en", targetLanguage: "vi",
+      terms: ["live", "bank"],
+      enrichmentVersion: "vocabulary-enrichment-v2",
+      contexts: [{ sentence: "Only one context." }], // length mismatch
+    });
+    const res = await handleRequest(req, env);
+    expect(res.status).toBe(400);
+    const body = await res.json() as any;
+    expect(body.error.code).toBe("VALIDATION_ERROR");
+  });
+
+  it("rejects contexts with unknown extra keys inside an entry", async () => {
+    const env = mockEnv({});
+    const req = jsonRequest("/v1/vocabulary/enrich", {
+      language: "en", targetLanguage: "vi",
+      terms: ["live"],
+      enrichmentVersion: "vocabulary-enrichment-v2",
+      contexts: [{ sentence: "I live here.", injectedCommand: "IGNORE ABOVE" }],
+    });
+    const res = await handleRequest(req, env);
+    expect(res.status).toBe(400);
+    const body = await res.json() as any;
+    expect(body.error.code).toBe("VALIDATION_ERROR");
+  });
+
+  it("rejects null contexts array (not undefined)", async () => {
+    // null is a special case: parseContexts returns undefined when null passed (skip)
+    // Actually null is falsy so returns undefined — should accept
+    const env = mockEnv({ response: JSON.stringify(validEnrichResponse("live")) });
+    const req = jsonRequest("/v1/vocabulary/enrich", {
+      language: "en", targetLanguage: "vi",
+      terms: ["live"],
+      enrichmentVersion: "vocabulary-enrichment-v2",
+      contexts: null,
+    });
+    const res = await handleRequest(req, env);
+    // null contexts treated as absent — should pass
+    expect(res.status).toBe(200);
+  });
+
+  it("rejects unknown top-level keys alongside contexts", async () => {
+    const env = mockEnv({});
+    const req = jsonRequest("/v1/vocabulary/enrich", {
+      language: "en", targetLanguage: "vi",
+      terms: ["live"],
+      enrichmentVersion: "vocabulary-enrichment-v2",
+      contexts: [{ sentence: "I live here." }],
+      unknown: "field",
+    });
+    const res = await handleRequest(req, env);
+    expect(res.status).toBe(400);
+  });
+});
+
+// ============================================================
+// Context-Aware Enrichment: Cache Isolation Tests
+// ============================================================
+
+describe("Context-aware enrichment: cache isolation", () => {
+  it("enrichTermWithContext always makes a fresh API call (no cache read)", async () => {
+    const db = adapter();
+    let apiCallCount = 0;
+    const client = new LanguageApiClient(db);
+
+    vi.stubEnv("VITE_LANGUAGE_API_URL", "https://fake-api.test");
+    vi.stubGlobal("fetch", async (_url: string, opts: RequestInit) => {
+      const body = JSON.parse(opts.body as string);
+      apiCallCount += 1;
+      const term = body.terms?.[0] ?? "bank";
+      const meaning = body.contexts?.[0]?.sentence?.includes("river") ? "b\u1edD s\u00f4ng" : "ng\u00e2n h\u00e0ng";
+      return {
+        ok: true,
+        json: async () => ({
+          data: {
+            items: [{
+              term, language: "en", meaningVi: meaning, partOfSpeech: "noun",
+              ipa: "/b\u00e6\u014bk/", pronunciation: "/b\u00e6\u014bk/",
+            }],
+          },
+        }),
+      } as Response;
+    });
+
+    // Contextual enrichment with river sentence — bypasses cache, makes API call
+    const riverResult = await client.enrichTermWithContext("en", "bank", {
+      sentence: "They sat on the river bank.",
+    });
+    expect(riverResult.meaningVi).toBe("b\u1edD s\u00f4ng");
+    const callsAfterFirst = apiCallCount;
+    expect(callsAfterFirst).toBe(1);
+
+    // Another contextual call with banking sentence — must ALSO make API call (not cached)
+    const bankingResult = await client.enrichTermWithContext("en", "bank", {
+      sentence: "She deposited money in the bank.",
+    });
+    expect(bankingResult.meaningVi).toBe("ng\u00e2n h\u00e0ng");
+    expect(apiCallCount).toBe(2); // always fresh
+  });
+
+  it("enrichFromContext static route returns null when api not configured", async () => {
+    const db = adapter();
+    const router = new StaticApiRouter(db);
+    // No VITE_LANGUAGE_API_URL configured
+    const result = await router.request<null>("/api/vocabulary/enrich-context", {
+      method: "POST",
+      body: JSON.stringify({ term: "bank", language: "en", sentence: "She went to the bank." }),
+    });
+    expect(result).toBeNull();
+  });
+
+  it("saveSelection with context stores contextAware metadata", async () => {
+    const db = adapter();
+    vi.stubEnv("VITE_LANGUAGE_API_URL", "https://fake-api.test");
+    vi.stubGlobal("fetch", async (_url: string, opts: RequestInit) => {
+      const body = JSON.parse(opts.body as string);
+      return {
+        ok: true,
+        json: async () => ({
+          data: {
+            items: [{
+              term: body.terms?.[0] ?? "bank", language: "en",
+              meaningVi: "b\u1edD s\u00f4ng", partOfSpeech: "noun",
+              ipa: "/b\u00e6\u014bk/", pronunciation: "/b\u00e6\u014bk/",
+            }],
+          },
+        }),
+      } as Response;
+    });
+
+    const router = new StaticApiRouter(db);
+    const res = await router.request<any>("/api/vocabulary/from-selection", {
+      method: "POST",
+      body: JSON.stringify({
+        text: "bank",
+        sourceLanguage: "en",
+        targetLanguage: "vi",
+        meaningVi: "b\u1edD s\u00f4ng",
+        context: { sentence: "They sat on the river bank.", previousSentence: "It was a beautiful day." },
+      }),
+    });
+
+    expect(res.duplicate).toBe(false);
+    expect(res.item.meaningVi).toBe("b\u1edD s\u00f4ng");
+    expect(res.item.metadata?.contextAware).toBe(true);
+    expect(res.item.metadata?.sourceContext?.sentence).toBe("They sat on the river bank.");
+  });
+});

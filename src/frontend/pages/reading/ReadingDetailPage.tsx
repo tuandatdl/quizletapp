@@ -14,8 +14,9 @@ import {
   Volume2,
   AlertCircle,
   HelpCircle,
+  CheckCircle2,
 } from "lucide-react";
-import { readingApi } from "../../api/reading.api";
+import { readingApi, type VocabularyContext } from "../../api/reading.api";
 import { useLanguage } from "../../context/LanguageContext";
 import { useToast } from "../../context/ToastContext";
 import { Card } from "../../components/ui/Card";
@@ -34,6 +35,8 @@ import type {
   Token,
   TranslationResult,
 } from "../../types/api";
+import type { VocabularyEnrichment } from "../../services/languageApi";
+import { classifyLocalSelection } from "../../static/localDomain";
 import { configureSpeechUtterance } from "../../services/speech";
 
 export const ReadingDetailPage: React.FC = () => {
@@ -74,6 +77,14 @@ export const ReadingDetailPage: React.FC = () => {
   const [isTranslatingSelection, setIsTranslatingSelection] = useState<boolean>(false);
   const [isSavingVocab, setIsSavingVocab] = useState<boolean>(false);
   const [manualMeaningVi, setManualMeaningVi] = useState<string>("");
+  // Context-aware enrichment state
+  const [selectedContext, setSelectedContext] = useState<VocabularyContext | null>(null);
+  const [contextualEnrichment, setContextualEnrichment] = useState<VocabularyEnrichment | null>(null);
+  const [isEnrichingContext, setIsEnrichingContext] = useState<boolean>(false);
+  const [selectedSenseIndex, setSelectedSenseIndex] = useState<number>(-1); // -1 = primary
+  const [showAllSenses, setShowAllSenses] = useState<boolean>(false);
+  const [contextEnrichError, setContextEnrichError] = useState<string | null>(null);
+  const [duplicateContextualSense, setDuplicateContextualSense] = useState<VocabularyEnrichment | null>(null);
 
   // Click-Word Popover State (Pronunciation Mode)
   const [activeToken, setActiveToken] = useState<{
@@ -85,6 +96,65 @@ export const ReadingDetailPage: React.FC = () => {
   const playbackCancelledRef = useRef(false);
   const currentSentenceIdxRef = useRef(0);
   const isPlayingRef = useRef(false);
+  const enrichAbortRef = useRef<AbortController | null>(null);
+
+  // ---- Context capture helper ----
+  function extractSentenceContext(sentences: ReadingPassage["sentences"]): VocabularyContext | null {
+    if (!sentences || sentences.length === 0) return null;
+    try {
+      const selection = window.getSelection();
+      if (!selection || selection.rangeCount === 0) return null;
+      const range = selection.getRangeAt(0);
+      // Walk up from startContainer to find a span with data-sentence-index
+      let node: Node | null = range.startContainer;
+      let foundIdx: number | null = null;
+      while (node) {
+        if (node instanceof Element) {
+          const attr = (node as Element).getAttribute("data-sentence-index");
+          if (attr !== null) { foundIdx = Number(attr); break; }
+        }
+        node = node.parentNode;
+      }
+      if (foundIdx === null) {
+        // Fallback: find first sentence containing the selected text
+        const selText = selection.toString().trim().toLowerCase();
+        foundIdx = sentences.findIndex((s) => s.text.toLowerCase().includes(selText));
+        if (foundIdx === -1) foundIdx = 0;
+      }
+      const idx = Math.max(0, Math.min(foundIdx, sentences.length - 1));
+      return {
+        sentence: sentences[idx]!.text,
+        previousSentence: idx > 0 ? sentences[idx - 1]!.text : undefined,
+        nextSentence: idx < sentences.length - 1 ? sentences[idx + 1]!.text : undefined,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  // Helper: get the currently-selected sense fields (primary or alternate)
+  function getActiveSense(enrichment: VocabularyEnrichment, senseIdx: number) {
+    if (senseIdx >= 0 && enrichment.senses && enrichment.senses[senseIdx]) {
+      const s = enrichment.senses[senseIdx]!;
+      return { meaningVi: s.meaningVi, partOfSpeech: s.partOfSpeech, ipa: s.ipa, pronunciation: s.pronunciation, example: s.example, exampleTranslation: s.exampleTranslation };
+    }
+    return { meaningVi: enrichment.meaningVi, partOfSpeech: enrichment.partOfSpeech, ipa: enrichment.ipa, pronunciation: enrichment.pronunciation, example: enrichment.example, exampleTranslation: enrichment.exampleTranslation };
+  }
+
+  function closeOverlays() {
+    if (enrichAbortRef.current) { enrichAbortRef.current.abort(); enrichAbortRef.current = null; }
+    setSelectedText("");
+    setToolbarCoords(null);
+    setTranslationResult(null);
+    setTranslationUnavailableNotice(false);
+    setContextualEnrichment(null);
+    setSelectedContext(null);
+    setSelectedSenseIndex(-1);
+    setShowAllSenses(false);
+    setContextEnrichError(null);
+    setDuplicateContextualSense(null);
+  }
+
 
   // Fetch passage & translation availability
   const fetchPassageAndMeta = useCallback(async () => {
@@ -304,14 +374,50 @@ export const ReadingDetailPage: React.FC = () => {
 
       if (rect.width === 0 && rect.height === 0) return;
 
+      // Capture surrounding sentence context via DOM lookup
+      const ctx = passage ? extractSentenceContext(passage.sentences) : null;
+
       setSelectedText(text);
+      setSelectedContext(ctx);
       setManualMeaningVi("");
+      setContextualEnrichment(null);
+      setContextEnrichError(null);
+      setSelectedSenseIndex(-1);
+      setShowAllSenses(false);
+      setDuplicateContextualSense(null);
       setToolbarCoords({
         x: Math.min(window.innerWidth - 140, Math.max(140, rect.left + rect.width / 2)),
         y: Math.max(70, rect.top - 10),
       });
       setTranslationResult(null);
       setTranslationUnavailableNotice(false);
+
+      // Auto-trigger contextual enrichment for word/phrase selections
+      if (passage && ctx) {
+        const selType = classifyLocalSelection(text, passage.language);
+        if ((selType === "word" || selType === "phrase") && text.split(/\s+/).length <= 6) {
+          if (enrichAbortRef.current) enrichAbortRef.current.abort();
+          const controller = new AbortController();
+          enrichAbortRef.current = controller;
+          setIsEnrichingContext(true);
+          void readingApi.enrichFromContext({
+            term: text,
+            language: passage.language,
+            sentence: ctx.sentence,
+            previousSentence: ctx.previousSentence,
+            nextSentence: ctx.nextSentence,
+          }).then((result) => {
+            if (controller.signal.aborted) return;
+            setContextualEnrichment(result);
+            if (result?.meaningVi) setManualMeaningVi(result.meaningVi);
+          }).catch(() => {
+            if (controller.signal.aborted) return;
+            setContextEnrichError("Tra từ theo ngữ cảnh tạm thời không khả dụng.");
+          }).finally(() => {
+            if (!controller.signal.aborted) setIsEnrichingContext(false);
+          });
+        }
+      }
     }, 50);
   };
 
@@ -345,7 +451,13 @@ export const ReadingDetailPage: React.FC = () => {
   // Save Selection to Vocabulary
   const handleSaveSelectionToVocab = async () => {
     if (!selectedText || !passage) return;
-    let meaning = manualMeaningVi.trim() || translationResult?.translation?.trim();
+
+    // Prefer contextual enrichment meaning, then manual input, then translation fallback
+    const activeSense = contextualEnrichment ? getActiveSense(contextualEnrichment, selectedSenseIndex) : null;
+    let meaning = manualMeaningVi.trim() ||
+      activeSense?.meaningVi ||
+      translationResult?.translation?.trim();
+
     if (!meaning && translationAvailability.configured) {
       try {
         const translated = await readingApi.translateSelection({
@@ -371,20 +483,23 @@ export const ReadingDetailPage: React.FC = () => {
         sourceLanguage: passage.language,
         targetLanguage: "vi",
         readingId: passage.id,
-        meaningVi: meaning,
+        meaningVi: manualMeaningVi.trim() || activeSense?.meaningVi || meaning,
+        partOfSpeech: activeSense?.partOfSpeech || contextualEnrichment?.partOfSpeech,
+        ...(selectedContext ? { context: selectedContext } : {}),
       });
 
       if (res.duplicate) {
-        info(`Từ "${selectedText}" đã có trong kho từ của bạn.`);
+        if (res.contextualSense) {
+          setDuplicateContextualSense(res.contextualSense);
+          info(`Từ "${selectedText}" đã có trong kho từ của bạn.`);
+        } else {
+          info(`Từ "${selectedText}" đã có trong kho từ của bạn.`);
+          closeOverlays();
+        }
       } else {
         success(`Đã lưu "${selectedText}" vào kho từ vựng!`);
+        closeOverlays();
       }
-
-      // Close overlays
-      setSelectedText("");
-      setToolbarCoords(null);
-      setTranslationResult(null);
-      setTranslationUnavailableNotice(false);
     } catch (err: any) {
       error(getFriendlyErrorMessage(err));
     } finally {
@@ -412,10 +527,7 @@ export const ReadingDetailPage: React.FC = () => {
       const target = e.target as HTMLElement;
       if (!target.closest(".floating-selection-toolbar") && !target.closest(".token-popover")) {
         if (!window.getSelection()?.toString().trim()) {
-          setSelectedText("");
-          setToolbarCoords(null);
-          setTranslationResult(null);
-          setTranslationUnavailableNotice(false);
+          closeOverlays();
         }
         setActiveToken(null);
       }
@@ -425,6 +537,7 @@ export const ReadingDetailPage: React.FC = () => {
     return () => {
       document.removeEventListener("mousedown", handleDocumentClick);
       stopAllAudio();
+      if (enrichAbortRef.current) enrichAbortRef.current.abort();
     };
   }, [stopAllAudio]);
 
@@ -600,6 +713,7 @@ export const ReadingDetailPage: React.FC = () => {
             return (
               <span
                 key={sentence.id}
+                data-sentence-index={sIdx}
                 className={`reading-sentence-block ${
                   isPlayingThisSentence ? "sentence-active" : isPausedAtThisSentence ? "sentence-paused" : ""
                 }`}
@@ -760,12 +874,7 @@ export const ReadingDetailPage: React.FC = () => {
 
             <button
               type="button"
-              onClick={() => {
-                setSelectedText("");
-                setToolbarCoords(null);
-                setTranslationResult(null);
-                setTranslationUnavailableNotice(false);
-              }}
+              onClick={closeOverlays}
               style={{
                 padding: "4px",
                 color: "var(--text-tertiary)",
@@ -778,8 +887,125 @@ export const ReadingDetailPage: React.FC = () => {
           </div>
         )}
 
-        {/* ================= SELECTION TRANSLATION / UNCONFIGURED POPOVER ================= */}
-        {(translationResult || translationUnavailableNotice) && toolbarCoords && (
+        {/* ================= CONTEXTUAL DICTIONARY POPUP ================= */}
+        {toolbarCoords && selectedText && (isEnrichingContext || contextualEnrichment || contextEnrichError || duplicateContextualSense) && (
+          <div
+            className="floating-selection-toolbar animate-pop-in"
+            style={{
+              position: "fixed",
+              left: `${toolbarCoords.x}px`,
+              top: `${toolbarCoords.y + 46}px`,
+              transform: "translateX(-50%)",
+              zIndex: 901,
+              backgroundColor: "var(--bg-surface)",
+              borderRadius: "var(--radius-xl)",
+              padding: "14px 16px",
+              boxShadow: "var(--shadow-float)",
+              border: "1px solid var(--border-default)",
+              maxWidth: "340px",
+              width: "88vw",
+              minWidth: "220px",
+            }}
+          >
+            {/* Header */}
+            <div className="flex-row justify-between items-center" style={{ marginBottom: "8px" }}>
+              <div style={{ fontWeight: 800, fontSize: "var(--text-base)" }}>{selectedText}</div>
+              <button type="button" onClick={closeOverlays} style={{ color: "var(--text-tertiary)", display: "flex" }} aria-label="Đóng popup từ điển"><X size={14} /></button>
+            </div>
+
+            {/* Loading */}
+            {isEnrichingContext && (
+              <div className="flex-row items-center gap-2" style={{ color: "var(--text-tertiary)", fontSize: "var(--text-xs)", marginBottom: "8px" }}>
+                <Loader2 size={13} className="animate-spin" />
+                <span>Đang tra từ theo ngữ cảnh...</span>
+              </div>
+            )}
+
+            {/* Error */}
+            {!isEnrichingContext && contextEnrichError && !contextualEnrichment && (
+              <div style={{ fontSize: "var(--text-xs)", color: "var(--color-warning-text)", backgroundColor: "var(--color-warning-bg)", padding: "8px 10px", borderRadius: "var(--radius-md)", marginBottom: "8px" }}>
+                {contextEnrichError}
+              </div>
+            )}
+
+            {/* Duplicate + contextual sense */}
+            {duplicateContextualSense && (
+              <div style={{ fontSize: "var(--text-xs)", padding: "8px 10px", borderRadius: "var(--radius-md)", backgroundColor: "var(--color-info-bg)", border: "1px solid var(--color-info-border)", marginBottom: "10px" }}>
+                <div style={{ fontWeight: 700, color: "var(--text-primary)", marginBottom: "2px" }}>Từ này đã có trong kho.</div>
+                <div style={{ color: "var(--text-secondary)" }}>Trong câu này: <strong>{duplicateContextualSense.meaningVi}</strong></div>
+                {duplicateContextualSense.partOfSpeech && <div style={{ color: "var(--text-tertiary)", marginTop: "2px" }}>{duplicateContextualSense.partOfSpeech}{duplicateContextualSense.ipa ? ` · ${duplicateContextualSense.ipa}` : ""}</div>}
+              </div>
+            )}
+
+            {/* Main enrichment result */}
+            {!isEnrichingContext && contextualEnrichment && !duplicateContextualSense && (() => {
+              const activeSense = getActiveSense(contextualEnrichment, selectedSenseIndex);
+              const allSenses = contextualEnrichment.senses ?? [];
+              return (
+                <>
+                  {selectedContext && (
+                    <div className="flex-row items-center gap-1" style={{ marginBottom: "6px" }}>
+                      <CheckCircle2 size={12} color="var(--color-success-text)" />
+                      <span style={{ fontSize: "var(--text-xs)", fontWeight: 700, color: "var(--color-success-text)" }}>Nghĩa theo ngữ cảnh</span>
+                    </div>
+                  )}
+                  <div style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)", marginBottom: "4px" }}>
+                    {activeSense.partOfSpeech && <span>{activeSense.partOfSpeech}</span>}
+                    {activeSense.ipa && <span> · <span style={{ fontFamily: "monospace" }}>{activeSense.ipa}</span></span>}
+                  </div>
+                  <div style={{ fontSize: "var(--text-sm)", fontWeight: 700, color: "var(--color-success-text)", backgroundColor: "var(--color-success-bg)", padding: "6px 10px", borderRadius: "var(--radius-md)", marginBottom: "8px" }}>
+                    {activeSense.meaningVi}
+                  </div>
+                  {selectedContext?.sentence && (
+                    <div style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)", fontStyle: "italic", marginBottom: "8px", padding: "4px 8px", borderLeft: "2px solid var(--border-default)" }}>
+                      "{selectedContext.sentence}"
+                    </div>
+                  )}
+                  {allSenses.length > 0 && (
+                    <div style={{ marginBottom: "8px" }}>
+                      <button type="button" onClick={() => setShowAllSenses(!showAllSenses)} style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)", display: "flex", alignItems: "center", gap: "4px" }}>
+                        {showAllSenses ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                        <span>{allSenses.length} nghĩa khác</span>
+                      </button>
+                      {showAllSenses && (
+                        <div style={{ marginTop: "6px", display: "flex", flexDirection: "column", gap: "4px" }}>
+                          <button type="button" onClick={() => { setSelectedSenseIndex(-1); setManualMeaningVi(contextualEnrichment.meaningVi); }}
+                            style={{ textAlign: "left", padding: "5px 8px", borderRadius: "var(--radius-md)", backgroundColor: selectedSenseIndex === -1 ? (isZh ? "var(--accent-zh-subtle)" : "var(--accent-en-subtle)") : "var(--bg-muted)", border: selectedSenseIndex === -1 ? `1px solid ${isZh ? "var(--accent-zh-border)" : "var(--accent-en-border)"}` : "1px solid transparent", fontSize: "var(--text-xs)" }}>
+                            <span style={{ fontWeight: 700 }}>{contextualEnrichment.meaningVi}</span>
+                            {contextualEnrichment.partOfSpeech && <span style={{ color: "var(--text-tertiary)", marginLeft: "4px" }}>({contextualEnrichment.partOfSpeech})</span>}
+                            {contextualEnrichment.ipa && <span style={{ color: "var(--text-tertiary)", marginLeft: "4px", fontFamily: "monospace" }}>{contextualEnrichment.ipa}</span>}
+                          </button>
+                          {allSenses.map((sense, i) => (
+                            <button key={i} type="button" onClick={() => { setSelectedSenseIndex(i); setManualMeaningVi(sense.meaningVi); }}
+                              style={{ textAlign: "left", padding: "5px 8px", borderRadius: "var(--radius-md)", backgroundColor: selectedSenseIndex === i ? (isZh ? "var(--accent-zh-subtle)" : "var(--accent-en-subtle)") : "var(--bg-muted)", border: selectedSenseIndex === i ? `1px solid ${isZh ? "var(--accent-zh-border)" : "var(--accent-en-border)"}` : "1px solid transparent", fontSize: "var(--text-xs)" }}>
+                              <span style={{ fontWeight: 700 }}>{sense.meaningVi}</span>
+                              {sense.partOfSpeech && <span style={{ color: "var(--text-tertiary)", marginLeft: "4px" }}>({sense.partOfSpeech})</span>}
+                              {sense.ipa && <span style={{ color: "var(--text-tertiary)", marginLeft: "4px", fontFamily: "monospace" }}>{sense.ipa}</span>}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  <div style={{ marginBottom: "10px" }}>
+                    <label style={{ display: "block", fontSize: "var(--text-xs)", fontWeight: 700, color: "var(--text-secondary)", marginBottom: "3px" }}>Giải nghĩa (có thể chỉnh):</label>
+                    <input type="text" value={manualMeaningVi} onChange={(e) => setManualMeaningVi(e.target.value)} placeholder="Nhập nghĩa tiếng Việt..." style={{ width: "100%", padding: "6px 8px", borderRadius: "var(--radius-md)", border: "1px solid var(--border-default)", backgroundColor: "var(--bg-surface)", fontSize: "var(--text-xs)" }} />
+                  </div>
+                  <div className="flex-row" style={{ gap: "6px", justifyContent: "flex-end" }}>
+                    <AudioButton text={selectedText} language={passage.language} size="sm" />
+                    <Button variant={isZh ? "zh" : "primary"} size="sm" isLoading={isSavingVocab} disabled={!manualMeaningVi.trim() && !activeSense.meaningVi} onClick={handleSaveSelectionToVocab} leftIcon={<Bookmark size={12} />}>
+                      Lưu vào kho
+                    </Button>
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+        )}
+
+        {/* ================= CLASSIC TRANSLATION POPOVER (long selections / no enrichment) ================= */}
+        {(translationResult || translationUnavailableNotice) && toolbarCoords && !contextualEnrichment && !isEnrichingContext && (
+
           <div
             className="floating-selection-toolbar animate-pop-in"
             style={{

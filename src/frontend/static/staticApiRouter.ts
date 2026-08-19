@@ -22,7 +22,7 @@ import { getIndexedDbAdapter } from "../persistence/indexedDb";
 import type { PersistenceAdapter, StoredRecord } from "../persistence/types";
 import { LocalFirstSyncCoordinator } from "../persistence/syncEngine";
 import { STATIC_LOCAL_USER } from "../runtime/runtime";
-import { LanguageApiClient, type VocabularyEnrichment } from "../services/languageApi";
+import { LanguageApiClient, type VocabularyEnrichment, type VocabularyContext } from "../services/languageApi";
 import { buildGameItems, isGameType, publicGameItem, scoreGameAnswer, type GeneratedGameItem } from "../../shared/gameModes";
 import {
   classifyLocalSelection,
@@ -164,6 +164,7 @@ export class StaticApiRouter {
 
     if (path === "/api/vocabulary/bulk-preview" && method === "POST") return this.bulkPreview(body.language, body.input, Boolean(body.refresh)) as Promise<T>;
     if (path === "/api/vocabulary/bulk" && method === "POST") return this.bulkCreate(body.language, body.items) as Promise<T>;
+    if (path === "/api/vocabulary/enrich-context" && method === "POST") return this.enrichFromContext(body) as Promise<T>;
     if (path === "/api/vocabulary/from-selection" && method === "POST") return this.saveSelection(body) as Promise<T>;
     if (path === "/api/vocabulary" && method === "POST") return this.createVocabulary(body) as Promise<T>;
     if (path === "/api/vocabulary" && method === "GET") return this.listVocabulary(url.searchParams) as Promise<T>;
@@ -329,19 +330,52 @@ export class StaticApiRouter {
     return item;
   }
 
-  private async saveSelection(body: any): Promise<CreateVocabularyResult> {
-    let enriched: VocabularyEnrichment | undefined;
-    if (this.languageApi.configured) {
-      try { enriched = (await this.languageApi.enrichTerms(body.sourceLanguage, [body.text]))[0]; } catch {}
+  private async enrichFromContext(body: any): Promise<VocabularyEnrichment | null> {
+    if (!this.languageApi.configured) return null;
+    const context: VocabularyContext = {
+      sentence: body.sentence,
+      previousSentence: body.previousSentence,
+      nextSentence: body.nextSentence,
+    };
+    try {
+      return await this.languageApi.enrichTermWithContext(body.language, body.term, context);
+    } catch {
+      return null;
     }
-    return this.createVocabulary({
+  }
+
+  private async saveSelection(body: any): Promise<CreateVocabularyResult & { contextualSense?: VocabularyEnrichment }> {
+    let enriched: VocabularyEnrichment | undefined;
+    const context: VocabularyContext | undefined = body.context && typeof body.context.sentence === "string"
+      ? { sentence: body.context.sentence, previousSentence: body.context.previousSentence, nextSentence: body.context.nextSentence }
+      : undefined;
+    if (this.languageApi.configured) {
+      try {
+        if (context) {
+          enriched = await this.languageApi.enrichTermWithContext(body.sourceLanguage, body.text, context);
+        } else {
+          enriched = (await this.languageApi.enrichTerms(body.sourceLanguage, [body.text]))[0];
+        }
+      } catch {}
+    }
+    const sourceContext = context ? { sentence: context.sentence, previousSentence: context.previousSentence, nextSentence: context.nextSentence } : undefined;
+    const result = await this.createVocabulary({
       language: body.sourceLanguage, term: body.text, meaningVi: enriched?.meaningVi || body.meaningVi,
       pronunciation: enriched?.pronunciation || enriched?.ipa || enriched?.pinyin || body.pronunciation,
       partOfSpeech: enriched?.partOfSpeech || body.partOfSpeech,
       example: enriched?.example, exampleTranslation: enriched?.exampleTranslation,
       source: "READING_SELECTION", sourceReadingId: body.readingId,
-      metadata: enriched ? { synonyms: enriched.synonyms ?? [], senses: enriched.senses ?? [], ipa: enriched.ipa, pinyin: enriched.pinyin } : {},
+      metadata: enriched ? {
+        synonyms: enriched.synonyms ?? [], senses: enriched.senses ?? [],
+        ipa: enriched.ipa, pinyin: enriched.pinyin,
+        ...(context ? { sourceContext, contextAware: true } : {}),
+      } : (context ? { sourceContext, contextAware: true } : {}),
     });
+    // For duplicates: return the contextual enrichment so UI can display "Trong câu này: ..."
+    if (result.duplicate && enriched) {
+      return { ...result, contextualSense: enriched };
+    }
+    return result;
   }
 
   private async createReading(input: any): Promise<ReadingPassage> {
