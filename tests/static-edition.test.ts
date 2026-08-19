@@ -8,7 +8,7 @@ import { parseLocalQuickInput } from "../src/frontend/static/localDomain.js";
 import { StaticApiRouter } from "../src/frontend/static/staticApiRouter.js";
 import { request as frontendRequest } from "../src/frontend/api/client.js";
 import { toStaticHashRoute } from "../src/frontend/runtime/routes.js";
-import { configureSpeechUtterance, selectBestSpeechVoice } from "../src/frontend/services/speech.js";
+import { configureSpeechUtterance, getAvailableVoicesForLanguage, selectBestSpeechVoice } from "../src/frontend/services/speech.js";
 import { createEnrichmentSchema, handleRequest, validateEnrichmentItems, type Env } from "../cloudflare/worker/src/index.js";
 import type { VocabularyItem } from "../src/frontend/types/api.js";
 
@@ -143,6 +143,20 @@ describe("static navigation and speech", () => {
     const utterance = { lang: "", rate: 0, pitch: 0, volume: 0, voice: null } as unknown as SpeechSynthesisUtterance;
     configureSpeechUtterance(utterance, "en", 1, voices);
     expect(utterance).toMatchObject({ lang: "en-US", rate: 0.95, pitch: 1, volume: 1, voice: voices[1] });
+
+    // Custom preferred voice override
+    const customUtterance = { lang: "", rate: 0, pitch: 0, volume: 0, voice: null } as unknown as SpeechSynthesisUtterance;
+    configureSpeechUtterance(customUtterance, "en", 1.25, voices, "Google UK English");
+    expect(customUtterance).toMatchObject({ lang: "en-GB", rate: 1.25, pitch: 1, volume: 1, voice: voices[2] });
+
+    // Fallback when custom voice doesn't exist
+    const fallbackUtterance = { lang: "", rate: 0, pitch: 0, volume: 0, voice: null } as unknown as SpeechSynthesisUtterance;
+    configureSpeechUtterance(fallbackUtterance, "en", 1, voices, "Nonexistent Voice");
+    expect(fallbackUtterance).toMatchObject({ lang: "en-US", rate: 0.95, pitch: 1, volume: 1, voice: voices[1] });
+
+    // Available voices listing for language
+    const enAvailable = getAvailableVoicesForLanguage(voices, "en");
+    expect(enAvailable.map((v) => v.name)).toEqual(["Microsoft Jenny Natural", "Google UK English", "System Default"]);
   });
 });
 

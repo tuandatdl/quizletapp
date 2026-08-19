@@ -14,6 +14,11 @@ import {
   Download,
   Upload,
   Trash2,
+  Play,
+  Sparkles,
+  Cloud,
+  HelpCircle,
+  Loader2,
 } from "lucide-react";
 import { useLanguage } from "../../context/LanguageContext";
 import { useTheme } from "../../context/ThemeContext";
@@ -28,15 +33,18 @@ import { isStaticRuntime } from "../../runtime/runtime";
 import { getIndexedDbAdapter } from "../../persistence/indexedDb";
 import { backupFileName, exportBackup, importBackup, previewBackup, validateBackup, type BackupPreview } from "../../persistence/backup";
 import type { StaticBackup } from "../../persistence/types";
+import { configureSpeechUtterance, getAvailableVoicesForLanguage } from "../../services/speech";
 
 export const SettingsPage: React.FC = () => {
   const { settings, updateSettings, isLoadingSettings } = useLanguage();
   const { theme, setTheme } = useTheme();
-  const { success, error } = useToast();
+  const { success, error, info } = useToast();
 
   const [form, setForm] = useState<Partial<UserSettings>>({});
   const [isSaving, setIsSaving] = useState(false);
   const [pendingBackup, setPendingBackup] = useState<{ backup: StaticBackup; preview: BackupPreview } | null>(null);
+  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [isPlayingPreview, setIsPlayingPreview] = useState<"en" | "zh" | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -45,8 +53,44 @@ export const SettingsPage: React.FC = () => {
     }
   }, [settings]);
 
+  useEffect(() => {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+    const updateVoices = () => {
+      const available = window.speechSynthesis.getVoices();
+      setVoices(available);
+    };
+    updateVoices();
+    window.speechSynthesis.onvoiceschanged = updateVoices;
+    return () => {
+      if ("speechSynthesis" in window) {
+        window.speechSynthesis.onvoiceschanged = null;
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, []);
+
   const handleChange = (key: keyof UserSettings, value: any) => {
     setForm((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const handleTestVoice = (lang: "en" | "zh") => {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+      error("Trình duyệt không hỗ trợ phát âm (SpeechSynthesis).");
+      return;
+    }
+    window.speechSynthesis.cancel();
+    const testText = lang === "en"
+      ? "Hello! Learning languages every day brings great results."
+      : "你好！每天坚持学习语言会带来很大的进步。";
+    const utterance = new SpeechSynthesisUtterance(testText);
+    const preferredVoice = lang === "en" ? form.preferredVoiceEn : form.preferredVoiceZh;
+    const currentSpeed = form.audioSpeed || 1;
+    configureSpeechUtterance(utterance, lang, currentSpeed, voices, preferredVoice);
+
+    setIsPlayingPreview(lang);
+    utterance.onend = () => setIsPlayingPreview(null);
+    utterance.onerror = () => setIsPlayingPreview(null);
+    window.speechSynthesis.speak(utterance);
   };
 
   const handleSave = async (e: React.FormEvent) => {
@@ -126,12 +170,15 @@ export const SettingsPage: React.FC = () => {
     );
   }
 
+  const enVoices = getAvailableVoicesForLanguage(voices, "en");
+  const zhVoices = getAvailableVoicesForLanguage(voices, "zh");
+
   return (
     <div className="page-container flex-col gap-8 animate-fade-in" style={{ maxWidth: "780px" }}>
       <div>
         <h1 style={{ fontSize: "var(--text-2xl)", fontWeight: 800 }}>Cài Đặt Học Tập & Không Gian</h1>
         <p style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)", marginTop: "4px" }}>
-          Tùy chỉnh ngôn ngữ hiển thị, tốc độ âm thanh và mục tiêu cá nhân
+          Tùy chỉnh ngôn ngữ hiển thị, giọng đọc tự nhiên, âm thanh và mục tiêu cá nhân
         </p>
       </div>
 
@@ -168,7 +215,7 @@ export const SettingsPage: React.FC = () => {
 
             <div>
               <label style={{ display: "block", fontSize: "var(--text-xs)", fontWeight: 700, marginBottom: "6px" }}>
-                Mục tiêu hoàn thành mỗi ngày
+                Mục tiêu hoàn thành mỗi ngày (từ)
               </label>
               <input
                 type="number"
@@ -188,7 +235,7 @@ export const SettingsPage: React.FC = () => {
             </div>
           </div>
 
-          <div className="flex-row items-center gap-6" style={{ marginTop: "8px" }}>
+          <div className="flex-row items-center gap-6" style={{ marginTop: "8px", flexWrap: "wrap" }}>
             <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer", fontSize: "var(--text-sm)" }}>
               <input
                 type="checkbox"
@@ -237,11 +284,98 @@ export const SettingsPage: React.FC = () => {
           </div>
         </Card>
 
-        {/* 3. Audio & Text to Speech */}
-        <Card className="flex-col gap-4">
-          <div className="flex-row items-center gap-2">
-            <Volume2 size={20} color="var(--accent-en-primary)" />
-            <h2 style={{ fontSize: "var(--text-base)", fontWeight: 700 }}>Âm thanh & Giọng đọc</h2>
+        {/* 3. Audio & Text to Speech (Natural Voices) */}
+        <Card className="flex-col gap-5">
+          <div className="flex-row items-center justify-between" style={{ flexWrap: "wrap", gap: "8px" }}>
+            <div className="flex-row items-center gap-2">
+              <Volume2 size={20} color="var(--accent-en-primary)" />
+              <div>
+                <h2 style={{ fontSize: "var(--text-base)", fontWeight: 700 }}>Âm thanh & Giọng đọc</h2>
+                <p style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)" }}>
+                  Tự động ưu tiên giọng đọc chuẩn tự nhiên (Natural/Neural/Online) từ hệ điều hành
+                </p>
+              </div>
+            </div>
+            <Badge variant="en" size="sm">
+              <Sparkles size={12} style={{ marginRight: "4px" }} />
+              Auto Natural Voice
+            </Badge>
+          </div>
+
+          {/* Voice selector for English */}
+          <div style={{ backgroundColor: "var(--bg-muted)", padding: "14px 16px", borderRadius: "var(--radius-md)", border: "1px solid var(--border-default)" }}>
+            <div className="flex-row justify-between items-center" style={{ marginBottom: "8px", flexWrap: "wrap", gap: "6px" }}>
+              <label style={{ fontSize: "var(--text-xs)", fontWeight: 700, color: "var(--text-primary)" }}>
+                🇬🇧 Giọng đọc Tiếng Anh (English Voice)
+              </label>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={() => handleTestVoice("en")}
+                disabled={isPlayingPreview === "en"}
+                leftIcon={isPlayingPreview === "en" ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />}
+              >
+                {isPlayingPreview === "en" ? "Đang phát..." : "Nghe thử tiếng Anh"}
+              </Button>
+            </div>
+            <select
+              value={form.preferredVoiceEn || "AUTO"}
+              onChange={(e) => handleChange("preferredVoiceEn", e.target.value)}
+              style={{
+                width: "100%",
+                padding: "8px 12px",
+                borderRadius: "var(--radius-sm)",
+                border: "1px solid var(--border-default)",
+                backgroundColor: "var(--bg-surface)",
+                fontSize: "var(--text-sm)",
+              }}
+            >
+              <option value="AUTO">✨ [Tự động - Khuyên dùng] Ưu tiên giọng tự nhiên tốt nhất (en-US / en-GB)</option>
+              {enVoices.map((v) => (
+                <option key={v.name} value={v.name}>
+                  {v.name} ({v.lang}) {v.localService ? "• Thiết bị" : "• Online/Natural"}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Voice selector for Chinese */}
+          <div style={{ backgroundColor: "var(--bg-muted)", padding: "14px 16px", borderRadius: "var(--radius-md)", border: "1px solid var(--border-default)" }}>
+            <div className="flex-row justify-between items-center" style={{ marginBottom: "8px", flexWrap: "wrap", gap: "6px" }}>
+              <label style={{ fontSize: "var(--text-xs)", fontWeight: 700, color: "var(--text-primary)" }}>
+                🇨🇳 Giọng đọc Tiếng Trung (Chinese Voice)
+              </label>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={() => handleTestVoice("zh")}
+                disabled={isPlayingPreview === "zh"}
+                leftIcon={isPlayingPreview === "zh" ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />}
+              >
+                {isPlayingPreview === "zh" ? "Đang phát..." : "Nghe thử tiếng Trung"}
+              </Button>
+            </div>
+            <select
+              value={form.preferredVoiceZh || "AUTO"}
+              onChange={(e) => handleChange("preferredVoiceZh", e.target.value)}
+              style={{
+                width: "100%",
+                padding: "8px 12px",
+                borderRadius: "var(--radius-sm)",
+                border: "1px solid var(--border-default)",
+                backgroundColor: "var(--bg-surface)",
+                fontSize: "var(--text-sm)",
+              }}
+            >
+              <option value="AUTO">✨ [Tự động - Khuyên dùng] Ưu tiên giọng tự nhiên tốt nhất (zh-CN / zh-TW)</option>
+              {zhVoices.map((v) => (
+                <option key={v.name} value={v.name}>
+                  {v.name} ({v.lang}) {v.localService ? "• Thiết bị" : "• Online/Natural"}
+                </option>
+              ))}
+            </select>
           </div>
 
           <div className="settings-two-col" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
@@ -279,6 +413,10 @@ export const SettingsPage: React.FC = () => {
               </label>
             </div>
           </div>
+
+          <p style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)", lineHeight: "1.5" }}>
+            💡 Danh sách giọng đọc phụ thuộc vào hệ điều hành (macOS, Windows, iOS, Android). Nếu bạn đổi thiết bị mà giọng đã chọn không khả dụng, hệ thống sẽ tự động dùng giọng chuẩn tốt nhất trên thiết bị đó.
+          </p>
         </Card>
 
         {/* 4. Appearance & Theme */}
@@ -326,29 +464,60 @@ export const SettingsPage: React.FC = () => {
           </div>
         </Card>
 
+        {/* 5. Local Storage & Cross-device Disclosure */}
         {isStaticRuntime() && (
           <Card className="flex-col gap-4">
-            <div className="flex-row items-center gap-2">
-              <Database size={20} color="var(--accent-en-primary)" />
-              <div>
-                <h2 style={{ fontSize: "var(--text-base)", fontWeight: 700 }}>Dữ liệu</h2>
-                <p style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)" }}>Dữ liệu được lưu trên thiết bị này và không tự đồng bộ sang thiết bị khác.</p>
+            <div className="flex-row items-center justify-between" style={{ flexWrap: "wrap", gap: "8px" }}>
+              <div className="flex-row items-center gap-2">
+                <Database size={20} color="var(--accent-en-primary)" />
+                <div>
+                  <h2 style={{ fontSize: "var(--text-base)", fontWeight: 700 }}>Dữ liệu trên thiết bị</h2>
+                  <p style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)" }}>
+                    Hiện tại dữ liệu học tập được lưu trữ cục bộ trong trình duyệt này (IndexedDB).
+                  </p>
+                </div>
               </div>
+              <Badge variant="default" size="sm">Cục bộ (IndexedDB)</Badge>
             </div>
+
+            <p style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)" }}>
+              <strong>Đổi thiết bị?</strong> Hãy xuất file sao lưu bên dưới và nhập trên thiết bị mới để bảo toàn vốn từ vựng và tiến độ học tập.
+            </p>
+
             <input ref={fileInputRef} type="file" accept="application/json,.json" hidden onChange={handleBackupFile} />
             <div className="flex-row gap-3" style={{ flexWrap: "wrap" }}>
-              <Button type="button" variant="secondary" leftIcon={<Download size={16} />} onClick={handleExport}>Xuất bản sao lưu</Button>
-              <Button type="button" variant="secondary" leftIcon={<Upload size={16} />} onClick={() => fileInputRef.current?.click()}>Nhập bản sao lưu</Button>
-              <Button type="button" variant="danger" leftIcon={<Trash2 size={16} />} onClick={handleDeleteLocalData}>Xóa dữ liệu trên thiết bị</Button>
+              <Button type="button" variant="secondary" leftIcon={<Download size={16} />} onClick={handleExport}>
+                Xuất bản sao lưu
+              </Button>
+              <Button type="button" variant="secondary" leftIcon={<Upload size={16} />} onClick={() => fileInputRef.current?.click()}>
+                Nhập bản sao lưu
+              </Button>
+              <Button type="button" variant="danger" leftIcon={<Trash2 size={16} />} onClick={handleDeleteLocalData}>
+                Xóa dữ liệu trên thiết bị
+              </Button>
             </div>
+
+            {/* Coming soon future cloud sync notice */}
+            <div style={{ marginTop: "8px", padding: "12px 14px", borderRadius: "var(--radius-md)", border: "1px dashed var(--border-strong)", backgroundColor: "var(--bg-muted)", display: "flex", alignItems: "flex-start", gap: "10px" }}>
+              <Cloud size={18} color="var(--text-tertiary)" style={{ flexShrink: 0, marginTop: "2px" }} />
+              <div style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)" }}>
+                <strong style={{ color: "var(--text-primary)" }}>Đồng bộ đám mây (Cloud Sync) — Sắp ra mắt</strong>
+                <p style={{ marginTop: "2px", color: "var(--text-tertiary)" }}>
+                  Tính năng đăng nhập tài khoản và tự động đồng bộ thời gian thực qua Supabase sẽ được ra mắt trong giai đoạn tiếp theo.
+                </p>
+              </div>
+            </div>
+
             {pendingBackup && (
-              <div style={{ padding: "12px", border: "1px solid var(--border-default)", borderRadius: "var(--radius-md)", background: "var(--bg-muted)" }}>
-                <p style={{ fontWeight: 700, marginBottom: "8px" }}>Xem trước bản sao lưu (schema {pendingBackup.preview.schemaVersion})</p>
+              <div style={{ padding: "14px", border: "1px solid var(--border-strong)", borderRadius: "var(--radius-md)", background: "var(--bg-surface)", boxShadow: "var(--shadow-sm)" }}>
+                <p style={{ fontWeight: 700, marginBottom: "8px", fontSize: "var(--text-sm)" }}>
+                  Xem trước bản sao lưu (schema v{pendingBackup.preview.schemaVersion})
+                </p>
                 <p style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)" }}>
-                  {pendingBackup.preview.counts.vocabulary} từ vựng · {pendingBackup.preview.counts.readings} bài đọc · {pendingBackup.preview.counts.quizHistory} lượt quiz
+                  📦 {pendingBackup.preview.counts.vocabulary} từ vựng · {pendingBackup.preview.counts.readings} bài đọc · {pendingBackup.preview.counts.quizHistory} lượt kiểm tra
                 </p>
                 <div className="flex-row gap-2" style={{ marginTop: "12px", flexWrap: "wrap" }}>
-                  <Button type="button" size="sm" onClick={() => handleImport("merge")}>Gộp với dữ liệu hiện tại</Button>
+                  <Button type="button" size="sm" variant="primary" onClick={() => handleImport("merge")}>Gộp với dữ liệu hiện tại</Button>
                   <Button type="button" size="sm" variant="secondary" onClick={() => handleImport("replace")}>Thay thế dữ liệu hiện tại</Button>
                   <Button type="button" size="sm" variant="ghost" onClick={() => setPendingBackup(null)}>Hủy</Button>
                 </div>

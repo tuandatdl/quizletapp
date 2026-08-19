@@ -162,7 +162,8 @@ export const ReadingDetailPage: React.FC = () => {
 
       window.speechSynthesis.cancel();
       const utterance = new SpeechSynthesisUtterance(sentence.text);
-      configureSpeechUtterance(utterance, passage.language, playbackState.speed, window.speechSynthesis.getVoices());
+      const preferredVoice = passage.language === "zh" ? settings?.preferredVoiceZh : settings?.preferredVoiceEn;
+      configureSpeechUtterance(utterance, passage.language, playbackState.speed, window.speechSynthesis.getVoices(), preferredVoice);
 
       utterance.onend = () => {
         if (playbackCancelledRef.current) return;
