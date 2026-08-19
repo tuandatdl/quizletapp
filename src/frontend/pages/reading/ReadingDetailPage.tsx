@@ -37,7 +37,12 @@ import type {
 } from "../../types/api";
 import type { VocabularyEnrichment } from "../../services/languageApi";
 import { classifyLocalSelection } from "../../static/localDomain";
-import { configureSpeechUtterance } from "../../services/speech";
+import {
+  cancelSpeechAndWait,
+  configureSpeechUtterance,
+  getReadySpeechVoices,
+  waitForSpeechVoices,
+} from "../../services/speech";
 
 export const ReadingDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -96,6 +101,8 @@ export const ReadingDetailPage: React.FC = () => {
   const playbackCancelledRef = useRef(false);
   const currentSentenceIdxRef = useRef(0);
   const isPlayingRef = useRef(false);
+  const playbackSessionIdRef = useRef(0);
+  const transitionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const enrichAbortRef = useRef<AbortController | null>(null);
 
   // ---- Context capture helper ----
@@ -232,14 +239,27 @@ export const ReadingDetailPage: React.FC = () => {
   // Audio Playback Engine (Sequential SpeechSynthesis / Real Audio)
   const stopAllAudio = useCallback(() => {
     playbackCancelledRef.current = true;
+    playbackSessionIdRef.current += 1;
     isPlayingRef.current = false;
+    if (transitionTimerRef.current) {
+      clearTimeout(transitionTimerRef.current);
+      transitionTimerRef.current = null;
+    }
     if ("speechSynthesis" in window) {
-      window.speechSynthesis.cancel();
+      try {
+        window.speechSynthesis.cancel();
+      } catch {}
     }
   }, []);
 
+  useEffect(() => {
+    return () => {
+      stopAllAudio();
+    };
+  }, [stopAllAudio]);
+
   const playSentenceAtIndex = useCallback(
-    async (index: number) => {
+    async (index: number, isSequential = false) => {
       if (!passage || !passage.sentences || index >= passage.sentences.length) {
         setPlaybackState((prev) => ({ ...prev, status: "completed" }));
         isPlayingRef.current = false;
@@ -249,55 +269,140 @@ export const ReadingDetailPage: React.FC = () => {
       const sentence = passage.sentences[index];
       if (!sentence) return;
 
-      currentSentenceIdxRef.current = index;
-      setPlaybackState((prev) => ({
-        ...prev,
-        status: "playing",
-        currentSentenceIndex: index,
-        currentSentenceId: sentence.id,
-      }));
-      isPlayingRef.current = true;
-      playbackCancelledRef.current = false;
+      if (!isSequential) {
+        // User action: play, resume, restart, seek, speed change
+        playbackSessionIdRef.current += 1;
+        const sessionId = playbackSessionIdRef.current;
+        playbackCancelledRef.current = false;
+        isPlayingRef.current = true;
+        currentSentenceIdxRef.current = index;
 
-      if (!("speechSynthesis" in window)) {
-        return;
-      }
+        setPlaybackState((prev) => ({
+          ...prev,
+          status: "playing",
+          currentSentenceIndex: index,
+          currentSentenceId: sentence.id,
+        }));
 
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(sentence.text);
-      const preferredVoice = passage.language === "zh" ? settings?.preferredVoiceZh : settings?.preferredVoiceEn;
-      configureSpeechUtterance(utterance, passage.language, playbackState.speed, window.speechSynthesis.getVoices(), preferredVoice);
+        if (!("speechSynthesis" in window)) return;
 
-      utterance.onend = () => {
-        if (playbackCancelledRef.current) return;
-        const nextIndex = index + 1;
-        if (nextIndex < passage.sentences.length) {
-          playSentenceAtIndex(nextIndex);
-        } else {
-          setPlaybackState((prev) => ({
-            ...prev,
-            status: "completed",
-            currentSentenceIndex: passage.sentences.length - 1,
-          }));
+        // Cancel previous speech and wait for synthesis engine to settle
+        await cancelSpeechAndWait(100);
+        if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId) return;
+
+        const voices = await waitForSpeechVoices(200);
+        if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId) return;
+
+        const utterance = new SpeechSynthesisUtterance(sentence.text);
+        const preferredVoice = passage.language === "zh" ? settings?.preferredVoiceZh : settings?.preferredVoiceEn;
+        configureSpeechUtterance(
+          utterance,
+          passage.language,
+          playbackState.speed,
+          voices.length > 0 ? voices : getReadySpeechVoices(),
+          preferredVoice
+        );
+
+        utterance.onend = () => {
+          if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId) return;
+          const nextIndex = index + 1;
+          if (nextIndex < passage.sentences.length) {
+            transitionTimerRef.current = setTimeout(() => {
+              if (!playbackCancelledRef.current && playbackSessionIdRef.current === sessionId) {
+                void playSentenceAtIndex(nextIndex, true);
+              }
+            }, 70);
+          } else {
+            setPlaybackState((prev) => ({
+              ...prev,
+              status: "completed",
+              currentSentenceIndex: passage.sentences.length - 1,
+            }));
+            isPlayingRef.current = false;
+          }
+        };
+
+        utterance.onerror = () => {
+          if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId) return;
+          setPlaybackState((prev) => ({ ...prev, status: "paused" }));
           isPlayingRef.current = false;
+        };
+
+        try {
+          window.speechSynthesis.speak(utterance);
+        } catch {
+          if (!playbackCancelledRef.current && playbackSessionIdRef.current === sessionId) {
+            setPlaybackState((prev) => ({ ...prev, status: "paused" }));
+            isPlayingRef.current = false;
+          }
         }
-      };
+      } else {
+        // Sequential sentence transition: DO NOT cancel speech engine
+        const sessionId = playbackSessionIdRef.current;
+        if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId) return;
 
-      utterance.onerror = (e) => {
-        if (playbackCancelledRef.current) return;
-        // On error or interruption, stop cleanly
-        setPlaybackState((prev) => ({ ...prev, status: "paused" }));
-        isPlayingRef.current = false;
-      };
+        currentSentenceIdxRef.current = index;
+        setPlaybackState((prev) => ({
+          ...prev,
+          status: "playing",
+          currentSentenceIndex: index,
+          currentSentenceId: sentence.id,
+        }));
 
-      window.speechSynthesis.speak(utterance);
+        if (!("speechSynthesis" in window)) return;
+
+        const utterance = new SpeechSynthesisUtterance(sentence.text);
+        const preferredVoice = passage.language === "zh" ? settings?.preferredVoiceZh : settings?.preferredVoiceEn;
+        configureSpeechUtterance(
+          utterance,
+          passage.language,
+          playbackState.speed,
+          getReadySpeechVoices(),
+          preferredVoice
+        );
+
+        utterance.onend = () => {
+          if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId) return;
+          const nextIndex = index + 1;
+          if (nextIndex < passage.sentences.length) {
+            transitionTimerRef.current = setTimeout(() => {
+              if (!playbackCancelledRef.current && playbackSessionIdRef.current === sessionId) {
+                void playSentenceAtIndex(nextIndex, true);
+              }
+            }, 70);
+          } else {
+            setPlaybackState((prev) => ({
+              ...prev,
+              status: "completed",
+              currentSentenceIndex: passage.sentences.length - 1,
+            }));
+            isPlayingRef.current = false;
+          }
+        };
+
+        utterance.onerror = () => {
+          if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId) return;
+          setPlaybackState((prev) => ({ ...prev, status: "paused" }));
+          isPlayingRef.current = false;
+        };
+
+        try {
+          window.speechSynthesis.speak(utterance);
+        } catch {
+          if (!playbackCancelledRef.current && playbackSessionIdRef.current === sessionId) {
+            setPlaybackState((prev) => ({ ...prev, status: "paused" }));
+            isPlayingRef.current = false;
+          }
+        }
+      }
     },
-    [passage, playbackState.speed]
+    [passage, playbackState.speed, settings?.preferredVoiceZh, settings?.preferredVoiceEn]
   );
 
   const handlePlay = useCallback(() => {
-    playSentenceAtIndex(currentSentenceIdxRef.current);
-  }, [playSentenceAtIndex]);
+    stopAllAudio();
+    void playSentenceAtIndex(currentSentenceIdxRef.current, false);
+  }, [stopAllAudio, playSentenceAtIndex]);
 
   const handlePause = useCallback(() => {
     stopAllAudio();
@@ -305,20 +410,21 @@ export const ReadingDetailPage: React.FC = () => {
   }, [stopAllAudio]);
 
   const handleResume = useCallback(() => {
-    playSentenceAtIndex(currentSentenceIdxRef.current);
-  }, [playSentenceAtIndex]);
+    stopAllAudio();
+    void playSentenceAtIndex(currentSentenceIdxRef.current, false);
+  }, [stopAllAudio, playSentenceAtIndex]);
 
   const handleRestart = useCallback(() => {
     stopAllAudio();
     currentSentenceIdxRef.current = 0;
-    playSentenceAtIndex(0);
+    void playSentenceAtIndex(0, false);
   }, [stopAllAudio, playSentenceAtIndex]);
 
   const handleSeekSentence = useCallback(
     (index: number) => {
+      const wasPlaying = isPlayingRef.current;
       stopAllAudio();
       currentSentenceIdxRef.current = index;
-      const wasPlaying = isPlayingRef.current;
       setPlaybackState((prev) => ({
         ...prev,
         currentSentenceIndex: index,
@@ -326,7 +432,7 @@ export const ReadingDetailPage: React.FC = () => {
         status: wasPlaying ? "playing" : "paused",
       }));
       if (wasPlaying) {
-        playSentenceAtIndex(index);
+        void playSentenceAtIndex(index, false);
       }
     },
     [stopAllAudio, passage, playSentenceAtIndex]
@@ -345,10 +451,11 @@ export const ReadingDetailPage: React.FC = () => {
 
   const handleSpeedChange = useCallback(
     (newSpeed: 0.75 | 1 | 1.25) => {
+      const wasPlaying = isPlayingRef.current;
+      if (wasPlaying) stopAllAudio();
       setPlaybackState((prev) => ({ ...prev, speed: newSpeed }));
-      if (isPlayingRef.current) {
-        stopAllAudio();
-        playSentenceAtIndex(currentSentenceIdxRef.current);
+      if (wasPlaying) {
+        void playSentenceAtIndex(currentSentenceIdxRef.current, false);
       }
     },
     [stopAllAudio, playSentenceAtIndex]

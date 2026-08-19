@@ -2,7 +2,7 @@ import type {
   Language as SharedLanguage,
   ReviewAction as SharedReviewAction,
   VocabularyStatus as SharedVocabularyStatus
-} from "../../shared/schemas";
+} from "../../shared/schemas.js";
 
 export type Language = SharedLanguage;
 export type TargetLanguage = "vi";

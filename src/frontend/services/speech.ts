@@ -1,4 +1,4 @@
-import type { Language } from "../types/api";
+import type { Language } from "../types/api.js";
 
 const NATURAL_VOICE = /natural|neural|online|enhanced|premium|google|microsoft/iu;
 const LOW_QUALITY_VOICE = /compact|espeak|festival|default/iu;
@@ -60,4 +60,72 @@ export function configureSpeechUtterance(
     utterance.voice = voice;
     utterance.lang = voice.lang;
   }
+}
+
+let cachedVoices: SpeechSynthesisVoice[] = [];
+let voiceListenersInitialized = false;
+
+export function initSpeechVoices(): void {
+  if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+  try {
+    cachedVoices = window.speechSynthesis.getVoices();
+    if (!voiceListenersInitialized) {
+      voiceListenersInitialized = true;
+      window.speechSynthesis.addEventListener("voiceschanged", () => {
+        try {
+          cachedVoices = window.speechSynthesis.getVoices();
+        } catch {}
+      });
+    }
+  } catch {}
+}
+
+export function getReadySpeechVoices(): SpeechSynthesisVoice[] {
+  if (typeof window === "undefined" || !("speechSynthesis" in window)) return [];
+  try {
+    if (cachedVoices.length === 0) {
+      cachedVoices = window.speechSynthesis.getVoices();
+    }
+  } catch {}
+  return cachedVoices;
+}
+
+export async function waitForSpeechVoices(timeoutMs = 500): Promise<SpeechSynthesisVoice[]> {
+  if (typeof window === "undefined" || !("speechSynthesis" in window)) return [];
+  const ready = getReadySpeechVoices();
+  if (ready.length > 0) return ready;
+
+  return new Promise((resolve) => {
+    let resolved = false;
+    const cleanup = () => {
+      if (!resolved) {
+        resolved = true;
+        try {
+          window.speechSynthesis.removeEventListener("voiceschanged", onVoices);
+          cachedVoices = window.speechSynthesis.getVoices();
+        } catch {}
+        resolve(cachedVoices);
+      }
+    };
+    const onVoices = () => cleanup();
+    try {
+      window.speechSynthesis.addEventListener("voiceschanged", onVoices);
+    } catch {}
+    setTimeout(cleanup, timeoutMs);
+  });
+}
+
+export async function cancelSpeechAndWait(delayMs = 100): Promise<void> {
+  if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+  try {
+    window.speechSynthesis.cancel();
+  } catch {}
+  if (delayMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+}
+
+// Auto-initialize on browser load
+if (typeof window !== "undefined") {
+  initSpeechVoices();
 }
