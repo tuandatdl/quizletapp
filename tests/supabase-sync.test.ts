@@ -337,3 +337,69 @@ describe("Supabase Local-First Cloud Sync", () => {
     expect(pushedStores.sort()).toEqual([...SYNCABLE_STORES].sort());
   });
 });
+
+// ─── Regression: Magic Link button must call signInWithEmail without relying on form submit ───
+describe("Magic Link button regression", () => {
+  afterEach(() => {
+    resetSupabaseClientForTesting();
+    vi.unstubAllEnvs();
+  });
+
+  it("11. signInWithEmail returns error when Supabase is not configured", async () => {
+    vi.stubEnv("VITE_SUPABASE_URL", "");
+    vi.stubEnv("VITE_SUPABASE_ANON_KEY", "");
+    resetSupabaseClientForTesting();
+
+    const { CloudAuthService } = await import("../src/frontend/services/cloudAuth.js");
+    const service = new CloudAuthService();
+    const res = await service.signInWithEmail("test@example.com");
+    expect(res.success).toBe(false);
+    expect(res.error).toContain("chưa được cấu hình");
+  });
+
+  it("12. signInWithEmail validates empty email", async () => {
+    vi.stubEnv("VITE_SUPABASE_URL", "https://example.supabase.co");
+    vi.stubEnv("VITE_SUPABASE_ANON_KEY", "sb_test_key");
+    // Use a mock client that has auth.signInWithOtp
+    const mockClient = {
+      auth: {
+        signInWithOtp: vi.fn(async () => ({ error: null })),
+        getSession: vi.fn(async () => ({ data: { session: null } })),
+        onAuthStateChange: vi.fn(() => ({ data: { subscription: { unsubscribe: vi.fn() } } })),
+      },
+    };
+    resetSupabaseClientForTesting(mockClient as any);
+
+    const { CloudAuthService } = await import("../src/frontend/services/cloudAuth.js");
+    const service = new CloudAuthService();
+
+    const resEmpty = await service.signInWithEmail("");
+    expect(resEmpty.success).toBe(false);
+
+    const resInvalid = await service.signInWithEmail("not-an-email");
+    expect(resInvalid.success).toBe(false);
+  });
+
+  it("13. signInWithEmail calls signInWithOtp with correct email and returns success", async () => {
+    vi.stubEnv("VITE_SUPABASE_URL", "https://example.supabase.co");
+    vi.stubEnv("VITE_SUPABASE_ANON_KEY", "sb_test_key");
+    const signInWithOtp = vi.fn(async () => ({ error: null }));
+    const mockClient = {
+      auth: {
+        signInWithOtp,
+        getSession: vi.fn(async () => ({ data: { session: null } })),
+        onAuthStateChange: vi.fn(() => ({ data: { subscription: { unsubscribe: vi.fn() } } })),
+      },
+    };
+    resetSupabaseClientForTesting(mockClient as any);
+
+    const { CloudAuthService } = await import("../src/frontend/services/cloudAuth.js");
+    const service = new CloudAuthService();
+    const res = await service.signInWithEmail("trintran5555@gmail.com");
+
+    expect(res.success).toBe(true);
+    expect(signInWithOtp).toHaveBeenCalledOnce();
+    const callArg = (signInWithOtp.mock.lastCall as unknown[])[0] as { email: string };
+    expect(callArg.email).toBe("trintran5555@gmail.com");
+  });
+});

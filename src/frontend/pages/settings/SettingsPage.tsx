@@ -106,8 +106,7 @@ export const SettingsPage: React.FC = () => {
     };
   }, []);
 
-  const handleSendMagicLink = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSendMagicLink = async () => {
     if (!emailInput.trim()) return;
     setIsSendingMagicLink(true);
     try {
@@ -645,20 +644,22 @@ export const SettingsPage: React.FC = () => {
                     </span>
                   </div>
                 ) : (
-                  <form
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      void handleSendMagicLink(e);
-                    }}
+                  <div
                     className="flex-row gap-2"
                     style={{ flexWrap: "wrap" }}
                   >
                     <input
+                      id="cloud-sync-email-input"
                       type="email"
-                      required
                       placeholder="vidu@gmail.com"
                       value={emailInput}
                       onChange={(e) => setEmailInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          void handleSendMagicLink();
+                        }
+                      }}
                       style={{
                         flex: 1,
                         minWidth: "220px",
@@ -671,15 +672,17 @@ export const SettingsPage: React.FC = () => {
                       }}
                     />
                     <Button
-                      type="submit"
+                      id="cloud-sync-send-magic-link-btn"
+                      type="button"
                       variant="primary"
                       size="sm"
                       isLoading={isSendingMagicLink}
                       leftIcon={<LogIn size={15} />}
+                      onClick={() => void handleSendMagicLink()}
                     >
                       Gửi liên kết đăng nhập
                     </Button>
-                  </form>
+                  </div>
                 )}
               </div>
             ) : (
