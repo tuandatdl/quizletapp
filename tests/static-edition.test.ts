@@ -783,14 +783,15 @@ describe("Context-aware enrichment: cache isolation", () => {
   });
 
   it("enrichFromContext static route returns null when api not configured", async () => {
+    vi.stubEnv("VITE_LANGUAGE_API_URL", "");
     const db = adapter();
     const router = new StaticApiRouter(db);
-    // No VITE_LANGUAGE_API_URL configured
     const result = await router.request<null>("/api/vocabulary/enrich-context", {
       method: "POST",
       body: JSON.stringify({ term: "bank", language: "en", sentence: "She went to the bank." }),
     });
     expect(result).toBeNull();
+    vi.unstubAllEnvs();
   });
 
   it("saveSelection with context stores contextAware metadata", async () => {
