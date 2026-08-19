@@ -62,19 +62,27 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
 
   const cleanupAudio = () => {
     if (audioRef.current) {
-      try {
-        audioRef.current.pause();
-        audioRef.current.src = "";
-      } catch {}
-      if (activeHtmlAudio === audioRef.current) activeHtmlAudio = null;
+      const audio = audioRef.current;
       audioRef.current = null;
+      try {
+        audio.onplay = null;
+        audio.onended = null;
+        audio.onerror = null;
+        audio.onpause = null;
+        audio.ontimeupdate = null;
+        audio.pause();
+        audio.removeAttribute("src");
+        audio.src = "";
+      } catch {}
+      if (activeHtmlAudio === audio) activeHtmlAudio = null;
     }
     if (objectUrlRef.current) {
-      try {
-        URL.revokeObjectURL(objectUrlRef.current);
-      } catch {}
-      if (activeObjectUrl === objectUrlRef.current) activeObjectUrl = null;
+      const url = objectUrlRef.current;
       objectUrlRef.current = null;
+      try {
+        URL.revokeObjectURL(url);
+      } catch {}
+      if (activeObjectUrl === url) activeObjectUrl = null;
     }
   };
 
@@ -84,7 +92,9 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
     abortRef.current = null;
     cleanupAudio();
     if (utteranceRef.current && "speechSynthesis" in window) {
-      window.speechSynthesis.cancel();
+      try {
+        window.speechSynthesis.cancel();
+      } catch {}
       utteranceRef.current = null;
     }
     if (mountedRef.current) {
@@ -158,19 +168,30 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
     const currentGen = speechGenRef.current;
 
     if (activeHtmlAudio) {
-      try {
-        activeHtmlAudio.pause();
-        activeHtmlAudio.src = "";
-      } catch {}
+      const prevAudio = activeHtmlAudio;
       activeHtmlAudio = null;
+      try {
+        prevAudio.onplay = null;
+        prevAudio.onended = null;
+        prevAudio.onerror = null;
+        prevAudio.onpause = null;
+        prevAudio.pause();
+        prevAudio.removeAttribute("src");
+        prevAudio.src = "";
+      } catch {}
     }
     if (activeObjectUrl && activeObjectUrl !== url) {
-      try {
-        URL.revokeObjectURL(activeObjectUrl);
-      } catch {}
+      const prevUrl = activeObjectUrl;
       activeObjectUrl = null;
+      try {
+        URL.revokeObjectURL(prevUrl);
+      } catch {}
     }
-    if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+    if ("speechSynthesis" in window) {
+      try {
+        window.speechSynthesis.cancel();
+      } catch {}
+    }
 
     const audio = new Audio(url);
     audioRef.current = audio;
@@ -182,33 +203,12 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
 
     configureAudioElementPlaybackRate(audio, currentSpeed);
 
-    audio.onplay = () => {
-      if (!mountedRef.current || speechGenRef.current !== currentGen) return;
-      setIsLoading(false);
-      setIsPlaying(true);
-    };
-    audio.onended = () => {
-      if (activeHtmlAudio === audio) activeHtmlAudio = null;
-      if (isObjectUrl) {
-        try {
-          URL.revokeObjectURL(url);
-        } catch {}
-        if (activeObjectUrl === url) activeObjectUrl = null;
-        objectUrlRef.current = null;
-      }
-      audioRef.current = null;
-      if (mountedRef.current && speechGenRef.current === currentGen) setIsPlaying(false);
-    };
-    audio.onerror = () => {
-      if (activeHtmlAudio === audio) activeHtmlAudio = null;
-      if (isObjectUrl) {
-        try {
-          URL.revokeObjectURL(url);
-        } catch {}
-        if (activeObjectUrl === url) activeObjectUrl = null;
-        objectUrlRef.current = null;
-      }
-      audioRef.current = null;
+    let fallbackTriggered = false;
+    const triggerFallbackOnce = () => {
+      if (fallbackTriggered) return;
+      fallbackTriggered = true;
+
+      cleanupAudio();
       if (!mountedRef.current || speechGenRef.current !== currentGen) return;
       setIsLoading(false);
       setIsPlaying(false);
@@ -216,23 +216,26 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
       else toastError("Không thể phát tệp âm thanh.");
     };
 
+    audio.onplay = () => {
+      if (!mountedRef.current || speechGenRef.current !== currentGen) return;
+      setIsLoading(false);
+      setIsPlaying(true);
+    };
+    audio.onended = () => {
+      cleanupAudio();
+      if (mountedRef.current && speechGenRef.current === currentGen) {
+        setIsPlaying(false);
+        setIsLoading(false);
+      }
+    };
+    audio.onerror = () => {
+      triggerFallbackOnce();
+    };
+
     try {
       await audio.play();
     } catch {
-      if (activeHtmlAudio === audio) activeHtmlAudio = null;
-      if (isObjectUrl) {
-        try {
-          URL.revokeObjectURL(url);
-        } catch {}
-        if (activeObjectUrl === url) activeObjectUrl = null;
-        objectUrlRef.current = null;
-      }
-      audioRef.current = null;
-      if (!mountedRef.current || speechGenRef.current !== currentGen) return;
-      setIsLoading(false);
-      setIsPlaying(false);
-      if (fallbackText) void playBrowserSpeech(fallbackText, language);
-      else toastError("Không thể phát tệp âm thanh.");
+      triggerFallbackOnce();
     }
   };
 
