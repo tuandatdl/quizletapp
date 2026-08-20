@@ -50,6 +50,35 @@ export interface HighVolumeProgress {
   saved: number;
 }
 
+/** Ephemeral, privacy-safe job summary. It is never persisted or sent through Cloud Sync. */
+export interface HighVolumeJobMetrics {
+  inputCount: number;
+  uniqueCount: number;
+  duplicateCount: number;
+  existingSkipped: number;
+  userCompleteSkipped: number;
+  enrichmentItemCount: number;
+  enrichmentBatchCount: number;
+  cacheHitBatchCount?: number;
+  geminiBatchCount?: number;
+  workersAiBatchCount?: number;
+  failedBatchCount?: number;
+  retriedBatchCount?: number;
+  saveCount?: number;
+  saveFailureCount?: number;
+}
+
+export interface HighVolumeExecutionMetrics {
+  enrichmentBatchCount?: number;
+  cacheHitBatchCount?: number;
+  geminiBatchCount?: number;
+  workersAiBatchCount?: number;
+  failedBatchCount?: number;
+  retriedBatchCount?: number;
+  saveCount?: number;
+  saveFailureCount?: number;
+}
+
 export interface BoundedBatchOptions<T, R> {
   items: T[];
   batchSize?: number;
@@ -60,6 +89,7 @@ export interface BoundedBatchOptions<T, R> {
   onStart?: (batch: T[]) => void;
   onSuccess?: (batch: T[], result: R) => void;
   onFailure?: (batch: T[], error: Error) => void;
+  onRetry?: (batch: T[], error: Error, attempt: number) => void;
   wait?: (ms: number) => Promise<void>;
 }
 
@@ -131,6 +161,31 @@ export function progressForImport(plan: Pick<HighVolumeImportPlan, "parsed" | "d
   };
 }
 
+export function summarizeHighVolumeJob(plan: HighVolumeImportPlan, execution: HighVolumeExecutionMetrics = {}): HighVolumeJobMetrics {
+  const userCompleteSkipped = plan.items.filter((item) => item.state !== "SKIPPED_EXISTING" && Boolean(item.draft.meaningVi?.trim())).length;
+  const enrichmentItemCount = plan.items.filter((item) => item.state === "QUEUED").length;
+  return {
+    inputCount: plan.parsed + plan.duplicates,
+    uniqueCount: plan.parsed,
+    duplicateCount: plan.duplicates,
+    existingSkipped: plan.existing,
+    userCompleteSkipped,
+    enrichmentItemCount,
+    enrichmentBatchCount: execution.enrichmentBatchCount ?? Math.ceil(enrichmentItemCount / HIGH_VOLUME_BATCH_SIZE),
+    cacheHitBatchCount: execution.cacheHitBatchCount,
+    geminiBatchCount: execution.geminiBatchCount,
+    workersAiBatchCount: execution.workersAiBatchCount,
+    failedBatchCount: execution.failedBatchCount,
+    retriedBatchCount: execution.retriedBatchCount,
+    saveCount: execution.saveCount,
+    saveFailureCount: execution.saveFailureCount,
+  };
+}
+
+export function logHighVolumeJobMetrics(metrics: HighVolumeJobMetrics, logger: (message: string) => void = console.info): void {
+  try { logger(JSON.stringify({ event: "high_volume_ai_job_summary", ...metrics })); } catch { /* metrics are fail-open */ }
+}
+
 export function isRetryableBatchError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /429|AI_PROVIDER_EXHAUSTED|network|kết nối|timeout|timed out|5\d\d|temporarily unavailable/iu.test(message);
@@ -173,6 +228,7 @@ export async function runBoundedBatches<T, R>(options: BoundedBatchOptions<T, R>
             }
             break;
           }
+          options.onRetry?.(batch, error, attempt);
           await (options.wait ?? delay)(1_000 * 2 ** (attempt - 1));
         }
       }

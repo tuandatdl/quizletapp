@@ -6,7 +6,15 @@ import {
   createKvAiGatewayCache,
   gatewayCacheKey,
   type KvNamespaceBinding,
-} from "./aiGateway";
+} from "./aiGateway.js";
+import {
+  assessEnrichmentQuality,
+  estimateGeminiCost,
+  normalizeProviderConfidence,
+  safeAiLog,
+  type AiPricingConfiguration,
+  type EnrichmentQualitySummary,
+} from "./aiQuality.js";
 
 export interface AiBinding {
   run(model: string, input: Record<string, unknown>): Promise<unknown>;
@@ -27,6 +35,9 @@ export interface Env {
   GEMINI_API_KEY?: string;
   GEMINI_MODEL?: string;
   AI_PROVIDER_TIMEOUT_MS?: string;
+  AI_PRICING_VERSION?: string;
+  GEMINI_INPUT_PRICE_PER_MILLION?: string;
+  GEMINI_OUTPUT_PRICE_PER_MILLION?: string;
   TTS_MODEL_EN?: string;
   TTS_MODEL_ZH?: string;
 }
@@ -74,7 +85,21 @@ interface VocabularyContext {
 class AiOutputError extends Error {}
 
 function errorSummary(value: unknown): string {
-  return value instanceof Error ? `${value.name}: ${value.message}`.slice(0, 300) : "Unknown AI output error";
+  if (value instanceof AiGatewayExhaustedError) return "AI_PROVIDER_EXHAUSTED";
+  if (value instanceof AiOutputError || value instanceof TypeError) return "VALIDATION_FAILED";
+  return "AI_REQUEST_FAILED";
+}
+
+function pricingConfiguration(env: Env): AiPricingConfiguration {
+  const numberFromEnv = (value: string | undefined) => {
+    const parsed = value === undefined ? undefined : Number(value);
+    return typeof parsed === "number" && Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+  };
+  return {
+    version: env.AI_PRICING_VERSION,
+    geminiInputPricePerMillion: numberFromEnv(env.GEMINI_INPUT_PRICE_PER_MILLION),
+    geminiOutputPricePerMillion: numberFromEnv(env.GEMINI_OUTPUT_PRICE_PER_MILLION),
+  };
 }
 
 function corsHeaders(origin: string): HeadersInit {
@@ -274,7 +299,7 @@ export function validateEnrichmentItems(value: unknown, terms: string[], languag
         term: expectedTerm,
         language,
         lexicalStatus,
-        lexicalConfidence: typeof item.lexicalConfidence === "number" ? Math.max(0, Math.min(1, item.lexicalConfidence)) : undefined,
+        lexicalConfidence: normalizeProviderConfidence(item.lexicalConfidence),
         lexicalReason: cleanString(item.lexicalReason, 300),
       };
     }
@@ -338,7 +363,7 @@ export function validateEnrichmentItems(value: unknown, terms: string[], languag
       partOfSpeech, synonyms: cleanStrings(item.synonyms),
       example: cleanString(item.example, 2000), exampleTranslation: cleanString(item.exampleTranslation, 2000), senses,
       partial: item.partial === true,
-      lexicalConfidence: typeof item.lexicalConfidence === "number" ? Math.max(0, Math.min(1, item.lexicalConfidence)) : undefined,
+      lexicalConfidence: normalizeProviderConfidence(item.lexicalConfidence),
       lexicalReason: cleanString(item.lexicalReason, 300),
       cefr,
       suggestedTopics: language === "en" ? (cleanStrings(item.suggestedTopics) ?? []).slice(0, 3) : undefined,
@@ -575,15 +600,40 @@ function enrichmentGatewayCacheKey(language: Language, terms: string[], contexts
   });
 }
 
-function logGatewayResult(operation: string, result: { provider: string; fallbackCount: number; cacheHit: boolean; attempts: Array<{ provider: string; failure?: string; latencyMs: number }> }): void {
-  console.info(JSON.stringify({
-    event: "ai_gateway_completed",
+function logGatewayResult(
+  operation: string,
+  result: { provider: string; fallbackCount: number; cacheHit: boolean; cacheMiss: boolean; cacheReadFailure: boolean; cacheWriteFailure: boolean; latencyMs: number; usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number; unit: string }; attempts: Array<{ provider: string; failure?: string; latencyMs: number }> },
+  details: { itemCount: number; language?: Language; contextPresent?: boolean; quality?: EnrichmentQualitySummary; pricing?: AiPricingConfiguration } = { itemCount: 1 },
+): void {
+  const estimatedCost = result.provider === "gemini" && result.usage && details.pricing
+    ? estimateGeminiCost(result.usage as Parameters<typeof estimateGeminiCost>[0], details.pricing)
+    : undefined;
+  safeAiLog("ai_gateway_completed", {
     operation,
     provider: result.provider,
     fallbackCount: result.fallbackCount,
     cacheHit: result.cacheHit,
+    cacheMiss: result.cacheMiss,
+    cacheReadFailure: result.cacheReadFailure,
+    cacheWriteFailure: result.cacheWriteFailure,
+    latencyMs: result.latencyMs,
+    itemCount: details.itemCount,
+    language: details.language,
+    contextPresent: details.contextPresent,
+    quality: details.quality && {
+      status: details.quality.status,
+      applicationQualityScore: details.quality.applicationQualityScore,
+      providerConfidenceCount: details.quality.providerConfidenceCount,
+      validCount: details.quality.validCount,
+      uncertainCount: details.quality.uncertainCount,
+      invalidCount: details.quality.invalidCount,
+      issues: details.quality.issues,
+    },
+    usage: result.usage,
+    pricingVersion: estimatedCost === undefined ? undefined : details.pricing?.version,
+    estimatedCostUsd: estimatedCost,
     attempts: result.attempts,
-  }));
+  });
 }
 
 async function runEnrichmentBatch(env: Env, language: Language, terms: string[], contexts?: Array<VocabularyContext | null>, correctiveInstruction?: string): Promise<Array<Record<string, unknown>>> {
@@ -600,7 +650,14 @@ async function runEnrichmentBatch(env: Env, language: Language, terms: string[],
     cacheKey: enrichmentGatewayCacheKey(language, terms, contexts, adjudicating ? "adjudicate" : "standard"),
     workersModel: workersPrimaryModel,
   }, (payload) => validateEnrichmentItems(payload, terms, language), (cached) => validateEnrichmentItems({ items: cached }, terms, language));
-  logGatewayResult("enrichment", result);
+  const quality = assessEnrichmentQuality(result.value, language);
+  logGatewayResult("enrichment", result, {
+    itemCount: terms.length,
+    language,
+    contextPresent: Boolean(contexts?.some(Boolean)),
+    quality,
+    pricing: pricingConfiguration(env),
+  });
   return result.value.map((item) => ({ ...item, enrichmentProvider: result.provider }));
 }
 
@@ -646,7 +703,7 @@ async function enrich(body: Record<string, unknown>, env: Env): Promise<Array<Re
   const contexts = parseContexts(body.contexts, validTerms.length);
   let primary: Array<Record<string, unknown>> | undefined;
   try { primary = await runEnrichmentBatch(env, language, validTerms, contexts); }
-  catch (caught) { console.warn(JSON.stringify({ event: "enrichment_primary_failed", termCount: validTerms.length, reason: errorSummary(caught) })); }
+  catch (caught) { safeAiLog("enrichment_primary_failed", { itemCount: validTerms.length, reason: errorSummary(caught) }, console.warn); }
   const results: Array<Record<string, unknown>> = [];
   for (const [index, term] of validTerms.entries()) {
     const candidate = primary?.[index];
@@ -698,7 +755,7 @@ async function translate(body: Record<string, unknown>, env: Env): Promise<strin
     if (!translation) throw new TypeError("AI translation cache output is invalid.");
     return translation;
   });
-  logGatewayResult("translation", result);
+  logGatewayResult("translation", result, { itemCount: 1, pricing: pricingConfiguration(env) });
   return result.value;
 }
 
@@ -866,7 +923,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
   } catch (caught) {
     if (caught instanceof RangeError) return error(origin, 413, "PAYLOAD_TOO_LARGE", caught.message);
     if (caught instanceof AiGatewayExhaustedError) {
-      console.error(JSON.stringify({ event: "ai_gateway_exhausted", attempts: caught.attempts }));
+      safeAiLog("ai_gateway_exhausted", { attempts: caught.attempts }, console.error);
       return error(origin, 502, "AI_PROVIDER_EXHAUSTED", "Dịch vụ AI hiện không khả dụng. Vui lòng thử lại sau.");
     }
     if (caught instanceof AiOutputError) return error(origin, 502, "AI_RESPONSE_INVALID", caught.message);

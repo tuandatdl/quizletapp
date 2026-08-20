@@ -95,6 +95,10 @@ function optionalString(value: unknown, max: number): string | undefined {
   return clean && clean.length <= max ? clean : undefined;
 }
 
+function providerConfidence(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1 ? value : undefined;
+}
+
 function stringArray(value: unknown, maxItems = 30): string[] | undefined {
   if (!Array.isArray(value) || value.length > maxItems) return undefined;
   const clean = value.map((item) => optionalString(item, 200)).filter((item): item is string => Boolean(item));
@@ -136,7 +140,7 @@ export function validateEnrichment(value: unknown, expectedLanguage?: Language):
     language,
     meaningVi,
     lexicalStatus,
-    lexicalConfidence: typeof item.lexicalConfidence === "number" ? Math.max(0, Math.min(1, item.lexicalConfidence)) : undefined,
+    lexicalConfidence: providerConfidence(item.lexicalConfidence),
     lexicalReason: optionalString(item.lexicalReason, 300),
     cefr: language === "en" ? normalizeCefrLevel(item.cefr) ?? undefined : undefined,
     suggestedTopics: language === "en" ? normalizeVocabularyTopics(item.suggestedTopics).slice(0, 3) : undefined,
