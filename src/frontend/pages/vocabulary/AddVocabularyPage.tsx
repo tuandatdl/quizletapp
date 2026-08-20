@@ -149,6 +149,7 @@ export const AddVocabularyPage: React.FC = () => {
   const [previewItems, setPreviewItems] = useState<EditablePreviewItem[]>([]);
   const previewItemsRef = useRef(previewItems);
   previewItemsRef.current = previewItems;
+  const analyzeGenerationRef = useRef(0);
   const [hasParsed, setHasParsed] = useState(false);
   const [isBulkSaving, setIsBulkSaving] = useState(false);
   const [bulkSaveResult, setBulkSaveResult] = useState<BulkVocabularyCreateResult | null>(null);
@@ -172,8 +173,36 @@ export const AddVocabularyPage: React.FC = () => {
   const isZh = formLang === "zh";
 
   // ================= QUICK ADD HANDLERS =================
+  const invalidateQuickAnalysis = useCallback(() => {
+    analyzeGenerationRef.current += 1;
+    setPreviewItems([]);
+    setHasParsed(false);
+    setBulkSaveResult(null);
+    setIsPreviewLoading(false);
+    setIsRetryingEnrichment(false);
+  }, []);
+
+  const handleQuickInputChange = useCallback((event: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const nextInput = event.target.value;
+    if (nextInput === quickInput) return;
+    setQuickInput(nextInput);
+    invalidateQuickAnalysis();
+  }, [invalidateQuickAnalysis, quickInput]);
+
+  const handleFormLanguageChange = useCallback((nextLanguage: Language) => {
+    if (nextLanguage === formLang) return;
+    setFormLang(nextLanguage);
+    invalidateQuickAnalysis();
+  }, [formLang, invalidateQuickAnalysis]);
+
   const handleAnalyzeQuickInput = async () => {
-    if (!quickInput.trim()) {
+    const requestGeneration = analyzeGenerationRef.current + 1;
+    analyzeGenerationRef.current = requestGeneration;
+    const inputSnapshot = quickInput;
+    const languageSnapshot = formLang;
+    const isLatestRequest = () => analyzeGenerationRef.current === requestGeneration;
+
+    if (!inputSnapshot.trim()) {
       error("Vui lòng nhập ít nhất một từ vựng.");
       return;
     }
@@ -181,7 +210,8 @@ export const AddVocabularyPage: React.FC = () => {
     setIsPreviewLoading(true);
     setBulkSaveResult(null);
     try {
-      const terms = parseLocalQuickInput(quickInput, formLang);
+      const terms = parseLocalQuickInput(inputSnapshot, languageSnapshot);
+      if (!isLatestRequest()) return;
       setPreviewItems(terms.map((term, idx) => ({
         id: `loading-${idx}`, term, normalizedTerm: term.normalize("NFKC").trim().toLocaleLowerCase(), duplicate: false,
         meaningVi: "", partOfSpeech: "", pronunciation: "", synonyms: "", example: "", exampleTranslation: "", topic: "", level: "", toeicLevel: "", tone: "", traditional: "",
@@ -189,14 +219,16 @@ export const AddVocabularyPage: React.FC = () => {
       })));
       setHasParsed(true);
     } catch (caught) {
+      if (!isLatestRequest()) return;
       error(getFriendlyErrorMessage(caught));
       setIsPreviewLoading(false);
       return;
     }
     try {
-      const res = await vocabularyApi.bulkPreview(formLang, quickInput);
+      const res = await vocabularyApi.bulkPreview(languageSnapshot, inputSnapshot);
+      if (!isLatestRequest()) return;
       setEnrichmentConfigured(res.enrichment.configured);
-      const items = res.items.map((item, idx) => toEditablePreview(item, idx, formLang));
+      const items = res.items.map((item, idx) => toEditablePreview(item, idx, languageSnapshot));
 
       setPreviewItems(items);
       setHasParsed(true);
@@ -204,31 +236,37 @@ export const AddVocabularyPage: React.FC = () => {
         success(`Đã nhận diện thành công ${items.length} từ!`);
       }
     } catch (err: any) {
+      if (!isLatestRequest()) return;
       setPreviewItems((items) => items.map((item) => ({ ...item, enrichmentState: "failed", enrichmentError: getFriendlyErrorMessage(err) })));
       error(getFriendlyErrorMessage(err));
     } finally {
-      setIsPreviewLoading(false);
+      if (isLatestRequest()) setIsPreviewLoading(false);
     }
   };
 
   const handleRetryEnrichment = useCallback(async (terms?: string[]) => {
+    const requestGeneration = analyzeGenerationRef.current;
+    const languageSnapshot = formLang;
+    const isCurrentAnalysis = () => analyzeGenerationRef.current === requestGeneration;
     const targets = terms ?? previewItemsRef.current.filter(needsEnrichmentRetry).map((item) => item.term);
     if (!targets.length) return;
     const normalizedTargets = new Set(targets.map((term) => term.normalize("NFKC").trim().toLocaleLowerCase()));
     setIsRetryingEnrichment(true);
     setPreviewItems((items) => items.map((item) => normalizedTargets.has(item.normalizedTerm) ? { ...item, enrichmentState: "loading", enrichmentError: undefined } : item));
     try {
-      const res = await vocabularyApi.bulkPreview(formLang, targets.join("\n"), true);
-      const replacements = new Map(res.items.map((item, idx) => [item.normalizedTerm, toEditablePreview(item, idx, formLang)]));
+      const res = await vocabularyApi.bulkPreview(languageSnapshot, targets.join("\n"), true);
+      if (!isCurrentAnalysis()) return;
+      const replacements = new Map(res.items.map((item, idx) => [item.normalizedTerm, toEditablePreview(item, idx, languageSnapshot)]));
       setPreviewItems((items) => items.map((item) => {
         const replacement = replacements.get(item.normalizedTerm);
         return replacement ? { ...replacement, id: item.id, selected: item.selected, expandedDetails: item.expandedDetails } : item;
       }));
     } catch (caught) {
+      if (!isCurrentAnalysis()) return;
       setPreviewItems((items) => items.map((item) => normalizedTargets.has(item.normalizedTerm) ? { ...item, enrichmentState: "failed", enrichmentError: getFriendlyErrorMessage(caught) } : item));
       error(getFriendlyErrorMessage(caught));
     } finally {
-      setIsRetryingEnrichment(false);
+      if (isCurrentAnalysis()) setIsRetryingEnrichment(false);
     }
   }, [error, formLang]);
 
@@ -526,7 +564,7 @@ export const AddVocabularyPage: React.FC = () => {
               <div className="flex-row gap-3">
                 <button
                   type="button"
-                  onClick={() => setFormLang("en")}
+                  onClick={() => handleFormLanguageChange("en")}
                   style={{
                     flex: 1,
                     padding: "10px 16px",
@@ -548,7 +586,7 @@ export const AddVocabularyPage: React.FC = () => {
 
                 <button
                   type="button"
-                  onClick={() => setFormLang("zh")}
+                  onClick={() => handleFormLanguageChange("zh")}
                   style={{
                     flex: 1,
                     padding: "10px 16px",
@@ -582,7 +620,7 @@ export const AddVocabularyPage: React.FC = () => {
                 id="quick-vocab-input"
                 rows={4}
                 value={quickInput}
-                onChange={(e) => setQuickInput(e.target.value)}
+                onChange={handleQuickInputChange}
                 placeholder={isZh ? "朋友, 学习, 汉语, 习惯" : "go, car, live, total\ngive up\nlook forward to"}
                 style={{
                   width: "100%",
@@ -850,7 +888,7 @@ export const AddVocabularyPage: React.FC = () => {
               <div className="flex-row gap-3">
                 <button
                   type="button"
-                  onClick={() => setFormLang("en")}
+                  onClick={() => handleFormLanguageChange("en")}
                   style={{
                     flex: 1,
                     padding: "10px 16px",
@@ -872,7 +910,7 @@ export const AddVocabularyPage: React.FC = () => {
 
                 <button
                   type="button"
-                  onClick={() => setFormLang("zh")}
+                  onClick={() => handleFormLanguageChange("zh")}
                   style={{
                     flex: 1,
                     padding: "10px 16px",

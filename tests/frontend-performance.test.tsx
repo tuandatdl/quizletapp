@@ -5,11 +5,18 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { EditablePreviewItem } from "../src/frontend/pages/vocabulary/AddVocabularyPage.js";
+import type { BulkVocabularyPreview } from "../src/frontend/types/api.js";
 
 const apiMocks = vi.hoisted(() => ({
   bulkPreview: vi.fn(),
   bulkCreate: vi.fn(),
   create: vi.fn(),
+}));
+
+const toastMocks = vi.hoisted(() => ({
+  success: vi.fn(),
+  error: vi.fn(),
+  info: vi.fn(),
 }));
 
 vi.mock("../src/frontend/api/vocabulary.api.js", () => ({
@@ -27,7 +34,7 @@ vi.mock("../src/frontend/context/LanguageContext.js", () => ({
 }));
 
 vi.mock("../src/frontend/context/ToastContext.js", () => ({
-  useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn() }),
+  useToast: () => toastMocks,
 }));
 
 import { AddVocabularyPage, updatePreviewItemField } from "../src/frontend/pages/vocabulary/AddVocabularyPage.js";
@@ -138,12 +145,66 @@ function setNativeInputValue(input: HTMLInputElement | HTMLTextAreaElement, valu
   Object.getOwnPropertyDescriptor(prototype, "value")?.set?.call(input, value);
 }
 
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (reason: unknown) => void } {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+const previewResponse = (term: string, meaningVi = `nghĩa ${term}`): BulkVocabularyPreview => ({
+  enrichment: { configured: true, provider: "test" },
+  items: [{
+    term,
+    normalizedTerm: term,
+    duplicate: false,
+    status: "READY",
+    suggestion: { meaningVi, partOfSpeech: "noun", pronunciation: `/${term}/`, ipa: `/${term}/` },
+  }],
+});
+
+async function renderAddPage(): Promise<void> {
+  await act(async () => root.render(<MemoryRouter><AddVocabularyPage /></MemoryRouter>));
+}
+
+function quickInput(): HTMLTextAreaElement {
+  return container.querySelector<HTMLTextAreaElement>("#quick-vocab-input")!;
+}
+
+async function changeQuickInput(value: string): Promise<void> {
+  const input = quickInput();
+  await act(async () => {
+    setNativeInputValue(input, value);
+    input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: value }));
+  });
+}
+
+function analyzeButton(): HTMLButtonElement {
+  return Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((button) => (
+    button.textContent?.includes("Phân tích") || button.textContent?.includes("Đang tự động bổ sung")
+  ))!;
+}
+
+async function analyze(): Promise<void> {
+  await act(async () => analyzeButton().click());
+}
+
+function previewTerm(value: string): HTMLInputElement | undefined {
+  return Array.from(container.querySelectorAll<HTMLInputElement>('input[type="text"]')).find((input) => input.value === value);
+}
+
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
   vi.clearAllMocks();
+  apiMocks.bulkPreview.mockReset();
+  apiMocks.bulkCreate.mockReset();
+  apiMocks.create.mockReset();
 });
 
 afterEach(async () => {
@@ -178,17 +239,151 @@ describe("Quick Add render isolation", () => {
   });
 
   it("keeps Quick Add typing local and performs no network call before Analyze", async () => {
-    await act(async () => root.render(<MemoryRouter><AddVocabularyPage /></MemoryRouter>));
-    const input = container.querySelector<HTMLTextAreaElement>("#quick-vocab-input")!;
-    await act(async () => {
-      setNativeInputValue(input, "go, car, live, total");
-      input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: "total" }));
-    });
+    await renderAddPage();
+    await changeQuickInput("go, car, live, total");
 
-    expect(input.value).toBe("go, car, live, total");
+    expect(quickInput().value).toBe("go, car, live, total");
     expect(apiMocks.bulkPreview).not.toHaveBeenCalled();
     expect(apiMocks.bulkCreate).not.toHaveBeenCalled();
     expect(apiMocks.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("Quick Add analysis correctness", () => {
+  it("invalidates an analyzed go preview and stale save action when source changes to car", async () => {
+    apiMocks.bulkPreview.mockResolvedValue(previewResponse("go"));
+    await renderAddPage();
+    await changeQuickInput("go");
+    await analyze();
+    await act(async () => { await Promise.resolve(); });
+    expect(previewTerm("go")).toBeDefined();
+    expect(analyzeButton().textContent).toContain("Phân tích");
+
+    await changeQuickInput("car");
+    expect(previewTerm("go")).toBeUndefined();
+    expect(Array.from(container.querySelectorAll("button")).some((button) => button.textContent?.includes("Lưu 1 từ"))).toBe(false);
+    expect(apiMocks.bulkPreview).toHaveBeenCalledTimes(1);
+  });
+
+  it("invalidates an existing preview when learning language changes", async () => {
+    apiMocks.bulkPreview.mockResolvedValue(previewResponse("go"));
+    await renderAddPage();
+    await changeQuickInput("go");
+    await analyze();
+    await act(async () => { await Promise.resolve(); });
+    expect(previewTerm("go")).toBeDefined();
+
+    const chinese = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent?.includes("Tiếng Trung"))!;
+    await act(async () => chinese.click());
+    expect(previewTerm("go")).toBeUndefined();
+    expect(apiMocks.bulkPreview).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies the latest response and ignores a late older success and its toast", async () => {
+    const oldRequest = deferred<BulkVocabularyPreview>();
+    const latestRequest = deferred<BulkVocabularyPreview>();
+    apiMocks.bulkPreview.mockImplementationOnce(() => oldRequest.promise).mockImplementationOnce(() => latestRequest.promise);
+    await renderAddPage();
+    await changeQuickInput("go");
+    await analyze();
+    await changeQuickInput("car");
+    await analyze();
+
+    await act(async () => latestRequest.resolve(previewResponse("car", "xe hơi")));
+    expect(previewTerm("car")).toBeDefined();
+    expect(toastMocks.success).toHaveBeenCalledTimes(1);
+    expect(toastMocks.success).toHaveBeenLastCalledWith("Đã nhận diện thành công 1 từ!");
+
+    await act(async () => oldRequest.resolve(previewResponse("go", "đi")));
+    expect(previewTerm("car")).toBeDefined();
+    expect(previewTerm("go")).toBeUndefined();
+    expect(toastMocks.success).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps only environment across rapid go, car, customer, environment analyses", async () => {
+    const requests = Array.from({ length: 4 }, () => deferred<BulkVocabularyPreview>());
+    for (const request of requests) apiMocks.bulkPreview.mockImplementationOnce(() => request.promise);
+    await renderAddPage();
+    for (const term of ["go", "car", "customer", "environment"]) {
+      await changeQuickInput(term);
+      await analyze();
+    }
+
+    await act(async () => requests[3].resolve(previewResponse("environment", "môi trường")));
+    await act(async () => requests[1].resolve(previewResponse("car", "xe hơi")));
+    await act(async () => requests[0].resolve(previewResponse("go", "đi")));
+    await act(async () => requests[2].resolve(previewResponse("customer", "khách hàng")));
+
+    expect(previewTerm("environment")).toBeDefined();
+    expect(previewTerm("go")).toBeUndefined();
+    expect(previewTerm("car")).toBeUndefined();
+    expect(previewTerm("customer")).toBeUndefined();
+    expect(toastMocks.success).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores a late older error without replacing the latest result or showing an error toast", async () => {
+    const oldRequest = deferred<BulkVocabularyPreview>();
+    const latestRequest = deferred<BulkVocabularyPreview>();
+    apiMocks.bulkPreview.mockImplementationOnce(() => oldRequest.promise).mockImplementationOnce(() => latestRequest.promise);
+    await renderAddPage();
+    await changeQuickInput("go");
+    await analyze();
+    await changeQuickInput("car");
+    await analyze();
+    await act(async () => latestRequest.resolve(previewResponse("car", "xe hơi")));
+    await act(async () => oldRequest.reject(new Error("old go failed")));
+
+    expect(previewTerm("car")).toBeDefined();
+    expect(previewTerm("go")).toBeUndefined();
+    expect(toastMocks.error).not.toHaveBeenCalled();
+  });
+
+  it("does not let an older finally stop the newer loading indicator", async () => {
+    const oldRequest = deferred<BulkVocabularyPreview>();
+    const latestRequest = deferred<BulkVocabularyPreview>();
+    apiMocks.bulkPreview.mockImplementationOnce(() => oldRequest.promise).mockImplementationOnce(() => latestRequest.promise);
+    await renderAddPage();
+    await changeQuickInput("go");
+    await analyze();
+    await changeQuickInput("car");
+    await analyze();
+    expect(analyzeButton().textContent).toContain("Đang tự động bổ sung");
+
+    await act(async () => oldRequest.reject(new Error("old go failed")));
+    expect(analyzeButton().textContent).toContain("Đang tự động bổ sung");
+
+    await act(async () => latestRequest.resolve(previewResponse("car", "xe hơi")));
+    expect(analyzeButton().textContent).toContain("Phân tích");
+    expect(previewTerm("car")).toBeDefined();
+  });
+
+  it("applies a normal latest response", async () => {
+    apiMocks.bulkPreview.mockResolvedValue(previewResponse("customer", "khách hàng"));
+    await renderAddPage();
+    await changeQuickInput("customer");
+    await analyze();
+    await act(async () => { await Promise.resolve(); });
+
+    expect(previewTerm("customer")).toBeDefined();
+    expect(Array.from(container.querySelectorAll<HTMLInputElement>('input[required]')).some((input) => input.value === "khách hàng")).toBe(true);
+    expect(toastMocks.success).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps manual preview-row editing within the current analysis", async () => {
+    apiMocks.bulkPreview.mockResolvedValue(previewResponse("go", "đi"));
+    await renderAddPage();
+    await changeQuickInput("go");
+    await analyze();
+    await act(async () => { await Promise.resolve(); });
+    const meaning = container.querySelector<HTMLInputElement>('input[required]')!;
+    await act(async () => {
+      setNativeInputValue(meaning, "di chuyển");
+      meaning.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: "di chuyển" }));
+    });
+
+    expect(previewTerm("go")).toBeDefined();
+    expect(container.querySelector<HTMLInputElement>('input[required]')?.value).toBe("di chuyển");
+    expect(apiMocks.bulkPreview).toHaveBeenCalledTimes(1);
   });
 });
 
