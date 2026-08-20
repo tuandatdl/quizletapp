@@ -15,6 +15,7 @@ import {
 } from "./sync.js";
 import { cloudSyncAvailable, getSupabaseClient } from "./supabaseClient.js";
 import { isChangeSeqCursor, SupabaseRemoteSyncAdapter } from "./supabaseAdapter.js";
+import { isDefaultLocalSettingsRecord } from "./settingsDefaults.js";
 
 const DEFAULT_SYNC_META: SyncMeta = {
   id: "sync-meta",
@@ -27,6 +28,14 @@ const DEFAULT_SYNC_META: SyncMeta = {
 };
 
 export const CURRENT_SYNC_DATA_SCHEMA_VERSION = 2;
+
+const MEANINGFUL_LOCAL_DATA_STORES = [
+  "vocabulary",
+  "readings",
+  "activities",
+  "quizHistory",
+  "collections",
+] as const satisfies readonly SyncableStore[];
 
 function syncKey(store: SyncableStore, recordId: string): string {
   return `${store}:${recordId}`;
@@ -249,11 +258,39 @@ export class LocalFirstSyncCoordinator implements SyncCoordinator {
     await this.saveMeta({ localDatasetOwnerUserId: userId });
   }
 
-  private async hasLocalSyncData(): Promise<boolean> {
-    for (const store of SYNCABLE_STORES) {
+  private async hasMeaningfulLocalDataset(): Promise<boolean> {
+    for (const store of MEANINGFUL_LOCAL_DATA_STORES) {
       if ((await this.persistence.getAll<StoredRecord>(store)).length > 0) return true;
     }
-    return false;
+    const pending = await this.persistence.getAll<SyncQueueItem>("syncQueue");
+    return pending.some((item) => item.store !== "settings");
+  }
+
+  /**
+   * Preferences are not learning-content ownership proof. Preserve imported or
+   * otherwise unqueued custom settings independently so a first cloud pull
+   * either pushes them or records a normal settings conflict instead of
+   * silently overwriting them.
+   */
+  private async queueUntrackedCustomizedSettings(): Promise<void> {
+    const settingsRecords = await this.persistence.getAll<StoredRecord>("settings");
+    const queuedIds = new Set(
+      (await this.persistence.getAll<SyncQueueItem>("syncQueue"))
+        .filter((item) => item.store === "settings")
+        .map((item) => item.recordId),
+    );
+    for (const record of settingsRecords) {
+      if (!record.id || queuedIds.has(record.id) || isDefaultLocalSettingsRecord(record)) continue;
+      const queueId = syncKey("settings", record.id);
+      await this.persistence.put("syncQueue", {
+        id: queueId,
+        store: "settings",
+        recordId: record.id,
+        updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : new Date().toISOString(),
+        deleted: false,
+        record,
+      } satisfies SyncQueueItem);
+    }
   }
 
   private async pullAll(adapter: RemoteSyncAdapter, initialCursor?: string): Promise<{
@@ -442,7 +479,7 @@ export class LocalFirstSyncCoordinator implements SyncCoordinator {
 
       if (userId && !meta.localDatasetOwnerUserId) {
         if (pullResult.changes.length > 0) {
-          if (await this.hasLocalSyncData()) {
+          if (await this.hasMeaningfulLocalDataset()) {
             this.setStatus("ACCOUNT_MISMATCH");
             await this.saveMeta({
               lastSyncStatus: "ACCOUNT_MISMATCH",
@@ -456,6 +493,7 @@ export class LocalFirstSyncCoordinator implements SyncCoordinator {
               error: "Thiết bị đã có dữ liệu cục bộ. Hãy dùng hồ sơ trình duyệt mới hoặc xóa dữ liệu cục bộ trước khi tải dữ liệu của tài khoản này.",
             };
           }
+          await this.queueUntrackedCustomizedSettings();
           await this.saveMeta({ localDatasetOwnerUserId: userId });
         } else {
           await this.seedInitialUpload(userId);
