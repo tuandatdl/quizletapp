@@ -2,6 +2,11 @@ import type { SupabaseClient, User } from "@supabase/supabase-js";
 import type { RemoteSyncAdapter, SyncChange, SyncableStore } from "./sync.js";
 import { isSyncableStore } from "./sync.js";
 
+/** Only server-issued decimal sequence values are valid incremental cursors. */
+export function isChangeSeqCursor(value: unknown): value is string {
+  return typeof value === "string" && /^\d+$/.test(value);
+}
+
 export interface SupabaseSyncRecordRow {
   id?: string;
   user_id: string;
@@ -21,7 +26,37 @@ export class SupabaseRemoteSyncAdapter implements RemoteSyncAdapter {
     private readonly user: User,
   ) {}
 
+  /**
+   * Maps the legacy updated_at boundary to the latest server sequence at or
+   * before that point. RLS and the explicit user filter keep this scoped to
+   * the authenticated account. A missing row means no remote state existed
+   * before the old boundary, so sequence zero is the safe starting point.
+   */
+  async translateLegacyCursor(legacyCursor: string): Promise<string> {
+    const { data, error } = await this.client
+      .from("user_sync_records")
+      .select("change_seq")
+      .eq("user_id", this.user.id)
+      .lte("updated_at", legacyCursor)
+      .order("change_seq", { ascending: false })
+      .limit(1);
+
+    if (error) {
+      throw new Error(`Không thể nâng cấp cursor đồng bộ cũ: ${error.message}`);
+    }
+
+    const row = (data || [])[0] as Pick<SupabaseSyncRecordRow, "change_seq"> | undefined;
+    const cursor = row ? String(row.change_seq) : "0";
+    if (!isChangeSeqCursor(cursor)) {
+      throw new Error("Máy chủ trả về change_seq không hợp lệ khi nâng cấp cursor.");
+    }
+    return cursor;
+  }
+
   async pull(cursor?: string): Promise<{ changes: SyncChange[]; cursor?: string; hasMore: boolean }> {
+    if (cursor !== undefined && !isChangeSeqCursor(cursor)) {
+      throw new Error("Cursor change_seq không hợp lệ; cần nâng cấp dữ liệu đồng bộ cũ trước.");
+    }
     let query = this.client
       .from("user_sync_records")
       .select("store, record_id, payload, revision, change_seq, updated_at, deleted_at")
@@ -44,10 +79,14 @@ export class SupabaseRemoteSyncAdapter implements RemoteSyncAdapter {
 
     for (const row of rows) {
       if (!isSyncableStore(row.store)) continue;
+      const changeSeq = String(row.change_seq);
+      if (!isChangeSeqCursor(changeSeq)) {
+        throw new Error("Máy chủ trả về change_seq không hợp lệ khi tải dữ liệu đồng bộ.");
+      }
       changes.push({
         store: row.store as SyncableStore,
         id: row.record_id,
-        changeSeq: String(row.change_seq),
+        changeSeq,
         updatedAt: row.updated_at,
         deleted: Boolean(row.deleted_at),
         record: row.payload ? (row.payload as any) : undefined,
@@ -59,6 +98,9 @@ export class SupabaseRemoteSyncAdapter implements RemoteSyncAdapter {
     // this client at the same cursor forever.
     const finalRow = rows[rows.length - 1];
     const nextCursor = finalRow ? String(finalRow.change_seq) : cursor;
+    if (nextCursor !== undefined && !isChangeSeqCursor(nextCursor)) {
+      throw new Error("Máy chủ trả về cursor change_seq không hợp lệ khi tải dữ liệu đồng bộ.");
+    }
     return {
       changes,
       cursor: nextCursor,

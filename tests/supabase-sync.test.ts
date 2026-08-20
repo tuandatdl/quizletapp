@@ -10,7 +10,7 @@ import {
   type SyncQueueItem,
 } from "../src/frontend/persistence/sync.js";
 import { LocalFirstSyncCoordinator } from "../src/frontend/persistence/syncEngine.js";
-import { SupabaseRemoteSyncAdapter } from "../src/frontend/persistence/supabaseAdapter.js";
+import { isChangeSeqCursor, SupabaseRemoteSyncAdapter } from "../src/frontend/persistence/supabaseAdapter.js";
 import {
   cloudSyncAvailable,
   getSupabaseClient,
@@ -90,7 +90,7 @@ describe("Supabase Local-First Cloud Sync", () => {
     // Mock remote adapter
     const remoteRecords: SyncChange[] = [];
     const mockAdapter: RemoteSyncAdapter = {
-      pull: vi.fn(async () => ({ changes: [], cursor: "cursor-1" })),
+      pull: vi.fn(async () => ({ changes: [], cursor: "1" })),
       push: vi.fn(async (changes: SyncChange[]) => {
         remoteRecords.push(...changes);
         return { acknowledgedKeys: acknowledgedKeysFor(changes) };
@@ -158,7 +158,7 @@ describe("Supabase Local-First Cloud Sync", () => {
     ];
 
     const mockAdapter: RemoteSyncAdapter = {
-      pull: vi.fn(async () => ({ changes: remoteChanges, cursor: "2026-08-19T10:35:00.000Z" })),
+      pull: vi.fn(async () => ({ changes: remoteChanges, cursor: "2" })),
       push: vi.fn(async () => ({ acknowledgedKeys: [] })),
     };
 
@@ -179,7 +179,7 @@ describe("Supabase Local-First Cloud Sync", () => {
 
     // Verify cursor updated
     const meta = await coordinator.getMeta();
-    expect(meta.lastCursor).toBe("2026-08-19T10:35:00.000Z");
+    expect(meta.lastCursor).toBe("2");
   });
 
   it("4. offline queue: accumulates local mutations and flushes them on sync", async () => {
@@ -546,6 +546,203 @@ describe("Supabase Local-First Cloud Sync", () => {
     expect(result).toMatchObject({ success: true, pulledCount: 0, pushedCount: 1 });
     expect(supabase.upsert).toHaveBeenCalledOnce();
     expect((await coordinator.getMeta()).localDatasetOwnerUserId).toBe("user-cloud");
+  });
+
+  it("19. detects only digit-only server cursors and translates a legacy timestamp before pull", async () => {
+    expect(isChangeSeqCursor("0")).toBe(true);
+    expect(isChangeSeqCursor("2048")).toBe(true);
+    expect(isChangeSeqCursor("2026-08-19T18:20:17.744+00:00")).toBe(false);
+    expect(isChangeSeqCursor("42.0")).toBe(false);
+    expect(isChangeSeqCursor("")).toBe(false);
+
+    const coordinator = new LocalFirstSyncCoordinator(adapter);
+    await coordinator.saveMeta({
+      localDatasetOwnerUserId: "user-123",
+      lastCursor: "2026-08-19T18:20:17.744+00:00",
+    });
+    const translateLegacyCursor = vi.fn(async () => "2048");
+    const pull = vi.fn(async () => ({ changes: [] }));
+
+    const result = await coordinator.sync({
+      translateLegacyCursor,
+      pull,
+      push: vi.fn(async () => ({ acknowledgedKeys: [] })),
+    });
+
+    expect(result.success).toBe(true);
+    expect(translateLegacyCursor).toHaveBeenCalledWith("2026-08-19T18:20:17.744+00:00");
+    expect(pull).toHaveBeenCalledWith("2048");
+    expect((await coordinator.getMeta()).lastCursor).toBe("2048");
+  });
+
+  it("20. translates a legacy timestamp with a user-scoped max change_seq query", async () => {
+    const query: Record<string, any> = {};
+    query.select = vi.fn(() => query);
+    query.eq = vi.fn(() => query);
+    query.lte = vi.fn(() => query);
+    query.order = vi.fn(() => query);
+    query.limit = vi.fn(() => query);
+    query.then = (resolve: (value: unknown) => unknown, reject?: (reason: unknown) => unknown) =>
+      Promise.resolve({ data: [{ change_seq: "2048" }], error: null }).then(resolve, reject);
+    const client = { from: vi.fn(() => query) };
+    const remote = new SupabaseRemoteSyncAdapter(client as any, { id: "user-123" } as any);
+
+    await expect(remote.translateLegacyCursor("2026-08-19T18:20:17.744+00:00")).resolves.toBe("2048");
+    expect(query.eq).toHaveBeenCalledWith("user_id", "user-123");
+    expect(query.lte).toHaveBeenCalledWith("updated_at", "2026-08-19T18:20:17.744+00:00");
+    expect(query.order).toHaveBeenCalledWith("change_seq", { ascending: false });
+    expect(query.limit).toHaveBeenCalledWith(1);
+  });
+
+  it("21. never sends a legacy timestamp to the change_seq gt query", async () => {
+    const from = vi.fn();
+    const remote = new SupabaseRemoteSyncAdapter({ from } as any, { id: "user-123" } as any);
+
+    await expect(remote.pull("2026-08-19T18:20:17.744+00:00")).rejects.toThrow("Cursor change_seq không hợp lệ");
+    expect(from).not.toHaveBeenCalled();
+  });
+
+  it("22. uses an upgraded numeric cursor directly on later syncs", async () => {
+    const coordinator = new LocalFirstSyncCoordinator(adapter);
+    await coordinator.saveMeta({ localDatasetOwnerUserId: "user-123", lastCursor: "2048" });
+    const pull = vi.fn(async () => ({ changes: [] }));
+    const translateLegacyCursor = vi.fn(async () => "should-not-run");
+
+    const result = await coordinator.sync({
+      translateLegacyCursor,
+      pull,
+      push: vi.fn(async () => ({ acknowledgedKeys: [] })),
+    });
+
+    expect(result.success).toBe(true);
+    expect(translateLegacyCursor).not.toHaveBeenCalled();
+    expect(pull).toHaveBeenCalledWith("2048");
+  });
+
+  it("23. does not create a false conflict for a settings record before the migrated boundary", async () => {
+    const coordinator = new LocalFirstSyncCoordinator(adapter);
+    const localSettings = { id: "local-settings", theme: "dark" };
+    await adapter.put("settings", localSettings);
+    await coordinator.saveMeta({
+      localDatasetOwnerUserId: "user-123",
+      lastCursor: "2026-08-19T18:20:17.744+00:00",
+    });
+    const pull = vi.fn(async (cursor?: string) => {
+      expect(cursor).toBe("42");
+      // The already-seen settings row at sequence 42 is excluded by the
+      // translated boundary, so it is not replayed as a concurrent change.
+      return { changes: [] };
+    });
+
+    const result = await coordinator.sync({
+      translateLegacyCursor: vi.fn(async () => "42"),
+      pull,
+      push: vi.fn(async () => ({ acknowledgedKeys: [] })),
+    });
+
+    expect(result).toMatchObject({ success: true, conflictsCount: 0 });
+    expect(await coordinator.getConflicts()).toHaveLength(0);
+    expect(await adapter.get("settings", "local-settings")).toEqual(localSettings);
+  });
+
+  it("24. preserves and pushes a pending new vocabulary record after cursor migration", async () => {
+    const coordinator = new LocalFirstSyncCoordinator(adapter);
+    const localVocabulary = { id: "new-local", term: "new local word" };
+    await adapter.put("vocabulary", localVocabulary);
+    await coordinator.saveMeta({
+      localDatasetOwnerUserId: "user-123",
+      lastCursor: "2026-08-19T18:20:17.744+00:00",
+    });
+    await coordinator.queueLocalChange("vocabulary", "new-local", localVocabulary);
+    const push = vi.fn(async (changes: SyncChange[]) => ({ acknowledgedKeys: acknowledgedKeysFor(changes) }));
+
+    const result = await coordinator.sync({
+      translateLegacyCursor: vi.fn(async () => "42"),
+      pull: vi.fn(async () => ({ changes: [] })),
+      push,
+    });
+
+    expect(result).toMatchObject({ success: true, pushedCount: 1 });
+    expect(push).toHaveBeenCalledWith([expect.objectContaining({ id: "new-local", store: "vocabulary" })]);
+    expect(await coordinator.getPendingCount()).toBe(0);
+  });
+
+  it("25. fails closed when legacy cursor translation fails", async () => {
+    const coordinator = new LocalFirstSyncCoordinator(adapter);
+    const localVocabulary = { id: "retry-local", term: "retry" };
+    await adapter.put("vocabulary", localVocabulary);
+    await coordinator.saveMeta({
+      localDatasetOwnerUserId: "user-123",
+      lastCursor: "2026-08-19T18:20:17.744+00:00",
+    });
+    await coordinator.queueLocalChange("vocabulary", "retry-local", localVocabulary);
+    const pull = vi.fn(async () => ({ changes: [] }));
+
+    const result = await coordinator.sync({
+      translateLegacyCursor: vi.fn(async () => { throw new Error("translation network failure"); }),
+      pull,
+      push: vi.fn(async () => ({ acknowledgedKeys: [] })),
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("translation network failure");
+    expect(pull).not.toHaveBeenCalled();
+    expect(await coordinator.getPendingCount()).toBe(1);
+    expect(await adapter.get("vocabulary", "retry-local")).toEqual(localVocabulary);
+    expect((await coordinator.getMeta()).lastCursor).toBe("2026-08-19T18:20:17.744+00:00");
+  });
+
+  it("26. preserves account isolation while a legacy cursor is present", async () => {
+    vi.stubEnv("VITE_SUPABASE_URL", "https://example.supabase.co");
+    vi.stubEnv("VITE_SUPABASE_ANON_KEY", "sb_test_key");
+    const supabase = mockSignedInSupabase([], "user-B");
+    resetSupabaseClientForTesting(supabase as any);
+    const coordinator = new LocalFirstSyncCoordinator(adapter);
+    await coordinator.saveMeta({
+      localDatasetOwnerUserId: "user-A",
+      lastCursor: "2026-08-19T18:20:17.744+00:00",
+    });
+
+    const result = await coordinator.sync();
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("tài khoản khác");
+    expect(supabase.from).not.toHaveBeenCalled();
+    expect((await coordinator.getMeta()).lastCursor).toBe("2026-08-19T18:20:17.744+00:00");
+  });
+
+  it("27. force sync upgrades a legacy boundary and skips that known remote base", async () => {
+    const coordinator = new LocalFirstSyncCoordinator(adapter);
+    const localVocabulary = { id: "force-local", term: "keep local edit" };
+    await adapter.put("vocabulary", localVocabulary);
+    await coordinator.saveMeta({
+      localDatasetOwnerUserId: "user-123",
+      lastCursor: "2026-08-19T18:20:17.744+00:00",
+    });
+    await coordinator.queueLocalChange("vocabulary", "force-local", localVocabulary);
+    const pull = vi.fn(async (cursor?: string) => ({
+      changes: [{
+        store: "vocabulary" as const,
+        id: "force-local",
+        changeSeq: "42",
+        updatedAt: "2026-08-19T18:20:00.000Z",
+        record: { id: "force-local", term: "old cloud base" },
+      }],
+      cursor,
+    }));
+    const push = vi.fn(async (changes: SyncChange[]) => ({ acknowledgedKeys: acknowledgedKeysFor(changes) }));
+
+    const result = await coordinator.sync({
+      translateLegacyCursor: vi.fn(async () => "42"),
+      pull,
+      push,
+    }, true);
+
+    expect(result).toMatchObject({ success: true, conflictsCount: 0, pushedCount: 1 });
+    expect(pull).toHaveBeenCalledWith(undefined);
+    expect(await adapter.get("vocabulary", "force-local")).toEqual(localVocabulary);
+    expect(await coordinator.getConflicts()).toHaveLength(0);
+    expect((await coordinator.getMeta()).lastCursor).toBe("42");
   });
 });
 
