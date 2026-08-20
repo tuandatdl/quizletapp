@@ -2,26 +2,21 @@
 
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { MemoryRouter, Routes, Route } from "react-router-dom";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { indexedDB } from "fake-indexeddb";
 import { IndexedDbAdapter } from "../src/frontend/persistence/indexedDb.js";
 import {
   type SyncChange,
-  type SyncMeta,
-  type SyncQueueItem,
 } from "../src/frontend/persistence/sync.js";
 import { LocalFirstSyncCoordinator } from "../src/frontend/persistence/syncEngine.js";
-import { SupabaseRemoteSyncAdapter } from "../src/frontend/persistence/supabaseAdapter.js";
 import {
-  cloudSyncAvailable,
-  getSupabaseClient,
   resetSupabaseClientForTesting,
   isAuthCallbackUrl,
   handleAuthRedirect,
 } from "../src/frontend/persistence/supabaseClient.js";
 import { CloudAuthService } from "../src/frontend/services/cloudAuth.js";
-import { CloudAccountProvider, useCloudAccount } from "../src/frontend/context/CloudAccountContext.js";
+import { CloudAccountProvider } from "../src/frontend/context/CloudAccountContext.js";
 import { LoginPage } from "../src/frontend/pages/auth/LoginPage.js";
 import { GoogleIcon } from "../src/frontend/components/ui/GoogleIcon.js";
 
@@ -388,7 +383,6 @@ describe("LEXIS Google Account & Cloud Sync Integration", () => {
   // =========================================================================
   describe("Group G: Multi-Device Sync Simulation", () => {
     it("propagates add, edit, and delete between Device A and Device B with same Google account UUID", async () => {
-      const sharedUserId = "google-user-shared-uuid";
       const remoteDatabase: Map<string, { store: string; id: string; payload: any; deleted: boolean; updatedAt: string; changeSeq: string }> = new Map();
       let serverChangeSeq = 0;
 

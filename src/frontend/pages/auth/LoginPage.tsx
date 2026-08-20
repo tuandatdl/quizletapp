@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
-import { Lock, Mail, ArrowRight, KeyRound, Check, Cloud, Sparkles, User as UserIcon } from "lucide-react";
+import { Lock, Mail, ArrowRight, KeyRound, Check } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 import { useCloudAccount } from "../../context/CloudAccountContext";
 import { Button } from "../../components/ui/Button";
@@ -31,7 +31,6 @@ export const LoginPage: React.FC = () => {
     signInWithGoogle,
     signInWithMagicLink,
     signOut,
-    cloudAvailable,
   } = useCloudAccount();
 
   const [magicEmail, setMagicEmail] = useState("");
