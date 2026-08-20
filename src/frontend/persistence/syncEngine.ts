@@ -25,6 +25,19 @@ const DEFAULT_SYNC_META: SyncMeta = {
   lastSyncError: null,
 };
 
+function syncKey(store: SyncableStore, recordId: string): string {
+  return `${store}:${recordId}`;
+}
+
+function isAtOrBeforeCursor(change: SyncChange, cursor?: string | null): boolean {
+  if (!change.changeSeq || !cursor) return false;
+  try {
+    return BigInt(change.changeSeq) <= BigInt(cursor);
+  } catch {
+    return false;
+  }
+}
+
 export class LocalFirstSyncCoordinator implements SyncCoordinator {
   private isSyncing = false;
   private statusListeners = new Set<(status: SyncStatus) => void>();
@@ -126,7 +139,7 @@ export class LocalFirstSyncCoordinator implements SyncCoordinator {
   ): Promise<void> {
     if (!isSyncableStore(store) || !recordId) return;
 
-    const queueId = `${store}:${recordId}`;
+    const queueId = syncKey(store, recordId);
     const queueItem: SyncQueueItem = {
       id: queueId,
       store,
@@ -169,9 +182,16 @@ export class LocalFirstSyncCoordinator implements SyncCoordinator {
     const conflict = await this.persistence.get<SyncConflict>("syncConflicts", conflictId);
     if (!conflict) return;
 
-    if (choice === "local" && conflict.localRecord) {
-      await this.persistence.put(conflict.store, conflict.localRecord);
-      await this.queueLocalChange(conflict.store, conflict.recordId, conflict.localRecord, false);
+    if (choice === "local") {
+      if (conflict.localDeleted) {
+        await this.persistence.delete(conflict.store, conflict.recordId);
+        await this.queueLocalChange(conflict.store, conflict.recordId, undefined, true);
+      } else if (conflict.localRecord) {
+        await this.persistence.put(conflict.store, conflict.localRecord);
+        await this.queueLocalChange(conflict.store, conflict.recordId, conflict.localRecord, false);
+      } else {
+        return;
+      }
     } else if (choice === "remote") {
       if (conflict.remoteRecord) {
         await this.persistence.put(conflict.store, conflict.remoteRecord);
@@ -186,19 +206,16 @@ export class LocalFirstSyncCoordinator implements SyncCoordinator {
   }
 
   async disconnect(): Promise<void> {
+    // Keep ownership and cursor. Clearing them made a later sign-in with a
+    // different account look like a safe first-device seed.
     await this.saveMeta({
-      localDatasetOwnerUserId: null,
-      lastCursor: null,
       lastSyncStatus: "SIGNED_OUT",
       lastSyncError: null,
     });
     this.setStatus("SIGNED_OUT");
   }
 
-  /**
-   * Performs a safe first-device initial seed:
-   * Gathers existing local records in syncable stores and enqueues them for upload.
-   */
+  /** Queues the existing local dataset only after an empty remote has been proven. */
   private async seedInitialUpload(userId: string): Promise<void> {
     const queueMap = new Map<string, SyncQueueItem>();
     const existingQueue = await this.persistence.getAll<SyncQueueItem>("syncQueue");
@@ -210,7 +227,7 @@ export class LocalFirstSyncCoordinator implements SyncCoordinator {
       const records = await this.persistence.getAll<StoredRecord>(store);
       for (const record of records) {
         if (!record.id) continue;
-        const queueId = `${store}:${record.id}`;
+        const queueId = syncKey(store, record.id);
         if (!queueMap.has(queueId)) {
           const updatedAt = typeof record.updatedAt === "string" ? record.updatedAt : new Date().toISOString();
           const item: SyncQueueItem = {
@@ -227,6 +244,96 @@ export class LocalFirstSyncCoordinator implements SyncCoordinator {
     }
 
     await this.saveMeta({ localDatasetOwnerUserId: userId });
+  }
+
+  private async hasLocalSyncData(): Promise<boolean> {
+    for (const store of SYNCABLE_STORES) {
+      if ((await this.persistence.getAll<StoredRecord>(store)).length > 0) return true;
+    }
+    return false;
+  }
+
+  private async pullAll(adapter: RemoteSyncAdapter, initialCursor?: string): Promise<{
+    changes: SyncChange[];
+    cursor?: string;
+  }> {
+    const changes: SyncChange[] = [];
+    let cursor = initialCursor;
+
+    do {
+      const page = await adapter.pull(cursor);
+      changes.push(...page.changes);
+
+      if (page.hasMore && (!page.cursor || page.cursor === cursor)) {
+        throw new Error("Máy chủ trả về trang đồng bộ không tiến được cursor.");
+      }
+
+      cursor = page.cursor ?? cursor;
+      if (!page.hasMore) break;
+    } while (true);
+
+    return { changes, cursor };
+  }
+
+  private async applyRemoteChanges(
+    changes: SyncChange[],
+    previouslyAppliedCursor?: string | null,
+  ): Promise<{ pulledCount: number; conflictsCount: number }> {
+    let pulledCount = 0;
+    let conflictsCount = 0;
+
+    for (const change of changes) {
+      if (!isSyncableStore(change.store)) continue;
+
+      const queueId = syncKey(change.store, change.id);
+      const pendingItem = await this.persistence.get<SyncQueueItem>("syncQueue", queueId);
+      const localRecord = await this.persistence.get<StoredRecord>(change.store, change.id);
+
+      // A force/full refresh can include the already-known cloud base for a
+      // new local edit. It is not a concurrent change and must not overwrite
+      // or falsely conflict with that queued edit.
+      if (pendingItem && isAtOrBeforeCursor(change, previouslyAppliedCursor)) {
+        continue;
+      }
+
+      if (change.deleted) {
+        if (pendingItem) {
+          conflictsCount++;
+          await this.recordConflict(
+            change.store,
+            change.id,
+            localRecord,
+            undefined,
+            "last-write-wins",
+            pendingItem.deleted,
+          );
+          await this.persistence.delete("syncQueue", queueId);
+        }
+        await this.persistence.delete(change.store, change.id);
+        pulledCount++;
+      } else if (change.record) {
+        if (pendingItem) {
+          // The cloud is ordered by a server-assigned sequence. A pending local
+          // mutation and a later pulled cloud mutation are a real conflict;
+          // remote wins deterministically and the local version is retained for
+          // explicit user resolution. Never compare device clocks here.
+          conflictsCount++;
+          await this.recordConflict(
+            change.store,
+            change.id,
+            localRecord,
+            change.record,
+            "last-write-wins",
+            pendingItem.deleted,
+          );
+          await this.persistence.delete("syncQueue", queueId);
+        }
+        await this.persistence.put(change.store, change.record);
+        pulledCount++;
+      }
+    }
+
+    return { pulledCount, conflictsCount };
   }
 
   /**
@@ -277,15 +384,16 @@ export class LocalFirstSyncCoordinator implements SyncCoordinator {
     try {
       const meta = await this.getMeta();
 
-      // Account Switch Protection Check
+      // Account Switch Protection Check. The first pull happens before any
+      // initial upload so a clean second device never seeds over cloud data.
       if (userId) {
-        if (!meta.localDatasetOwnerUserId) {
-          // First time sign-in on this device: seed existing local records into sync queue
-          await this.seedInitialUpload(userId);
-        } else if (meta.localDatasetOwnerUserId !== userId) {
+        if (meta.localDatasetOwnerUserId && meta.localDatasetOwnerUserId !== userId) {
           // Dangerous: Local dataset belongs to another user
           this.setStatus("ACCOUNT_MISMATCH");
-          this.isSyncing = false;
+          await this.saveMeta({
+            lastSyncStatus: "ACCOUNT_MISMATCH",
+            lastSyncError: "Dữ liệu trên máy này thuộc về tài khoản khác.",
+          });
           return {
             success: false,
             pulledCount: 0,
@@ -296,55 +404,35 @@ export class LocalFirstSyncCoordinator implements SyncCoordinator {
         }
       }
 
-      // ================= 1. PULL REMOTE CHANGES =================
+      // ================= 1. PULL ALL REMOTE CHANGES =================
       const cursor = force ? undefined : meta.lastCursor ?? undefined;
-      const pullResult = await adapter.pull(cursor);
-      const remoteChanges = pullResult.changes;
+      const pullResult = await this.pullAll(adapter, cursor);
 
-      if (remoteChanges.length > 0) {
-        for (const change of remoteChanges) {
-          if (!isSyncableStore(change.store)) continue;
-
-          const queueId = `${change.store}:${change.id}`;
-          const pendingItem = await this.persistence.get<SyncQueueItem>("syncQueue", queueId);
-          const localRecord = await this.persistence.get<StoredRecord>(change.store, change.id);
-
-          if (change.deleted) {
-            // Remote deleted
-            if (pendingItem && !pendingItem.deleted) {
-              // Local was edited while remote was deleted -> conflict
-              conflictsCount++;
-              await this.recordConflict(change.store, change.id, localRecord, undefined, "last-write-wins");
-            }
-            await this.persistence.delete(change.store, change.id);
-            if (pendingItem) {
-              await this.persistence.delete("syncQueue", queueId);
-            }
-            pulledCount++;
-          } else if (change.record) {
-            // Remote updated
-            if (pendingItem) {
-              // Conflict: both local and remote changed since last sync
-              conflictsCount++;
-              const localTime = Date.parse(pendingItem.updatedAt || "0");
-              const remoteTime = Date.parse(change.updatedAt || "0");
-
-              await this.recordConflict(change.store, change.id, localRecord, change.record, "last-write-wins");
-
-              if (remoteTime >= localTime) {
-                // Remote wins
-                await this.persistence.put(change.store, change.record);
-                await this.persistence.delete("syncQueue", queueId);
-              }
-              // If localTime > remoteTime, keep pendingItem in syncQueue to push back
-            } else {
-              // Clean remote merge
-              await this.persistence.put(change.store, change.record);
-            }
-            pulledCount++;
+      if (userId && !meta.localDatasetOwnerUserId) {
+        if (pullResult.changes.length > 0) {
+          if (await this.hasLocalSyncData()) {
+            this.setStatus("ACCOUNT_MISMATCH");
+            await this.saveMeta({
+              lastSyncStatus: "ACCOUNT_MISMATCH",
+              lastSyncError: "Thiết bị đã có dữ liệu cục bộ; không tự trộn với dữ liệu đám mây của tài khoản mới.",
+            });
+            return {
+              success: false,
+              pulledCount: 0,
+              pushedCount: 0,
+              conflictsCount: 0,
+              error: "Thiết bị đã có dữ liệu cục bộ. Hãy dùng hồ sơ trình duyệt mới hoặc xóa dữ liệu cục bộ trước khi tải dữ liệu của tài khoản này.",
+            };
           }
+          await this.saveMeta({ localDatasetOwnerUserId: userId });
+        } else {
+          await this.seedInitialUpload(userId);
         }
       }
+
+      const applied = await this.applyRemoteChanges(pullResult.changes, meta.lastCursor);
+      pulledCount += applied.pulledCount;
+      conflictsCount += applied.conflictsCount;
 
       // ================= 2. PUSH LOCAL CHANGES =================
       const pendingQueue = await this.persistence.getAll<SyncQueueItem>("syncQueue");
@@ -358,10 +446,10 @@ export class LocalFirstSyncCoordinator implements SyncCoordinator {
         }));
 
         const pushResult = await adapter.push(changesToPush);
-        const acknowledgedSet = new Set(pushResult.acknowledgedIds);
+        const acknowledgedSet = new Set(pushResult.acknowledgedKeys);
 
         for (const item of pendingQueue) {
-          if (acknowledgedSet.has(item.recordId)) {
+          if (acknowledgedSet.has(item.id)) {
             await this.persistence.delete("syncQueue", item.id);
             pushedCount++;
           }
@@ -374,7 +462,7 @@ export class LocalFirstSyncCoordinator implements SyncCoordinator {
       const now = new Date().toISOString();
 
       await this.saveMeta({
-        lastCursor: pullResult.cursor ?? meta.lastCursor ?? now,
+        lastCursor: pullResult.cursor ?? meta.lastCursor,
         lastSyncAt: now,
         lastSyncStatus: updatedStatus,
         lastSyncError: null,
@@ -421,12 +509,14 @@ export class LocalFirstSyncCoordinator implements SyncCoordinator {
     localRecord?: StoredRecord,
     remoteRecord?: StoredRecord,
     resolution: "local" | "remote" | "last-write-wins" = "last-write-wins",
+    localDeleted = false,
   ): Promise<void> {
     const conflict: SyncConflict = {
-      id: `${store}:${recordId}`,
+      id: syncKey(store, recordId),
       store,
       recordId,
       localRecord,
+      localDeleted,
       remoteRecord,
       conflictAt: new Date().toISOString(),
       resolution,
