@@ -144,6 +144,17 @@ function cleanStrings(value: unknown, maxItems = 30): string[] | undefined {
   return clean.length ? clean : undefined;
 }
 
+function cleanHanzi(value: unknown, max: number): string | undefined {
+  const clean = cleanString(value, max);
+  if (!clean) return undefined;
+  const runs = clean.match(/\p{Script=Han}+/gu);
+  if (!runs) return undefined;
+  const remainder = clean.replace(/\p{Script=Han}/gu, "").trim();
+  if (remainder && !/^[\p{P}\p{S}\s]+$/u.test(remainder)) return undefined;
+  const hanzi = runs.join("");
+  return hanzi.length <= max ? hanzi : undefined;
+}
+
 function areLikelyHomophones(wordA: string, wordB: string): boolean {
   const a = wordA.trim().toLowerCase();
   const b = wordB.trim().toLowerCase();
@@ -306,10 +317,13 @@ export function validateEnrichmentItems(value: unknown, terms: string[], languag
       suggestedTopics: language === "en" ? (cleanStrings(item.suggestedTopics) ?? []).slice(0, 3) : undefined,
     };
     if (language === "en") return common;
-    const toneData = Array.isArray(item.toneData) ? item.toneData.filter((tone) => [0, 1, 2, 3, 4].includes(Number(tone))).slice(0, 200) : undefined;
+    const normalizedTones = Array.isArray(item.toneData)
+      ? item.toneData.map(Number).filter((tone) => [0, 1, 2, 3, 4].includes(tone)).slice(0, 200)
+      : [];
+    const toneData = normalizedTones.length ? normalizedTones : undefined;
     const pinyin = cleanString(item.pinyin, 200) || cleanString(item.pronunciation, 200) || cleanString(item.ipa, 200)?.replace(/^\/|\/$/g, "");
-    const simplified = cleanString(item.simplified, 200);
-    const traditional = cleanString(item.traditional, 200);
+    const simplified = cleanHanzi(item.simplified, 200);
+    const traditional = cleanHanzi(item.traditional, 200);
     return {
       ...common,
       pronunciation: pronunciation || pinyin,
