@@ -82,7 +82,11 @@ export class LocalFirstSyncCoordinator implements SyncCoordinator {
     }
 
     const meta = await this.getMeta();
-    this.setStatus(meta.lastSyncStatus === "SYNCING" ? "IDLE" : meta.lastSyncStatus || "IDLE");
+    if (meta.lastSyncStatus === "SYNCING" || meta.lastSyncStatus === "SIGNED_OUT" || !meta.lastSyncStatus) {
+      this.setStatus("IDLE");
+    } else {
+      this.setStatus(meta.lastSyncStatus);
+    }
   }
 
   private setupNetworkListeners(): void {

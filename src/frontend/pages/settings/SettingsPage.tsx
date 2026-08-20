@@ -901,32 +901,34 @@ export const SettingsPage: React.FC = () => {
 
               {!cloudAvailable ? (
                 <Badge variant="default" size="sm">Chưa cấu hình Supabase</Badge>
+              ) : !cloudUser ? (
+                <Badge variant="default" size="sm">Chưa đăng nhập</Badge>
+              ) : syncStatus === "ACCOUNT_MISMATCH" ? (
+                <Badge variant="error" size="sm">
+                  <AlertTriangle size={12} style={{ marginRight: "4px" }} />
+                  Khác tài khoản
+                </Badge>
               ) : syncStatus === "SYNCING" ? (
                 <Badge variant="en" size="sm">
                   <Loader2 size={12} className="animate-spin" style={{ marginRight: "4px" }} />
                   Đang đồng bộ...
                 </Badge>
-              ) : syncStatus === "IDLE" ? (
-                <Badge variant="en" size="sm">
-                  <Check size={12} style={{ marginRight: "4px" }} />
-                  Đã đồng bộ
-                </Badge>
-              ) : syncStatus === "PENDING_CHANGES" ? (
-                <Badge variant="default" size="sm">
-                  <RefreshCw size={12} style={{ marginRight: "4px" }} />
-                  {pendingCount > 0 ? `${pendingCount} thay đổi chưa tải lên` : "Có thay đổi chờ đồng bộ"}
-                </Badge>
-              ) : syncStatus === "OFFLINE" ? (
-                <Badge variant="default" size="sm">Đang ngoại tuyến</Badge>
               ) : syncStatus === "ERROR" ? (
                 <Badge variant="error" size="sm">
                   <AlertCircle size={12} style={{ marginRight: "4px" }} />
                   Lỗi đồng bộ
                 </Badge>
-              ) : syncStatus === "ACCOUNT_MISMATCH" ? (
-                <Badge variant="error" size="sm">
-                  <AlertTriangle size={12} style={{ marginRight: "4px" }} />
-                  Khác tài khoản
+              ) : syncStatus === "OFFLINE" ? (
+                <Badge variant="default" size="sm">Đang ngoại tuyến</Badge>
+              ) : pendingCount > 0 ? (
+                <Badge variant="default" size="sm">
+                  <RefreshCw size={12} style={{ marginRight: "4px" }} />
+                  {`${pendingCount} thay đổi chưa tải lên`}
+                </Badge>
+              ) : syncStatus === "IDLE" ? (
+                <Badge variant="en" size="sm">
+                  <Check size={12} style={{ marginRight: "4px" }} />
+                  Đã đồng bộ
                 </Badge>
               ) : (
                 <Badge variant="default" size="sm">Chưa đăng nhập</Badge>
