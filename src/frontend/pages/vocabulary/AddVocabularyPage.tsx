@@ -41,6 +41,7 @@ interface EditablePreviewItem {
   existingId?: string;
   needsRepair?: boolean;
   hasUpdate?: boolean;
+  repairAccepted: boolean;
   term: string;
   normalizedTerm: string;
   duplicate: boolean;
@@ -89,6 +90,7 @@ const toEditablePreview = (
     existingId,
     needsRepair: isNeedsRepair,
     hasUpdate,
+    repairAccepted: false,
     term: item.term,
     normalizedTerm: item.normalizedTerm,
     duplicate: item.duplicate,
@@ -170,7 +172,7 @@ export const AddVocabularyPage: React.FC = () => {
       setPreviewItems(terms.map((term, idx) => ({
         id: `loading-${idx}`, term, normalizedTerm: term.normalize("NFKC").trim().toLocaleLowerCase(), duplicate: false,
         meaningVi: "", partOfSpeech: "", pronunciation: "", synonyms: "", example: "", exampleTranslation: "", topic: "", level: "", toeicLevel: "", tone: "", traditional: "",
-        selected: true, expandedDetails: false, senses: [], enrichmentState: "loading",
+        selected: true, expandedDetails: false, senses: [], repairAccepted: false, enrichmentState: "loading",
       })));
       setHasParsed(true);
     } catch (caught) {
@@ -272,6 +274,10 @@ export const AddVocabularyPage: React.FC = () => {
     );
   };
 
+  const handleAcceptRepair = (id: string) => {
+    setPreviewItems((prev) => prev.map((item) => item.id === id ? { ...item, repairAccepted: true } : item));
+  };
+
   const handleBulkSave = async () => {
     const selectedItems = previewItems.filter((i) => i.selected);
     if (selectedItems.length === 0) {
@@ -289,7 +295,6 @@ export const AddVocabularyPage: React.FC = () => {
     try {
       const payload: BulkVocabularyInputItem[] = selectedItems.map((i) => {
         const itemPayload: BulkVocabularyInputItem = {
-          existingId: i.existingId,
           term: i.term.trim(),
           meaningVi: i.meaningVi.trim(),
           partOfSpeech: i.partOfSpeech.trim() || undefined,
@@ -298,6 +303,10 @@ export const AddVocabularyPage: React.FC = () => {
           exampleTranslation: i.exampleTranslation.trim() || undefined,
           topic: i.topic.trim() || undefined,
         };
+        if (i.repairAccepted && i.needsRepair && i.hasUpdate && i.existingId) {
+          itemPayload.existingId = i.existingId;
+          itemPayload.repairExisting = true;
+        }
 
         if (formLang === "zh") {
           if (i.pronunciation.trim()) itemPayload.pinyin = i.pronunciation.trim();
@@ -748,9 +757,16 @@ export const AddVocabularyPage: React.FC = () => {
                           )}
                           {item.enrichmentState === "exists" && (
                             item.hasUpdate ? (
-                              <span style={{ color: "var(--color-success, #16a34a)", fontWeight: 500 }}>
-                                ✓ Đã có trong kho · Có bản cập nhật đề xuất
-                              </span>
+                              item.repairAccepted ? (
+                                <span style={{ color: "var(--color-success, #16a34a)", fontWeight: 500 }}>✓ Đã chọn cập nhật bằng AI khi lưu</span>
+                              ) : (
+                                <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                                  <span style={{ color: "var(--color-success, #16a34a)", fontWeight: 500 }}>Có bản cập nhật đề xuất</span>
+                                  <button type="button" onClick={() => handleAcceptRepair(item.id)} style={{ background: "none", border: "none", color: "var(--accent-en-primary, #2563eb)", textDecoration: "underline", cursor: "pointer", fontSize: "0.7rem", padding: 0, display: "inline-flex", alignItems: "center", gap: "2px", fontWeight: 600 }}>
+                                    <Sparkles size={11} /> Cập nhật bằng AI
+                                  </button>
+                                </span>
+                              )
                             ) : item.needsRepair ? (
                               <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
                                 <span style={{ color: "var(--color-warning, #d97706)", fontWeight: 500 }}>

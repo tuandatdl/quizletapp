@@ -361,6 +361,7 @@ describe("Legacy English Pronunciation and IPA Data Repair (Tests A - J)", () =>
           items: [
             {
               existingId: "legacy-customer-id-44",
+              repairExisting: true,
               term: "Customer",
               meaningVi: "khách hàng",
               partOfSpeech: "noun",

@@ -191,6 +191,7 @@ export interface BulkVocabularyPreview {
 
 export interface BulkVocabularyInputItem {
   existingId?: string;
+  repairExisting?: boolean;
   term: string;
   meaningVi: string;
   pronunciation?: string | null;

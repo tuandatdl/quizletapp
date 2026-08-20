@@ -246,27 +246,49 @@ export class VocabularyBulkService {
 
       const item = parsed.data;
       try {
-        if (item.existingId) {
+        if (item.repairExisting) {
+          if (!item.existingId) {
+            failed.push({ index, term: item.term, code: "VALIDATION_ERROR", message: "Repair requires an existing vocabulary id" });
+            return;
+          }
           try {
             const existingItem = this.vocabulary.get(userId, item.existingId);
-            if (existingItem && existingItem.language === language) {
-              const updated = this.vocabulary.update(userId, item.existingId, {
-                pronunciation: item.pronunciation ?? item.ipa ?? item.pinyin ?? existingItem.pronunciation,
-                meaningVi: item.meaningVi ?? existingItem.meaningVi,
-                partOfSpeech: item.partOfSpeech ?? existingItem.partOfSpeech,
-                example: item.example ?? existingItem.example,
-                exampleTranslation: item.exampleTranslation ?? existingItem.exampleTranslation,
-                topic: item.topic ?? existingItem.topic,
-                level: language === "en" ? item.cefr ?? existingItem.level : item.hskLevel ? `HSK${item.hskLevel}` : existingItem.level,
-                metadata: {
-                  ...existingItem.metadata,
-                  ...metadataFor(language, item)
-                }
-              });
-              existing.push(updated);
+            if (existingItem.language !== language) {
+              failed.push({ index, term: item.term, code: "VALIDATION_ERROR", message: "Repair vocabulary language does not match the request" });
               return;
             }
-          } catch {}
+            if (normalizeTerm(existingItem.term, language) !== normalizeTerm(item.term, language)) {
+              failed.push({ index, term: item.term, code: "VALIDATION_ERROR", message: "Repair vocabulary id does not match the input term" });
+              return;
+            }
+            if (!needsExistingVocabularyRepair(existingItem)) {
+              failed.push({ index, term: item.term, code: "VALIDATION_ERROR", message: "Vocabulary item is not eligible for repair" });
+              return;
+            }
+            const repairedPronunciation = item.pronunciation ?? item.ipa ?? item.pinyin;
+            if ((language === "en" && !isLikelyIpa(item.ipa)) || (language === "zh" && !repairedPronunciation?.trim())) {
+              failed.push({ index, term: item.term, code: "VALIDATION_ERROR", message: "Repair requires valid fresh lexical pronunciation data" });
+              return;
+            }
+            const updated = this.vocabulary.update(userId, item.existingId, {
+              pronunciation: repairedPronunciation,
+              meaningVi: item.meaningVi,
+              partOfSpeech: item.partOfSpeech ?? existingItem.partOfSpeech,
+              example: item.example ?? existingItem.example,
+              exampleTranslation: item.exampleTranslation ?? existingItem.exampleTranslation,
+              topic: item.topic ?? existingItem.topic,
+              level: language === "en" ? item.cefr ?? existingItem.level : item.hskLevel ? `HSK${item.hskLevel}` : existingItem.level,
+              metadata: {
+                ...existingItem.metadata,
+                ...metadataFor(language, item)
+              }
+            });
+            existing.push(updated);
+            return;
+          } catch (error) {
+            failed.push({ index, term: item.term, code: "VALIDATION_ERROR", message: error instanceof AppError ? error.message : "Repair vocabulary item was not found" });
+            return;
+          }
         }
 
         const result = this.vocabulary.create(userId, {
