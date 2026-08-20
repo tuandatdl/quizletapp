@@ -864,7 +864,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
   } catch (caught) {
     if (caught instanceof RangeError) return error(origin, 413, "PAYLOAD_TOO_LARGE", caught.message);
     if (caught instanceof AiGatewayExhaustedError) {
-      console.warn(JSON.stringify({ event: "ai_gateway_exhausted", attempts: caught.attempts }));
+      console.error(JSON.stringify({ event: "ai_gateway_exhausted", attempts: caught.attempts }));
       return error(origin, 502, "AI_PROVIDER_EXHAUSTED", "Dịch vụ AI hiện không khả dụng. Vui lòng thử lại sau.");
     }
     if (caught instanceof AiOutputError) return error(origin, 502, "AI_RESPONSE_INVALID", caught.message);
