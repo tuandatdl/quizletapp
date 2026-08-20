@@ -46,6 +46,14 @@ import {
   synthesizeCloudSpeech,
   configureAudioElementPlaybackRate,
 } from "../../services/cloudTts";
+import {
+  downloadLocalEnglishModel,
+  getLocalEnglishModelStatus,
+  removeLocalEnglishModel,
+  synthesizeLocalEnglishSpeech,
+  type LocalModelStatus,
+  type LocalTtsProgress,
+} from "../../services/localTts";
 import { cloudFallbackMode, cloudVoiceFor, resolveAudioEngine } from "../../services/audioEnginePolicy";
 import { getCloudAuthService } from "../../services/cloudAuth";
 import { getSyncCoordinator } from "../../persistence/syncEngine";
@@ -64,6 +72,9 @@ export const SettingsPage: React.FC = () => {
   const [pendingBackup, setPendingBackup] = useState<{ backup: StaticBackup; preview: BackupPreview } | null>(null);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [isPlayingPreview, setIsPlayingPreview] = useState<"en" | "zh" | null>(null);
+  const [localModelStatus, setLocalModelStatus] = useState<LocalModelStatus | null>(null);
+  const [localModelProgress, setLocalModelProgress] = useState<LocalTtsProgress | null>(null);
+  const [isManagingLocalModel, setIsManagingLocalModel] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Legacy data repair state
@@ -306,6 +317,42 @@ export const SettingsPage: React.FC = () => {
 
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
 
+  const refreshLocalModelStatus = async () => {
+    setLocalModelStatus(await getLocalEnglishModelStatus());
+  };
+
+  useEffect(() => {
+    void refreshLocalModelStatus();
+  }, []);
+
+  const handleDownloadLocalModel = async () => {
+    setIsManagingLocalModel(true);
+    setLocalModelProgress({ phase: "download", loaded: 0, total: localModelStatus?.approximateSizeBytes });
+    try {
+      await downloadLocalEnglishModel(setLocalModelProgress);
+      await refreshLocalModelStatus();
+      success("Đã tải Local English TTS. Các lần phát sau không gọi API TTS.");
+    } catch (caught) {
+      error(caught instanceof Error ? caught.message : "Không thể tải Local TTS model.");
+    } finally {
+      setIsManagingLocalModel(false);
+    }
+  };
+
+  const handleRemoveLocalModel = async () => {
+    setIsManagingLocalModel(true);
+    try {
+      await removeLocalEnglishModel();
+      await refreshLocalModelStatus();
+      success("Đã xóa Local English TTS model khỏi thiết bị này.");
+    } catch {
+      error("Không thể xóa Local TTS model.");
+    } finally {
+      setIsManagingLocalModel(false);
+      setLocalModelProgress(null);
+    }
+  };
+
   const testBrowserVoice = (lang: "en" | "zh", testText: string, currentSpeed: number) => {
     if (typeof window === "undefined" || !("speechSynthesis" in window)) {
       error("Trình duyệt không hỗ trợ phát âm (SpeechSynthesis).");
@@ -337,14 +384,32 @@ export const SettingsPage: React.FC = () => {
       ? "Hello! Learning languages every day brings great results."
       : "你好！每天坚持学习语言会带来很大的进步。";
     const currentSpeed = form.audioSpeed || 1;
-    const engine = resolveAudioEngine(form.audioEngine);
+    const requestedEngine = resolveAudioEngine(form.audioEngine);
+    // This release intentionally ships a local English model only. Chinese
+    // keeps its established strict Cloud behaviour until its model license is reviewed.
+    const engine = requestedEngine === "LOCAL" && lang === "zh" ? "CLOUD" : requestedEngine;
 
     setIsPlayingPreview(lang);
 
     if (engine !== "BROWSER") {
       try {
-        const voice = cloudVoiceFor(lang, form.preferredCloudVoiceEn);
-        const blob = await synthesizeCloudSpeech({ text: testText, language: lang, voice });
+        let blob: Blob;
+        if (engine === "LOCAL" || engine === "AUTO") {
+          try {
+            blob = await synthesizeLocalEnglishSpeech({
+              text: testText,
+              speed: currentSpeed,
+              onProgress: setLocalModelProgress,
+            });
+          } catch (localError) {
+            if (engine === "LOCAL") throw localError;
+            const voice = cloudVoiceFor(lang, form.preferredCloudVoiceEn);
+            blob = await synthesizeCloudSpeech({ text: testText, language: lang, voice });
+          }
+        } else {
+          const voice = cloudVoiceFor(lang, form.preferredCloudVoiceEn);
+          blob = await synthesizeCloudSpeech({ text: testText, language: lang, voice });
+        }
         const url = URL.createObjectURL(blob);
         const audio = new Audio(url);
         previewAudioRef.current = audio;
@@ -357,7 +422,9 @@ export const SettingsPage: React.FC = () => {
           setIsPlayingPreview(null);
           URL.revokeObjectURL(url);
           if (cloudFallbackMode(engine) === "BROWSER") testBrowserVoice(lang, testText, currentSpeed);
-          else error("Cloud TTS không thể phát âm thanh. CLOUD mode không chuyển sang giọng thiết bị.");
+          else error(engine === "LOCAL"
+            ? "Local TTS không thể phát audio. Hãy xóa model và tải lại."
+            : "Cloud TTS không thể phát âm thanh. CLOUD mode không chuyển sang giọng thiết bị.");
         };
         try {
           await audio.play();
@@ -369,7 +436,9 @@ export const SettingsPage: React.FC = () => {
         if (cloudFallbackMode(engine) === "BROWSER") testBrowserVoice(lang, testText, currentSpeed);
         else {
           setIsPlayingPreview(null);
-          error("Cloud TTS không khả dụng. CLOUD mode không chuyển sang giọng thiết bị.");
+          error(engine === "LOCAL"
+            ? "Local TTS chưa sẵn sàng. Hãy tải lại model trong Cài đặt hoặc chọn AUTO."
+            : "Cloud TTS không khả dụng. CLOUD mode không chuyển sang giọng thiết bị.");
         }
         return;
       }
@@ -569,7 +638,7 @@ export const SettingsPage: React.FC = () => {
           </div>
         </Card>
 
-        {/* 3. Audio & Text to Speech (Cloud TTS First) */}
+        {/* 3. Audio & Text to Speech */}
         <Card className="flex-col gap-5">
           <div className="flex-row items-center justify-between" style={{ flexWrap: "wrap", gap: "8px" }}>
             <div className="flex-row items-center gap-2">
@@ -577,13 +646,13 @@ export const SettingsPage: React.FC = () => {
               <div>
                 <h2 style={{ fontSize: "var(--text-base)", fontWeight: 700 }}>Âm thanh & Giọng đọc</h2>
                 <p style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)" }}>
-                  Giọng đọc đồng nhất trên điện thoại và máy tính (Cloud TTS)
+                  English local-first, miễn phí sau lần tải model đầu tiên
                 </p>
               </div>
             </div>
             <Badge variant="en" size="sm">
               <Sparkles size={12} style={{ marginRight: "4px" }} />
-              Cloud TTS First
+              Local English
             </Badge>
           </div>
 
@@ -605,10 +674,36 @@ export const SettingsPage: React.FC = () => {
                 fontWeight: 600,
               }}
             >
-              <option value="CLOUD">☁️ Cloud TTS — Giọng đồng nhất trên mọi thiết bị</option>
-              <option value="AUTO">✨ Cloud TTS trước, tự chuyển sang giọng thiết bị nếu Cloud không khả dụng</option>
-              <option value="BROWSER">💻 Giọng của thiết bị — có thể khác nhau giữa các máy</option>
+              <option value="LOCAL">Miễn phí — giọng cố định trên thiết bị</option>
+              <option value="AUTO">Local trước, sau đó Cloud và giọng thiết bị</option>
+              <option value="CLOUD">Cloud TTS — cần mạng</option>
+              <option value="BROWSER">Giọng của thiết bị — có thể khác giữa các máy</option>
             </select>
+          </div>
+
+          <div style={{ backgroundColor: "var(--bg-muted)", padding: "14px 16px", borderRadius: "var(--radius-md)", border: "1px solid var(--border-default)" }}>
+            <div className="flex-row justify-between items-center" style={{ gap: "8px", flexWrap: "wrap" }}>
+              <div>
+                <strong style={{ fontSize: "var(--text-sm)" }}>Local English: {localModelStatus?.modelName || "en_US-lessac-medium"}</strong>
+                <p style={{ margin: "4px 0 0", fontSize: "var(--text-xs)", color: "var(--text-secondary)" }}>
+                  {localModelStatus?.cached ? "Đã lưu trên thiết bị" : "Chưa tải"} · khoảng {Math.round((localModelStatus?.approximateSizeBytes || 63_201_294) / 1_000_000)} MB
+                </p>
+              </div>
+              <div className="flex-row" style={{ gap: "8px", flexWrap: "wrap" }}>
+                <Button type="button" variant="secondary" size="sm" onClick={() => void handleDownloadLocalModel()} disabled={isManagingLocalModel || !localModelStatus?.supported} leftIcon={isManagingLocalModel ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}>
+                  {localModelStatus?.cached ? "Tải lại model" : "Tải model"}
+                </Button>
+                <Button type="button" variant="secondary" size="sm" onClick={() => void handleRemoveLocalModel()} disabled={isManagingLocalModel || !localModelStatus?.cached} leftIcon={<Trash2 size={13} />}>
+                  Xóa model
+                </Button>
+              </div>
+            </div>
+            <p style={{ margin: "10px 0 0", fontSize: "var(--text-xs)", color: "var(--text-secondary)" }}>
+              Lần đầu cần tải model; sau đó Local English TTS không gọi API và không dùng giọng SpeechSynthesis của thiết bị.
+              {localModelProgress?.phase === "download" ? ` Đang tải giọng đọc... ${localModelProgress.loaded && localModelProgress.total ? Math.min(100, Math.round(localModelProgress.loaded / localModelProgress.total * 100)) : 0}%` : ""}
+              {localModelProgress?.phase === "load" ? " Đang tải giọng đọc..." : ""}
+            </p>
+            {!localModelStatus?.supported && <p style={{ margin: "8px 0 0", fontSize: "var(--text-xs)", color: "var(--color-danger, #b42318)" }}>Trình duyệt này không hỗ trợ Worker hoặc Cache Storage; hãy chọn AUTO, CLOUD hoặc BROWSER.</p>}
           </div>
 
           {/* English Cloud Voice Selector */}

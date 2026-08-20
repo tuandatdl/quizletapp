@@ -58,7 +58,7 @@ export interface UserSettings {
   dailyGoal: number;
   audioSpeed: 0.75 | 1 | 1.25;
   autoPlayAudio: boolean;
-  audioEngine?: "AUTO" | "CLOUD" | "BROWSER";
+  audioEngine?: "LOCAL" | "AUTO" | "CLOUD" | "BROWSER";
   preferredCloudVoiceEn?: string;
   preferredCloudVoiceZh?: string;
   preferredVoiceEn?: string;

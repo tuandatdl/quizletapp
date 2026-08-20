@@ -11,7 +11,7 @@ export const DEFAULT_LOCAL_SETTINGS: Readonly<UserSettings> = {
   dailyGoal: 20,
   audioSpeed: 1,
   autoPlayAudio: false,
-  audioEngine: "CLOUD",
+  audioEngine: "LOCAL",
   preferredCloudVoiceEn: "aura-asteria-en",
   showTranslation: true,
   showPinyin: true,

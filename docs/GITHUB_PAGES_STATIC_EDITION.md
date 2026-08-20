@@ -38,6 +38,17 @@ npm run build:pages
 
 No model/API secret is compiled into browser assets. Quick Add preserves comma/newline-delimited phrases, batches at most 25 terms, enriches automatically after parsing, validates results, and caches them under `language + normalized term + vocabulary-enrichment-v1`. Failed items can be retried individually or together. A rich-enrichment failure falls back to translation-only data when translation succeeds.
 
+## Local English TTS
+
+The default English audio engine is Local: Piper runs in a browser Worker and
+downloads `en_US-lessac-medium` on first use. The downloaded model is kept in
+versioned Cache Storage; the synthesized audio reuses the existing IndexedDB
+audio cache. It does not call `/v1/tts` or use device SpeechSynthesis in LOCAL
+mode. `AUTO` tries Local, then Cloud, then the browser voice; `CLOUD` and
+`BROWSER` remain strict. No voice binary is part of this repository. See
+[`LOCAL_TTS_MODEL_LICENSES.md`](./LOCAL_TTS_MODEL_LICENSES.md) before changing
+the configured model URL or adding another language.
+
 Reading creation saves the passage before attempting optional automatic translation. Full-passage and selected-text translation use the Worker, and saving a selected word/phrase automatically enriches it. If the network or AI call fails, saved local content remains intact and can be retried.
 
 Workers AI JSON Mode is used, but the Worker validates every model response because Cloudflare explicitly notes that schema compliance is not guaranteed: <https://developers.cloudflare.com/workers-ai/features/json-mode/>.

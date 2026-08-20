@@ -49,6 +49,7 @@ import {
   prefetchCloudSpeech,
   configureAudioElementPlaybackRate,
 } from "../../services/cloudTts";
+import { synthesizeLocalEnglishSpeech } from "../../services/localTts";
 import { cloudFallbackMode, cloudVoiceFor, resolveAudioEngine, safeTtsDiagnostic } from "../../services/audioEnginePolicy";
 
 export const ReadingDetailPage: React.FC = () => {
@@ -247,7 +248,7 @@ export const ReadingDetailPage: React.FC = () => {
     setShowFullTranslation(settings.showTranslation);
   }, [settings]);
 
-  // Audio Playback Engine (Cloud TTS First + SpeechSynthesis Fallback)
+  // Audio Playback Engine (Local English → Cloud → SpeechSynthesis in AUTO)
   const cleanupActiveAudio = () => {
     if (activeAudioRef.current) {
       const audio = activeAudioRef.current;
@@ -462,7 +463,9 @@ export const ReadingDetailPage: React.FC = () => {
 
       currentSentenceIdxRef.current = index;
       const effectiveSpeed = speedOverride ?? playbackSpeedRef.current;
-      const audioEngine = resolveAudioEngine(settings?.audioEngine);
+      const requestedAudioEngine = resolveAudioEngine(settings?.audioEngine);
+      // Local Piper is English-only in this release; retain Chinese Cloud playback.
+      const audioEngine = requestedAudioEngine === "LOCAL" && passage.language !== "en" ? "CLOUD" : requestedAudioEngine;
       const isCloudPreferred = audioEngine !== "BROWSER";
       safeTtsDiagnostic("tts_engine_requested", { tts_engine_requested: audioEngine });
 
@@ -494,31 +497,50 @@ export const ReadingDetailPage: React.FC = () => {
           } else {
             setPlaybackState((prev) => ({ ...prev, status: "paused", loading: false }));
             isPlayingRef.current = false;
-            error("Cloud TTS không khả dụng. CLOUD mode không chuyển sang giọng thiết bị.");
+            error(audioEngine === "LOCAL"
+              ? "Local TTS chưa sẵn sàng. Hãy tải lại model trong Cài đặt hoặc chọn AUTO."
+              : "Cloud TTS không khả dụng. CLOUD mode không chuyển sang giọng thiết bị.");
           }
         };
 
         try {
-          const voice = cloudVoiceFor(passage.language, settings?.preferredCloudVoiceEn);
           const controller = new AbortController();
           cloudAbortRef.current?.abort();
           cloudAbortRef.current = controller;
-
-          // Prefetch next sentence in background (cache warm only, never plays)
-          if (index + 1 < passage.sentences.length) {
-            void prefetchCloudSpeech({
-              text: passage.sentences[index + 1]!.text,
+          let blob: Blob;
+          let source: "local" | "cloud";
+          let voice: string | undefined;
+          try {
+            if (audioEngine === "LOCAL" || audioEngine === "AUTO") {
+              blob = await synthesizeLocalEnglishSpeech({
+                text: sentence.text,
+                speed: effectiveSpeed,
+                signal: controller.signal,
+              });
+              source = "local";
+            } else {
+              throw new Error("Skip local TTS");
+            }
+          } catch (localError) {
+            if (audioEngine === "LOCAL") throw localError;
+            voice = cloudVoiceFor(passage.language, settings?.preferredCloudVoiceEn);
+            // Prefetch only Cloud speech: local synthesis has its own deterministic
+            // IndexedDB cache and must not consume another inference session.
+            if (index + 1 < passage.sentences.length) {
+              void prefetchCloudSpeech({
+                text: passage.sentences[index + 1]!.text,
+                language: passage.language,
+                voice,
+              });
+            }
+            blob = await synthesizeCloudSpeech({
+              text: sentence.text,
               language: passage.language,
               voice,
+              signal: controller.signal,
             });
+            source = "cloud";
           }
-
-          const blob = await synthesizeCloudSpeech({
-            text: sentence.text,
-            language: passage.language,
-            voice,
-            signal: controller.signal,
-          });
 
           if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId || sentencePlayAttemptRef.current !== attemptId) {
             return;
@@ -535,7 +557,7 @@ export const ReadingDetailPage: React.FC = () => {
 
           audio.onplay = () => {
             if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId || sentencePlayAttemptRef.current !== attemptId) return;
-            safeTtsDiagnostic("tts_source_used", { tts_source_used: "cloud", cloud_voice: voice });
+            safeTtsDiagnostic("tts_source_used", { tts_source_used: source, cloud_voice: source === "cloud" ? voice : undefined });
             setPlaybackState((prev) => ({ ...prev, loading: false, status: "playing" }));
           };
 

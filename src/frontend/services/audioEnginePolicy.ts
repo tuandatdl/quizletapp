@@ -1,13 +1,13 @@
 import type { Language } from "../types/api.js";
 import { DEFAULT_CLOUD_VOICE_EN } from "./cloudTts.js";
 
-export type AudioEngine = "AUTO" | "CLOUD" | "BROWSER";
+export type AudioEngine = "LOCAL" | "AUTO" | "CLOUD" | "BROWSER";
 export type HtmlAudioFallbackMode = "NONE" | "BROWSER";
-export type TtsSource = "cloud" | "browser" | "static";
+export type TtsSource = "local" | "cloud" | "browser" | "static";
 
-/** CLOUD is the safe default for records without an explicit engine selection. */
+/** LOCAL is the default for settings records that have no explicit choice yet. */
 export function resolveAudioEngine(engine: AudioEngine | undefined | null): AudioEngine {
-  return engine === "AUTO" || engine === "BROWSER" || engine === "CLOUD" ? engine : "CLOUD";
+  return engine === "LOCAL" || engine === "AUTO" || engine === "BROWSER" || engine === "CLOUD" ? engine : "LOCAL";
 }
 
 export function cloudFallbackMode(engine: AudioEngine): HtmlAudioFallbackMode {
@@ -23,19 +23,25 @@ export function safeTtsDiagnostic(event: "tts_engine_requested" | "tts_source_us
 }
 
 /**
- * Small, testable orchestration boundary. CLOUD intentionally rethrows rather
- * than calling browser speech; only AUTO may take that fallback path.
+ * Small, testable orchestration boundary. LOCAL and CLOUD are strict. AUTO is
+ * deliberately the only policy that can advance through all fallback engines.
  */
 export async function runAudioEnginePolicy<T>(options: {
   engine: AudioEngine;
+  playLocal: () => Promise<T>;
   playCloud: () => Promise<T>;
   playBrowser: () => Promise<T>;
-}): Promise<{ source: "cloud" | "browser"; value: T }> {
+}): Promise<{ source: "local" | "cloud" | "browser"; value: T }> {
   if (options.engine === "BROWSER") return { source: "browser", value: await options.playBrowser() };
+  if (options.engine === "LOCAL") return { source: "local", value: await options.playLocal() };
+  if (options.engine === "CLOUD") return { source: "cloud", value: await options.playCloud() };
   try {
-    return { source: "cloud", value: await options.playCloud() };
-  } catch (caught) {
-    if (options.engine === "AUTO") return { source: "browser", value: await options.playBrowser() };
-    throw caught;
+    return { source: "local", value: await options.playLocal() };
+  } catch {
+    try {
+      return { source: "cloud", value: await options.playCloud() };
+    } catch {
+      return { source: "browser", value: await options.playBrowser() };
+    }
   }
 }
