@@ -1,8 +1,9 @@
 import type { Language } from "../types/api";
 import type { PersistenceAdapter, StoredRecord } from "../persistence/types";
 import { getLanguageApiUrl } from "../runtime/runtime";
+import { normalizeCefrLevel, type LexicalStatus, normalizeVocabularyTopics } from "../../shared/vocabularyIntelligence.js";
 
-export const ENRICHMENT_VERSION = "vocabulary-enrichment-v3";
+export const ENRICHMENT_VERSION = "vocabulary-enrichment-v5";
 export const MAX_ENRICHMENT_BATCH_SIZE = 25;
 
 export interface VocabularyContext {
@@ -28,7 +29,13 @@ export interface VocabularyEnrichment {
   pronunciation?: string;
   ipa?: string;
   partOfSpeech?: string;
-  meaningVi: string;
+  meaningVi?: string;
+  lexicalStatus: LexicalStatus;
+  lexicalConfidence?: number;
+  lexicalReason?: string;
+  enrichmentProvider?: "primary" | "fallback";
+  cefr?: string;
+  suggestedTopics?: string[];
   synonyms?: string[];
   example?: string;
   exampleTranslation?: string;
@@ -70,7 +77,9 @@ export function isValidEnrichmentCacheRecord(
   if (!record.value || typeof record.value !== "object" || Array.isArray(record.value)) return false;
   if (record.value.language !== expectedLanguage) return false;
   if (normalizeTerm(record.value.term, expectedLanguage) !== normalizedExpected) return false;
-  if (!record.value.meaningVi || typeof record.value.meaningVi !== "string") return false;
+  if (!record.value.lexicalStatus || !["VALID", "UNCERTAIN", "INVALID"].includes(record.value.lexicalStatus)) return false;
+  if (record.value.lexicalStatus === "VALID" && (!record.value.meaningVi || typeof record.value.meaningVi !== "string")) return false;
+  if (expectedLanguage === "en" && record.value.lexicalStatus === "VALID" && !normalizeCefrLevel(record.value.cefr)) return false;
   if (expectedLanguage === "en") {
     const ipa = record.value.ipa || record.value.pronunciation;
     if (ipa && typeof ipa === "string") {
@@ -96,9 +105,10 @@ export function validateEnrichment(value: unknown, expectedLanguage?: Language):
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("AI trả về dữ liệu từ vựng không hợp lệ.");
   const item = value as Record<string, unknown>;
   const term = optionalString(item.term, 200);
+  const lexicalStatus: LexicalStatus = item.lexicalStatus === "INVALID" || item.lexicalStatus === "UNCERTAIN" ? item.lexicalStatus : "VALID";
   const meaningVi = optionalString(item.meaningVi, 1000);
   const language = item.language === "en" || item.language === "zh" ? item.language : expectedLanguage;
-  if (!term || !meaningVi || !language || (expectedLanguage && language !== expectedLanguage)) {
+  if (!term || !language || (lexicalStatus === "VALID" && !meaningVi) || (expectedLanguage && language !== expectedLanguage)) {
     throw new Error("AI trả về dữ liệu từ vựng thiếu trường bắt buộc.");
   }
   const senses = Array.isArray(item.senses)
@@ -121,10 +131,15 @@ export function validateEnrichment(value: unknown, expectedLanguage?: Language):
   const toneData = Array.isArray(item.toneData)
     ? item.toneData.filter((tone): tone is 0 | 1 | 2 | 3 | 4 => [0, 1, 2, 3, 4].includes(Number(tone))).slice(0, 200)
     : undefined;
-  return {
+  const common: VocabularyEnrichment = {
     term,
     language,
     meaningVi,
+    lexicalStatus,
+    lexicalConfidence: typeof item.lexicalConfidence === "number" ? Math.max(0, Math.min(1, item.lexicalConfidence)) : undefined,
+    lexicalReason: optionalString(item.lexicalReason, 300),
+    cefr: language === "en" ? normalizeCefrLevel(item.cefr) ?? undefined : undefined,
+    suggestedTopics: language === "en" ? normalizeVocabularyTopics(item.suggestedTopics).slice(0, 3) : undefined,
     pronunciation: optionalString(item.pronunciation, 200),
     ipa: optionalString(item.ipa, 200),
     partOfSpeech: optionalString(item.partOfSpeech, 50),
@@ -132,12 +147,15 @@ export function validateEnrichment(value: unknown, expectedLanguage?: Language):
     example: optionalString(item.example, 2000),
     exampleTranslation: optionalString(item.exampleTranslation, 2000),
     senses,
+    partial: item.partial === true,
+  };
+  return language === "zh" ? {
+    ...common,
     simplified: optionalString(item.simplified, 200),
     traditional: optionalString(item.traditional, 200),
     pinyin: optionalString(item.pinyin, 200),
     toneData,
-    partial: item.partial === true,
-  };
+  } : common;
 }
 
 async function fetchJson<T>(path: string, body: unknown): Promise<T> {
@@ -216,7 +234,7 @@ export class LanguageApiClient {
         for (const term of batch) {
           try {
             const meaningVi = await this.translate(term, language);
-            enriched.push({ term, language, meaningVi, partial: true });
+            enriched.push({ term, language, meaningVi, lexicalStatus: "UNCERTAIN", partial: true });
           } catch {
             throw richError;
           }

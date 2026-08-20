@@ -1,5 +1,5 @@
 export const INDEXED_DB_NAME = "tu-trinh-language";
-export const INDEXED_DB_SCHEMA_VERSION = 2;
+export const INDEXED_DB_SCHEMA_VERSION = 3;
 
 export const STORE_NAMES = [
   "profile",
@@ -15,6 +15,7 @@ export const STORE_NAMES = [
   "meta",
   "syncQueue",
   "syncConflicts",
+  "collections",
 ] as const;
 
 export type StoreName = (typeof STORE_NAMES)[number];
@@ -45,5 +46,6 @@ export interface StaticBackup {
     readings: unknown[];
     activities: unknown[];
     quizHistory: unknown[];
+    collections?: unknown[];
   };
 }

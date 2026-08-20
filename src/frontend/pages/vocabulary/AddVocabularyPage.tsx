@@ -61,7 +61,9 @@ interface EditablePreviewItem {
   selected: boolean;
   expandedDetails: boolean;
   senses: VocabularySenseSuggestion[];
-  enrichmentState: "loading" | "ready" | "partial" | "failed" | "exists";
+  lexicalStatus?: "VALID" | "UNCERTAIN" | "INVALID";
+  lexicalReason?: string;
+  enrichmentState: "loading" | "ready" | "partial" | "invalid" | "failed" | "exists";
   enrichmentError?: string;
 }
 
@@ -107,10 +109,12 @@ const toEditablePreview = (
     toeicLevel: item.suggestion.toeicLevel || "",
     tone: item.suggestion.toneData?.[0] !== undefined ? String(item.suggestion.toneData[0]) : "",
     traditional: item.suggestion.traditional || "",
-    selected: true,
+    selected: item.status !== "INVALID",
     expandedDetails: false,
     senses: item.suggestion.senses || [],
-    enrichmentState: item.duplicate ? "exists" : item.error ? "failed" : item.status === "READY" ? "ready" : "partial",
+    lexicalStatus: item.suggestion.lexicalStatus,
+    lexicalReason: item.suggestion.lexicalReason,
+    enrichmentState: item.duplicate ? "exists" : item.error ? "failed" : item.status === "INVALID" ? "invalid" : item.status === "READY" ? "ready" : "partial",
     enrichmentError: item.error?.message,
   };
 };
@@ -752,6 +756,11 @@ export const AddVocabularyPage: React.FC = () => {
                           {item.enrichmentState === "loading" && <><Loader2 size={11} className="animate-spin" style={{ display: "inline", marginRight: "4px" }} />Đang dịch...</>}
                           {item.enrichmentState === "ready" && "✓ Tự động tạo"}
                           {item.enrichmentState === "partial" && "✓ Đã dịch; metadata chưa tải được"}
+                          {item.enrichmentState === "invalid" && (
+                            <span style={{ color: "var(--color-warning, #d97706)", fontWeight: 600 }}>
+                              ⚠ Có thể đây không phải từ tiếng Anh chuẩn{item.lexicalReason ? `: ${item.lexicalReason}` : ""}. Không được chọn để lưu tự động.
+                            </span>
+                          )}
                           {item.enrichmentState === "failed" && (
                             <button type="button" onClick={() => handleRetryEnrichment([item.term])} style={{ color: "inherit", textDecoration: "underline" }}>Thử lại</button>
                           )}

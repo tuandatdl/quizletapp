@@ -8,6 +8,7 @@ import type {
   ReviewAction,
   VocabularyInput,
   VocabularyItem,
+  VocabularyCollection,
   VocabularyStatus,
 } from "../types/api";
 
@@ -71,4 +72,16 @@ export const vocabularyApi = {
 
   answerFlashcard: (id: string, action: ReviewAction) =>
     api.post<VocabularyItem>(`/api/flashcards/${id}/answer`, { action }),
+};
+
+export const collectionApi = {
+  list: () => api.get<VocabularyCollection[]>("/api/collections"),
+
+  create: (name: string) =>
+    api.post<VocabularyCollection>("/api/collections", { name }),
+
+  rename: (id: string, name: string) =>
+    api.patch<VocabularyCollection>(`/api/collections/${id}`, { name }),
+
+  delete: (id: string) => api.delete<void>(`/api/collections/${id}`),
 };

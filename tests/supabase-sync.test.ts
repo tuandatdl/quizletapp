@@ -347,7 +347,7 @@ describe("Supabase Local-First Cloud Sync", () => {
     expect(await coordinator.getPendingCount()).toBe(1);
   });
 
-  it("10. syncs all 5 syncable stores: settings, vocabulary, readings, activities, quizHistory", async () => {
+  it("10. syncs every syncable store including collections", async () => {
     const coordinator = new LocalFirstSyncCoordinator(adapter);
     await coordinator.saveMeta({ localDatasetOwnerUserId: "user-123" });
 
@@ -355,7 +355,7 @@ describe("Supabase Local-First Cloud Sync", () => {
       await coordinator.queueLocalChange(store, `${store}-item-1`, { id: `${store}-item-1`, testData: true });
     }
 
-    expect(await coordinator.getPendingCount()).toBe(5);
+    expect(await coordinator.getPendingCount()).toBe(SYNCABLE_STORES.length);
 
     const pushedStores: string[] = [];
     const mockAdapter: RemoteSyncAdapter = {
@@ -368,7 +368,7 @@ describe("Supabase Local-First Cloud Sync", () => {
 
     const result = await coordinator.sync(mockAdapter);
     expect(result.success).toBe(true);
-    expect(result.pushedCount).toBe(5);
+    expect(result.pushedCount).toBe(SYNCABLE_STORES.length);
     expect(pushedStores.sort()).toEqual([...SYNCABLE_STORES].sort());
   });
 
@@ -559,6 +559,7 @@ describe("Supabase Local-First Cloud Sync", () => {
     await coordinator.saveMeta({
       localDatasetOwnerUserId: "user-123",
       lastCursor: "2026-08-19T18:20:17.744+00:00",
+      syncDataSchemaVersion: 2,
     });
     const translateLegacyCursor = vi.fn(async () => "2048");
     const pull = vi.fn(async () => ({ changes: [] }));
@@ -604,7 +605,7 @@ describe("Supabase Local-First Cloud Sync", () => {
 
   it("22. uses an upgraded numeric cursor directly on later syncs", async () => {
     const coordinator = new LocalFirstSyncCoordinator(adapter);
-    await coordinator.saveMeta({ localDatasetOwnerUserId: "user-123", lastCursor: "2048" });
+    await coordinator.saveMeta({ localDatasetOwnerUserId: "user-123", lastCursor: "2048", syncDataSchemaVersion: 2 });
     const pull = vi.fn(async () => ({ changes: [] }));
     const translateLegacyCursor = vi.fn(async () => "should-not-run");
 
@@ -626,6 +627,7 @@ describe("Supabase Local-First Cloud Sync", () => {
     await coordinator.saveMeta({
       localDatasetOwnerUserId: "user-123",
       lastCursor: "2026-08-19T18:20:17.744+00:00",
+      syncDataSchemaVersion: 2,
     });
     const pull = vi.fn(async (cursor?: string) => {
       expect(cursor).toBe("42");

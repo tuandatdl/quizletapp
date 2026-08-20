@@ -6,7 +6,7 @@ import {
   type StoredRecord,
 } from "./types";
 
-const BACKUP_STORES = ["profile", "settings", "vocabulary", "readings", "activities", "quizHistory"] as const;
+const BACKUP_STORES = ["profile", "settings", "vocabulary", "readings", "activities", "quizHistory", "collections"] as const;
 
 export interface BackupPreview {
   schemaVersion: number;
@@ -26,6 +26,7 @@ export function validateBackup(value: unknown): StaticBackup {
   }
   if (!isRecord(value.data)) throw new Error("Bản sao lưu thiếu dữ liệu.");
   for (const store of BACKUP_STORES) {
+    if (store === "collections" && value.schemaVersion < 3 && value.data[store] === undefined) continue;
     if (!Array.isArray(value.data[store])) throw new Error(`Dữ liệu ${store} không hợp lệ.`);
     for (const item of value.data[store]) {
       if (!isRecord(item) || typeof item.id !== "string" || !item.id) {
@@ -33,6 +34,7 @@ export function validateBackup(value: unknown): StaticBackup {
       }
     }
   }
+  if (!Array.isArray(value.data.collections)) value.data.collections = [];
   return value as unknown as StaticBackup;
 }
 
@@ -49,7 +51,7 @@ export async function exportBackup(adapter: PersistenceAdapter): Promise<StaticB
 export function previewBackup(backup: StaticBackup): BackupPreview {
   return {
     schemaVersion: backup.schemaVersion,
-    counts: Object.fromEntries(BACKUP_STORES.map((store) => [store, backup.data[store].length])) as BackupPreview["counts"],
+    counts: Object.fromEntries(BACKUP_STORES.map((store) => [store, backup.data[store]?.length ?? 0])) as BackupPreview["counts"],
   };
 }
 
@@ -68,7 +70,7 @@ export async function importBackup(
     const vocabularyKeys = store === "vocabulary"
       ? new Set((await adapter.getAll<Record<string, unknown>>("vocabulary")).map(vocabularyKey).filter((key): key is string => Boolean(key)))
       : undefined;
-    for (const item of backup.data[store] as StoredRecord[]) {
+    for (const item of (backup.data[store] ?? []) as StoredRecord[]) {
       if (store === "vocabulary") {
         const record = item as Record<string, unknown>;
         const duplicateKey = vocabularyKey(record);

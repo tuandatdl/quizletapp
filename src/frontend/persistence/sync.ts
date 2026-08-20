@@ -6,6 +6,7 @@ export const SYNCABLE_STORES = [
   "readings",
   "activities",
   "quizHistory",
+  "collections",
 ] as const satisfies readonly StoreName[];
 
 export type SyncableStore = (typeof SYNCABLE_STORES)[number];
@@ -65,6 +66,7 @@ export interface SyncMeta extends StoredRecord {
   lastSyncAt: string | null;
   lastSyncStatus: SyncStatus;
   lastSyncError: string | null;
+  syncDataSchemaVersion?: number;
 }
 
 export interface SyncResult {

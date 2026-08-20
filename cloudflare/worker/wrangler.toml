@@ -8,6 +8,7 @@ binding = "AI"
 [vars]
 ALLOWED_ORIGINS = "http://localhost:5173,https://tuandatdl.github.io"
 ENRICHMENT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast"
+ENRICHMENT_FALLBACK_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 TRANSLATION_MODEL = "@cf/meta/llama-3.2-3b-instruct"
 TTS_MODEL_EN = "@cf/deepgram/aura-2-en"
 TTS_MODEL_ZH = "@cf/myshell-ai/melotts"

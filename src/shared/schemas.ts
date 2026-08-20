@@ -4,6 +4,13 @@ export const languageSchema = z.enum(["en", "zh"]);
 export type Language = z.infer<typeof languageSchema>;
 export const vocabularyStatusSchema = z.enum(["NEW", "LEARNING", "REVIEW", "MASTERED"]);
 export type VocabularyStatus = z.infer<typeof vocabularyStatusSchema>;
+export const cefrLevelSchema = z.enum(["A1", "A2", "B1", "B2", "C1", "C2"]);
+export type CEFRLevel = z.infer<typeof cefrLevelSchema>;
+export function normalizeCefrLevel(value: unknown): CEFRLevel | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toUpperCase();
+  return cefrLevelSchema.safeParse(normalized).success ? normalized as CEFRLevel : null;
+}
 export const reviewActionSchema = z.enum(["AGAIN", "HARD", "GOOD", "EASY"]);
 export type ReviewAction = z.infer<typeof reviewActionSchema>;
 
@@ -20,6 +27,8 @@ export const vocabularyInputSchema = z.object({
   example: z.string().trim().max(2000).nullable().optional(),
   exampleTranslation: z.string().trim().max(2000).nullable().optional(),
   topic: z.string().trim().max(100).nullable().optional(),
+  topics: z.array(z.string().trim().min(1).max(60)).max(20).optional(),
+  collectionIds: z.array(z.string().trim().min(1).max(200)).max(100).optional(),
   level: z.string().trim().max(30).nullable().optional(),
   note: z.string().trim().max(2000).nullable().optional(),
   source: z.enum(["MANUAL", "READING_SELECTION", "IMPORT"]).default("MANUAL"),
@@ -93,6 +102,8 @@ export const bulkVocabularyItemSchema = z.object({
   example: z.string().trim().max(2000).nullable().optional(),
   exampleTranslation: z.string().trim().max(2000).nullable().optional(),
   topic: z.string().trim().max(100).nullable().optional(),
+  topics: z.array(z.string().trim().min(1).max(60)).max(20).optional(),
+  collectionIds: z.array(z.string().trim().min(1).max(200)).max(100).optional(),
   cefr: z.string().trim().max(30).optional(),
   toeicLevel: z.string().trim().max(30).optional(),
   simplified: z.string().trim().max(200).optional(),

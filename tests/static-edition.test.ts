@@ -168,8 +168,8 @@ describe("automatic enrichment", () => {
   it("maps a batch, validates output and reuses IndexedDB cache", async () => {
     vi.stubEnv("VITE_LANGUAGE_API_URL", "https://worker.test");
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ data: { items: [
-      { term: "go", language: "en", meaningVi: "đi", partOfSpeech: "verb", senses: [{ partOfSpeech: "verb", meaningVi: "đi" }] },
-      { term: "live", language: "en", meaningVi: "sống", senses: [{ partOfSpeech: "verb", meaningVi: "sống" }, { partOfSpeech: "adjective", meaningVi: "trực tiếp" }] },
+      { term: "go", language: "en", meaningVi: "đi", partOfSpeech: "verb", lexicalStatus: "VALID", cefr: "A1", senses: [{ partOfSpeech: "verb", meaningVi: "đi" }] },
+      { term: "live", language: "en", meaningVi: "sống", lexicalStatus: "VALID", cefr: "A2", senses: [{ partOfSpeech: "verb", meaningVi: "sống" }, { partOfSpeech: "adjective", meaningVi: "trực tiếp" }] },
     ] } }), { status: 200, headers: { "Content-Type": "application/json" } }));
     vi.stubGlobal("fetch", fetchMock);
     const client = new LanguageApiClient(adapter());
@@ -314,16 +314,16 @@ describe("automatic enrichment", () => {
     const persistence = adapter();
     // Cache a previous enrichment in IndexedDB
     await persistence.put("enrichmentCache", {
-      id: "vocabulary-enrichment-v3:en:car",
-      version: "vocabulary-enrichment-v3",
+      id: "vocabulary-enrichment-v5:en:car",
+      version: "vocabulary-enrichment-v5",
       language: "en",
       normalizedTerm: "car",
-      value: { term: "car", language: "en", meaningVi: "xe hơi cũ", partOfSpeech: "noun", ipa: "/kɑːr/", pronunciation: "/kɑːr/" },
+      value: { term: "car", language: "en", meaningVi: "xe hơi cũ", partOfSpeech: "noun", ipa: "/kɑːr/", pronunciation: "/kɑːr/", lexicalStatus: "VALID", cefr: "A1" },
       updatedAt: new Date().toISOString(),
     });
 
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ data: { items: [
-      { term: "car", language: "en", meaningVi: "xe ô tô mới", partOfSpeech: "noun", ipa: "/kɑːr/", pronunciation: "/kɑːr/" },
+      { term: "car", language: "en", meaningVi: "xe ô tô mới", partOfSpeech: "noun", ipa: "/kɑːr/", pronunciation: "/kɑːr/", lexicalStatus: "VALID", cefr: "A1" },
     ] } }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -467,7 +467,7 @@ describe("Cloudflare Worker contract", () => {
   });
 
   it("rejects English items missing partOfSpeech or missing valid IPA", () => {
-    expect(() => validateEnrichmentItems({ items: [{ term: "go", meaningVi: "đi", ipa: "/ɡoʊ/" }] }, ["go"], "en")).toThrow(/partOfSpeech/u);
+    expect(() => validateEnrichmentItems({ items: [{ term: "go", meaningVi: "đi", ipa: "/ɡoʊ/" }] }, ["go"], "en")).toThrow(/required lexical fields/u);
     expect(() => validateEnrichmentItems({ items: [{ term: "go", meaningVi: "đi", partOfSpeech: "verb" }] }, ["go"], "en")).toThrow(/missing IPA/u);
     expect(() => validateEnrichmentItems({ items: [{ term: "go", meaningVi: "đi", partOfSpeech: "verb", ipa: "go" }] }, ["go"], "en")).toThrow(/invalid IPA/u);
   });

@@ -136,6 +136,30 @@ export const HomePage: React.FC = () => {
         </div>
       </div>
 
+      {isEn && dashboard?.cefr && (
+        <Card>
+          <div className="flex-row justify-between items-center" style={{ marginBottom: "var(--space-4)", flexWrap: "wrap", gap: "8px" }}>
+            <div>
+              <h2 style={{ fontSize: "var(--text-lg)", fontWeight: 700 }}>Thống kê CEFR</h2>
+              <p style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)" }}>Tổng số, đã học và đã thuộc theo trình độ.</p>
+            </div>
+            <Badge variant="mastered">{dashboard.cefr.totalMastered} đã thuộc</Badge>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: "10px" }}>
+            {(["A1", "A2", "B1", "B2", "C1", "C2", "unclassified"] as const).map((level) => {
+              const stats = dashboard.cefr!.cefr[level];
+              return (
+                <div key={level} style={{ padding: "10px", borderRadius: "var(--radius-md)", backgroundColor: "var(--bg-muted)" }}>
+                  <div style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)", fontWeight: 700 }}>{level === "unclassified" ? "Chưa phân loại" : level}</div>
+                  <div style={{ fontSize: "var(--text-lg)", fontWeight: 800 }}>{stats.total}</div>
+                  <div style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)" }}>{stats.learned} đã học · {stats.mastered} đã thuộc</div>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+
       {/* 2. Urgent / High Priority: Due Today Action Card */}
       {dueReviews > 0 && (
         <div
