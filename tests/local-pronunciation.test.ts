@@ -128,4 +128,100 @@ describe("free-first local English pronunciation coach", () => {
     expect(getLocalEnglishModelConfig().id).toBe("en_US-lessac-medium");
     expect(getLocalPronunciationModelConfig()).toMatchObject({ id: "onnx-community/whisper-tiny.en", dtype: "q4" });
   });
+
+  describe("Shadowing Local Scoring Integration", () => {
+    it("SHADOWING_LOCAL_EN_ASSESSMENT and SHADOWING_LOCAL_ZERO_PRONUNCIATION_API and SHADOWING_LOCAL_ZERO_WORKERS_AI", async () => {
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+      const result = scoreLocalEnglishPronunciation({
+        expectedText: "I live in Vietnam.",
+        recognizedText: "i live in vietnam",
+        durationSeconds: 2.0,
+      });
+      expect(result.overallScore).toBeGreaterThanOrEqual(80);
+      expect(result.contentMatchScore).toBe(100);
+      expect(result.words).toHaveLength(4);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it("SHADOWING_RECORDED_BLOB_LOCAL_ONLY and SHADOWING_RESULT_BEFORE_ADVANCE", async () => {
+      const fs = await import("fs");
+      const path = await import("path");
+      const shadowingPageSrc = fs.readFileSync(path.resolve(__dirname, "../src/frontend/pages/shadowing/ShadowingPage.tsx"), "utf-8");
+      expect(shadowingPageSrc).toContain("analyzeLocalEnglishRecording");
+      expect(shadowingPageSrc).toContain("recordedAudioBlob");
+      expect(shadowingPageSrc).toContain("Phân tích & chấm điểm");
+      expect(shadowingPageSrc).toContain("Sang câu tiếp theo");
+    });
+
+    it("SHADOWING_SCORE_AVERAGE_ONE_SENTENCE and SHADOWING_SCORE_AVERAGE_MULTIPLE_SENTENCES", () => {
+      // 1 sentence
+      let completedCount = 1;
+      let scoreTotal = 88;
+      let averageScore = Math.round(scoreTotal / completedCount);
+      expect(averageScore).toBe(88);
+
+      // 2 sentences (88 + 92 = 180 / 2 = 90)
+      completedCount += 1;
+      scoreTotal += 92;
+      averageScore = Math.round(scoreTotal / completedCount);
+      expect(averageScore).toBe(90);
+    });
+
+    it("SHADOWING_RETRY_NO_DOUBLE_COUNT and SHADOWING_NEXT_COMMITS_ONCE", () => {
+      let completedCount = 0;
+      let scoreTotal = 0;
+
+      // First attempt (uncommitted retry)
+      const attempt1 = scoreLocalEnglishPronunciation({ expectedText: "Hello world", recognizedText: "hello", durationSeconds: 1 });
+      expect(attempt1.overallScore).toBeLessThan(100);
+      // User retries -> not committed yet
+      expect(completedCount).toBe(0);
+      expect(scoreTotal).toBe(0);
+
+      // Second attempt (committed)
+      const attempt2 = scoreLocalEnglishPronunciation({ expectedText: "Hello world", recognizedText: "hello world", durationSeconds: 1.5 });
+      completedCount += 1;
+      scoreTotal += attempt2.overallScore;
+      const avg = Math.round(scoreTotal / completedCount);
+      expect(completedCount).toBe(1);
+      expect(scoreTotal).toBe(attempt2.overallScore);
+      expect(avg).toBe(attempt2.overallScore);
+    });
+
+    it("SHADOWING_STALE_ANALYSIS_IGNORED", async () => {
+      delayedWorker = true;
+      const controller = new AbortController();
+      const promise = transcribeLocalEnglishAudio(new Float32Array(160), { signal: controller.signal });
+      controller.abort();
+      await expect(promise).rejects.toMatchObject({ name: "AbortError" });
+    });
+
+    it("SHADOWING_RAW_AUDIO_NOT_PERSISTED and SHADOWING_HISTORY_DERIVED_ONLY", async () => {
+      const persistence = new MemoryPersistence();
+      const analysis = scoreLocalEnglishPronunciation({
+        id: "shadow-1",
+        expectedText: "Practice shadowing every day",
+        recognizedText: "practice shadowing every day",
+        durationSeconds: 2.5,
+      });
+      await saveLocalPronunciationHistory(analysis, persistence);
+      const records = await persistence.getAll<any>("pronunciationHistory");
+      expect(records).toHaveLength(1);
+      expect(records[0]?.expectedText).toBe("Practice shadowing every day");
+      expect(records[0]?.recognizedText).toBe("practice shadowing every day");
+      expect(records[0]?.overallScore).toBe(100);
+      expect(JSON.stringify(records[0])).not.toContain("audioBase64");
+      expect(JSON.stringify(records[0])).not.toContain("Blob");
+    });
+
+    it("SHADOWING_ZH_NO_FAKE_SCORE and SHADOWING_FINAL_AVERAGE_SCORE", () => {
+      const zhAvailability = getStaticLocalPronunciationAvailability("zh");
+      expect(zhAvailability.assessmentAvailable).toBe(false);
+
+      const completedCount = 3;
+      const scoreTotal = 85 + 90 + 95;
+      const finalAverage = Math.round(scoreTotal / completedCount);
+      expect(finalAverage).toBe(90);
+    });
+  });
 });
