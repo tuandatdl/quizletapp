@@ -209,4 +209,14 @@ describe("Provider compatibility payloads", () => {
     await expect(new OpenAiProvider({ apiKey: "test-key", model: "gpt-5-mini", fetcher: openAiFetcher }).complete(request))
       .rejects.toMatchObject({ code: "QUOTA_EXCEEDED", details: { httpStatus: 429, upstreamCode: "insufficient_quota" } });
   });
+
+  it("classifies Workers AI daily allocation exhaustion without logging its raw message", async () => {
+    const gateway = new AiGateway([
+      provider("workers-ai", vi.fn().mockRejectedValue(new Error("AiError: 4006: daily free allocation of neurons exhausted"))),
+    ]);
+
+    await expect(gateway.run(request, validateCustomer)).rejects.toMatchObject({
+      attempts: [{ provider: "workers-ai", failure: "QUOTA_EXCEEDED", upstreamCode: "4006" }],
+    });
+  });
 });
