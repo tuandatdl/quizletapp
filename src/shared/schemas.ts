@@ -82,6 +82,7 @@ export function needsExistingVocabularyRepair(item: {
 
 export const bulkVocabularyItemSchema = z.object({
   existingId: z.string().optional(),
+  repairExisting: z.boolean().optional(),
   term: z.string().trim().min(1).max(200),
   meaningVi: z.string().trim().min(1).max(1000),
   pronunciation: z.string().trim().max(200).nullable().optional(),
@@ -99,6 +100,10 @@ export const bulkVocabularyItemSchema = z.object({
   hskLevel: z.number().int().min(1).max(9).optional(),
   toneData: z.array(z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4)])).max(200).optional(),
   senses: z.array(vocabularySenseSchema).max(20).optional()
+}).superRefine((item, context) => {
+  if (item.repairExisting === true && !item.existingId?.trim()) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["existingId"], message: "existingId is required when repairExisting is true" });
+  }
 });
 
 export const bulkVocabularySchema = z.object({

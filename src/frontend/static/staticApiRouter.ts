@@ -24,12 +24,14 @@ import { LocalFirstSyncCoordinator } from "../persistence/syncEngine";
 import { STATIC_LOCAL_USER } from "../runtime/runtime";
 import { LanguageApiClient, type VocabularyEnrichment, type VocabularyContext } from "../services/languageApi";
 import { buildGameItems, isGameType, publicGameItem, scoreGameAnswer, type GeneratedGameItem } from "../../shared/gameModes";
+import { bulkVocabularyItemSchema } from "../../shared/schemas";
 import {
   classifyLocalSelection,
   createLocalId,
   isLikelyIpa,
   localWordCount,
   needsExistingVocabularyRepair,
+  matchesLocalVocabularyIdentity,
   normalizeLocalTerm,
   parseLocalQuickInput,
   reviewLocalVocabulary,
@@ -346,35 +348,62 @@ export class StaticApiRouter {
   private async bulkCreate(language: Language, items: BulkVocabularyInputItem[]): Promise<BulkVocabularyCreateResult> {
     const result: BulkVocabularyCreateResult = { mode: "PARTIAL", created: [], existing: [], failed: [] };
     for (let index = 0; index < items.length; index += 1) {
-      const input = items[index]!;
+      const parsed = bulkVocabularyItemSchema.safeParse(items[index]);
+      const input = parsed.success ? parsed.data : undefined;
+      if (!input) {
+        const raw = items[index] as { term?: unknown } | undefined;
+        const issues = parsed.success ? [] : parsed.error.issues;
+        result.failed.push({ index, term: typeof raw?.term === "string" ? raw.term : null, code: "VALIDATION_ERROR", message: "Bulk vocabulary item is invalid", details: { issues } });
+        continue;
+      }
       try {
         const metadata: Record<string, unknown> = {};
         for (const key of ["ipa", "pinyin", "simplified", "traditional", "cefr", "toeicLevel", "hskLevel", "toneData", "synonyms", "senses"] as const) {
           if (input[key] !== undefined) metadata[key] = input[key];
         }
-        if (input.existingId) {
-          const existingItem = await this.persistence.get<VocabularyItem>("vocabulary", input.existingId);
-          if (existingItem && existingItem.language === language) {
-            const updated: VocabularyItem = {
-              ...existingItem,
-              pronunciation: input.pronunciation?.trim() || existingItem.pronunciation,
-              partOfSpeech: input.partOfSpeech?.trim() || existingItem.partOfSpeech,
-              meaningVi: input.meaningVi.trim() || existingItem.meaningVi,
-              example: input.example?.trim() || existingItem.example,
-              exampleTranslation: input.exampleTranslation?.trim() || existingItem.exampleTranslation,
-              topic: input.topic?.trim() || existingItem.topic,
-              level: input.cefr?.trim() || (input.hskLevel ? `HSK${input.hskLevel}` : existingItem.level),
-              metadata: {
-                ...existingItem.metadata,
-                ...metadata,
-              },
-              updatedAt: new Date().toISOString(),
-            };
-            await this.persistence.put("vocabulary", asVocabularyRecord(updated));
-            void this.syncCoordinator.queueLocalChange("vocabulary", updated.id, updated as unknown as StoredRecord, false);
-            result.existing.push(updated);
+        if (input.repairExisting) {
+          if (!input.existingId) {
+            result.failed.push({ index, term: input.term, code: "VALIDATION_ERROR", message: "Repair requires an existing vocabulary id" });
             continue;
           }
+          const existingItem = await this.persistence.get<VocabularyItem>("vocabulary", input.existingId);
+          if (!existingItem || existingItem.userId !== STATIC_LOCAL_USER.id) {
+            result.failed.push({ index, term: input.term, code: "VALIDATION_ERROR", message: "Repair vocabulary item was not found" });
+            continue;
+          }
+          if (existingItem.language !== language) {
+            result.failed.push({ index, term: input.term, code: "VALIDATION_ERROR", message: "Repair vocabulary language does not match the request" });
+            continue;
+          }
+          if (!matchesLocalVocabularyIdentity(existingItem, input.term, language)) {
+            result.failed.push({ index, term: input.term, code: "VALIDATION_ERROR", message: "Repair vocabulary id does not match the input term" });
+            continue;
+          }
+          if (!needsExistingVocabularyRepair(existingItem)) {
+            result.failed.push({ index, term: input.term, code: "VALIDATION_ERROR", message: "Vocabulary item is not eligible for repair" });
+            continue;
+          }
+          const repairedPronunciation = input.pronunciation ?? input.ipa ?? input.pinyin;
+          if ((language === "en" && !isLikelyIpa(input.ipa)) || (language === "zh" && !repairedPronunciation?.trim())) {
+            result.failed.push({ index, term: input.term, code: "VALIDATION_ERROR", message: "Repair requires valid fresh lexical pronunciation data" });
+            continue;
+          }
+          const updated: VocabularyItem = {
+            ...existingItem,
+            pronunciation: repairedPronunciation ?? null,
+            partOfSpeech: input.partOfSpeech ?? existingItem.partOfSpeech,
+            meaningVi: input.meaningVi,
+            example: input.example ?? existingItem.example,
+            exampleTranslation: input.exampleTranslation ?? existingItem.exampleTranslation,
+            topic: input.topic ?? existingItem.topic,
+            level: input.cefr ?? (input.hskLevel ? `HSK${input.hskLevel}` : existingItem.level),
+            metadata: { ...existingItem.metadata, ...metadata },
+            updatedAt: new Date().toISOString(),
+          };
+          await this.persistence.put("vocabulary", asVocabularyRecord(updated));
+          await this.syncCoordinator.queueLocalChange("vocabulary", updated.id, updated as unknown as StoredRecord, false);
+          result.existing.push(updated);
+          continue;
         }
         const created = await this.createVocabulary({ ...input, language, source: "IMPORT", metadata });
         (created.duplicate ? result.existing : result.created).push(created.item);

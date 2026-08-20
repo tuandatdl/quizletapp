@@ -49,7 +49,7 @@ import {
 import { getCloudAuthService } from "../../services/cloudAuth";
 import { getSyncCoordinator } from "../../persistence/syncEngine";
 import { LanguageApiClient } from "../../services/languageApi";
-import { isLikelyIpa, needsExistingVocabularyRepair, normalizeLocalTerm } from "../../static/localDomain";
+import { isLikelyIpa, matchesLocalVocabularyIdentity, needsExistingVocabularyRepair, normalizeLocalTerm } from "../../static/localDomain";
 import type { SyncMeta, SyncStatus } from "../../persistence/sync";
 import type { User } from "@supabase/supabase-js";
 
@@ -219,21 +219,23 @@ export const SettingsPage: React.FC = () => {
           const enrichmentMap = new Map(enrichments.map((e) => [normalizeLocalTerm(e.term, "en"), e]));
 
           for (const item of batch) {
-            const enriched = enrichmentMap.get(normalizeLocalTerm(item.term, "en"));
-            if (enriched) {
+            const currentItem = await adapter.get<VocabularyItem>("vocabulary", item.id);
+            const normalizedTerm = normalizeLocalTerm(item.term, "en");
+            const enriched = enrichmentMap.get(normalizedTerm);
+            if (currentItem && matchesLocalVocabularyIdentity(currentItem, item.term, "en") && enriched && normalizeLocalTerm(enriched.term, "en") === normalizedTerm) {
               const updatedMeta = {
-                ...item.metadata,
-                ipa: enriched.ipa ?? (item.metadata as any)?.ipa,
-                synonyms: enriched.synonyms?.length ? enriched.synonyms : (item.metadata as any)?.synonyms,
-                senses: enriched.senses?.length ? enriched.senses : (item.metadata as any)?.senses,
+                ...currentItem.metadata,
+                ipa: enriched.ipa ?? (currentItem.metadata as any)?.ipa,
+                synonyms: enriched.synonyms?.length ? enriched.synonyms : (currentItem.metadata as any)?.synonyms,
+                senses: enriched.senses?.length ? enriched.senses : (currentItem.metadata as any)?.senses,
               };
               const updatedItem: VocabularyItem = {
-                ...item,
-                pronunciation: enriched.pronunciation ?? item.pronunciation,
-                partOfSpeech: enriched.partOfSpeech ?? item.partOfSpeech,
-                meaningVi: enriched.meaningVi ?? item.meaningVi,
-                example: enriched.example ?? item.example,
-                exampleTranslation: enriched.exampleTranslation ?? item.exampleTranslation,
+                ...currentItem,
+                pronunciation: enriched.pronunciation ?? currentItem.pronunciation,
+                partOfSpeech: enriched.partOfSpeech ?? currentItem.partOfSpeech,
+                meaningVi: enriched.meaningVi ?? currentItem.meaningVi,
+                example: enriched.example ?? currentItem.example,
+                exampleTranslation: enriched.exampleTranslation ?? currentItem.exampleTranslation,
                 metadata: updatedMeta,
                 updatedAt: new Date().toISOString(),
               };

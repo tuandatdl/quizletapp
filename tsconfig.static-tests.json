@@ -10,6 +10,7 @@
     "tests/cloud-tts.test.ts",
     "tests/vocabulary-ipa-enrichment.test.ts",
     "tests/legacy-vocabulary-ipa-repair.test.ts",
+    "tests/vocabulary-repair-integrity.test.ts",
     "src/frontend/**/*.ts",
     "src/shared/**/*.ts",
     "cloudflare/worker/src/**/*.ts"

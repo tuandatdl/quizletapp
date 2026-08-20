@@ -10,6 +10,10 @@ export function normalizeLocalTerm(value: string, language: Language): string {
     : value.normalize("NFKC").replace(/\s+/gu, "").trim();
 }
 
+export function matchesLocalVocabularyIdentity(item: Pick<VocabularyItem, "language" | "term">, term: string, language: Language): boolean {
+  return item.language === language && normalizeLocalTerm(item.term, language) === normalizeLocalTerm(term, language);
+}
+
 export function parseLocalQuickInput(input: string, language: Language): string[] {
   if (!input.trim()) throw new Error("Vui lòng nhập ít nhất một từ vựng.");
   if (input.length > 10_000) throw new Error("Nội dung Quick Add không được vượt quá 10.000 ký tự.");
