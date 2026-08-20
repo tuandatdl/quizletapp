@@ -147,14 +147,21 @@ function classifyHttpFailure(provider: AiProviderName, status: number, message: 
   return new AiProviderError(provider, "BAD_REQUEST", "AI provider rejected the request.", details);
 }
 
+function safeWorkersAiDetails(message: string): AiProviderFailureDetails {
+  const code = message.match(/\bAiError:\s*(\d{3,5})\b/iu)?.[1];
+  return code ? { upstreamCode: code } : {};
+}
+
 function classifyFailure(provider: AiProviderName, caught: unknown): AiProviderError {
   if (caught instanceof AiProviderError) return caught;
   if (caught instanceof DOMException && caught.name === "AbortError") return new AiProviderError(provider, "TIMEOUT", "AI provider request timed out.");
   const message = safeMessage(caught);
+  const details = provider === "workers-ai" ? safeWorkersAiDetails(message) : {};
+  if (/quota|allocation|neurons|resource exhausted|billing/iu.test(message)) return new AiProviderError(provider, "QUOTA_EXCEEDED", "AI provider quota is exhausted.", details);
   if (/timeout|abort/iu.test(message)) return new AiProviderError(provider, "TIMEOUT", "AI provider request timed out.");
   if (/identity|does not match input term|term mismatch/iu.test(message)) return new AiProviderError(provider, "IDENTITY_MISMATCH", "AI response did not preserve requested term identity.");
   if (/missing|required|schema|invalid output|malformed|json/iu.test(message)) return new AiProviderError(provider, "MALFORMED_RESPONSE", "AI response failed structured validation.");
-  return new AiProviderError(provider, "NETWORK_ERROR", "AI provider network request failed.");
+  return new AiProviderError(provider, "NETWORK_ERROR", "AI provider network request failed.", details);
 }
 
 function canFallback(code: AiFailureCode): boolean {
