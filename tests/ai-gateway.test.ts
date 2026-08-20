@@ -242,7 +242,7 @@ describe("Workers KV AI gateway cache", () => {
   });
 
   it("KV_CACHE_HIT_ZERO_PROVIDER_CALLS", async () => {
-    const namespace = kvNamespace(vi.fn().mockResolvedValue({ term: "customer", meaningVi: "khách hàng" }));
+    const namespace = kvNamespace(vi.fn().mockResolvedValue(JSON.stringify({ term: "customer", meaningVi: "khách hàng" })));
     const gemini = vi.fn();
     const result = await new AiGateway([provider("gemini", gemini)], createKvAiGatewayCache(namespace)).run({ ...request, cacheKey: "customer-key" }, validateCustomer);
 
@@ -252,7 +252,7 @@ describe("Workers KV AI gateway cache", () => {
   });
 
   it("KV_CACHE_STORES_VALIDATED_OUTPUT_ONLY and hydrates a separately validated cached value", async () => {
-    const namespace = kvNamespace(vi.fn().mockResolvedValue("khách hàng"));
+    const namespace = kvNamespace(vi.fn().mockResolvedValue(JSON.stringify("khách hàng")));
     const gemini = vi.fn();
     const result = await new AiGateway([provider("gemini", gemini)], createKvAiGatewayCache(namespace)).run(
       { ...request, cacheKey: "customer-key" },
@@ -281,7 +281,7 @@ describe("Workers KV AI gateway cache", () => {
   });
 
   it("KV_CORRUPTED_VALUE_IGNORED", async () => {
-    const namespace = kvNamespace(vi.fn().mockResolvedValue({ malformed: true }));
+    const namespace = kvNamespace(vi.fn().mockResolvedValue("not valid JSON"));
     const gemini = vi.fn().mockResolvedValue({ term: "customer", meaningVi: "khách hàng" });
     const result = await new AiGateway([provider("gemini", gemini)], createKvAiGatewayCache(namespace)).run({ ...request, cacheKey: "customer-key" }, validateCustomer);
 

@@ -35,7 +35,7 @@ export interface AiGatewayCache {
 }
 
 export interface KvNamespaceBinding {
-  get(key: string, type: "json"): Promise<unknown | null>;
+  get(key: string): Promise<string | null>;
   put(key: string, value: string, options: { expirationTtl: number }): Promise<void>;
 }
 
@@ -430,7 +430,8 @@ export function createKvAiGatewayCache(namespace?: KvNamespaceBinding): AiGatewa
   if (!namespace) return undefined;
   return {
     async get(key) {
-      return (await namespace.get(key, "json")) ?? undefined;
+      const value = await namespace.get(key);
+      return value === null ? undefined : JSON.parse(value);
     },
     async put(key, value) {
       await namespace.put(key, JSON.stringify(value), { expirationTtl: KV_CACHE_TTL_SECONDS });
