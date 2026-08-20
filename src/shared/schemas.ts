@@ -40,7 +40,48 @@ export const bulkPreviewSchema = z.object({
   input: z.string().min(1).max(10_000)
 });
 
+export function isLikelyIpa(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  if (!/^\/([^\/]+)\/$/u.test(trimmed) && !/^\[([^\]]+)\]$/u.test(trimmed)) {
+    return false;
+  }
+  const content = trimmed.slice(1, -1).trim();
+  if (!content) return false;
+  if (/^[a-zA-Z]+$/u.test(content)) return false;
+  if (/^[A-Z]{2,}(-[A-Za-z]+)+$/u.test(content) || /^[A-Za-z]+(-[A-Z]{2,})+$/u.test(content)) {
+    return false;
+  }
+  return true;
+}
+
+export function needsExistingVocabularyRepair(item: {
+  language: Language;
+  pronunciation?: string | null;
+  meaningVi?: string | null;
+  partOfSpeech?: string | null;
+  metadata?: Record<string, unknown>;
+}): boolean {
+  if (item.language === "en") {
+    const meta = (item.metadata || {}) as Record<string, unknown>;
+    const hasValidIpa = isLikelyIpa(meta.ipa) || isLikelyIpa(item.pronunciation);
+    const hasPos = Boolean(item.partOfSpeech?.trim());
+    const hasMeaning = Boolean(item.meaningVi?.trim());
+    return !hasValidIpa || !hasPos || !hasMeaning;
+  }
+  if (item.language === "zh") {
+    const meta = (item.metadata || {}) as Record<string, unknown>;
+    const hasPinyin = Boolean(item.pronunciation?.trim() || (typeof meta.pinyin === "string" && meta.pinyin.trim()));
+    const hasMeaning = Boolean(item.meaningVi?.trim());
+    const hasPos = Boolean(item.partOfSpeech?.trim());
+    return !hasPinyin || !hasMeaning || !hasPos;
+  }
+  return false;
+}
+
 export const bulkVocabularyItemSchema = z.object({
+  existingId: z.string().optional(),
   term: z.string().trim().min(1).max(200),
   meaningVi: z.string().trim().min(1).max(1000),
   pronunciation: z.string().trim().max(200).nullable().optional(),

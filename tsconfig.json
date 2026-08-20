@@ -17,5 +17,5 @@
     "sourceMap": true
   },
   "include": ["src/**/*.ts", "tests/**/*.ts", "vitest.config.ts"],
-  "exclude": ["dist", "node_modules", "src/frontend/**/*", "tests/static-edition.test.ts", "tests/supabase-sync.test.ts", "tests/cloud-tts.test.ts", "tests/vocabulary-ipa-enrichment.test.ts"]
+  "exclude": ["dist", "node_modules", "src/frontend/**/*", "tests/static-edition.test.ts", "tests/supabase-sync.test.ts", "tests/cloud-tts.test.ts", "tests/vocabulary-ipa-enrichment.test.ts", "tests/legacy-vocabulary-ipa-repair.test.ts"]
 }

@@ -1,5 +1,5 @@
 import { AppError, errors } from "../shared/errors.js";
-import { bulkVocabularyItemSchema, type BulkVocabularyItem, type Language } from "../shared/schemas.js";
+import { bulkVocabularyItemSchema, isLikelyIpa, needsExistingVocabularyRepair, type BulkVocabularyItem, type Language } from "../shared/schemas.js";
 import { normalizeTerm, VocabularyService } from "./vocabulary.js";
 import type { VocabularyEnrichmentService, VocabularyEnrichmentSuggestion } from "./vocabulary-enrichment.js";
 
@@ -76,12 +76,31 @@ function publicSuggestion(suggestion?: VocabularyEnrichmentSuggestion) {
   };
 }
 
-function suggestionFromExisting(item: { language: Language; term: string; pronunciation: string | null; meaningVi: string; partOfSpeech: string | null; example: string | null; exampleTranslation: string | null; topic: string | null; level: string | null; metadata?: Record<string, unknown> }) {
+function suggestionFromExisting(item: { id?: string; language: Language; term: string; pronunciation: string | null; meaningVi: string; partOfSpeech: string | null; example: string | null; exampleTranslation: string | null; topic: string | null; level: string | null; metadata?: Record<string, unknown> }) {
   const meta = (item.metadata || {}) as Record<string, unknown>;
+  const rawIpa = clean(meta.ipa as string | undefined);
+  const rawPron = clean(item.pronunciation);
+  let ipa: string | null = null;
+  if (item.language === "en") {
+    if (isLikelyIpa(rawIpa)) {
+      ipa = rawIpa;
+    } else if (isLikelyIpa(rawPron)) {
+      ipa = rawPron;
+    }
+  }
+
+  let pinyin: string | null = null;
+  if (item.language === "zh") {
+    pinyin = clean(meta.pinyin as string | undefined) ?? (item.language === "zh" ? rawPron : null);
+  }
+
   return {
-    pronunciation: clean(item.pronunciation) ?? clean(meta.pinyin as string | undefined) ?? clean(meta.ipa as string | undefined) ?? null,
-    ipa: clean(meta.ipa as string | undefined) ?? (item.language === "en" ? clean(item.pronunciation) : null),
-    pinyin: clean(meta.pinyin as string | undefined) ?? (item.language === "zh" ? clean(item.pronunciation) : null),
+    existingId: item.id,
+    needsRepair: needsExistingVocabularyRepair(item),
+    hasUpdate: false,
+    pronunciation: rawPron ?? clean(meta.pinyin as string | undefined) ?? clean(meta.ipa as string | undefined) ?? null,
+    ipa,
+    pinyin,
     simplified: clean(meta.simplified as string | undefined) ?? (item.language === "zh" ? clean(item.term) : null),
     traditional: clean(meta.traditional as string | undefined) ?? null,
     partOfSpeech: clean(item.partOfSpeech),
@@ -142,6 +161,36 @@ export class VocabularyBulkService {
       const existingItem = this.vocabulary.findByNormalized(userId, language, normalizedTerm);
       const duplicate = Boolean(existingItem);
       if (duplicate && existingItem) {
+        const needsRepair = needsExistingVocabularyRepair(existingItem);
+        if (needsRepair && this.enrichment.configured) {
+          try {
+            const enriched = await this.enrichment.enrich({ language, term, nativeLanguage: "vi" });
+            const enrichedSuggestion = publicSuggestion(enriched);
+            const baseExisting = suggestionFromExisting(existingItem);
+            items.push({
+              term,
+              normalizedTerm,
+              duplicate: true,
+              status: "EXISTS" as const,
+              suggestion: {
+                ...baseExisting,
+                existingId: existingItem.id,
+                needsRepair: true,
+                hasUpdate: true,
+                pronunciation: enrichedSuggestion.pronunciation ?? baseExisting.pronunciation,
+                ipa: enrichedSuggestion.ipa ?? baseExisting.ipa,
+                pinyin: enrichedSuggestion.pinyin ?? baseExisting.pinyin,
+                partOfSpeech: enrichedSuggestion.partOfSpeech ?? baseExisting.partOfSpeech,
+                meaningVi: enrichedSuggestion.meaningVi ?? baseExisting.meaningVi,
+                synonyms: enrichedSuggestion.synonyms.length ? enrichedSuggestion.synonyms : baseExisting.synonyms,
+                example: enrichedSuggestion.example ?? baseExisting.example,
+                exampleTranslation: enrichedSuggestion.exampleTranslation ?? baseExisting.exampleTranslation,
+                senses: enrichedSuggestion.senses.length ? enrichedSuggestion.senses : baseExisting.senses,
+              }
+            });
+            continue;
+          } catch {}
+        }
         items.push({ term, normalizedTerm, duplicate: true, status: "EXISTS" as const, suggestion: suggestionFromExisting(existingItem) });
         continue;
       }
@@ -197,6 +246,29 @@ export class VocabularyBulkService {
 
       const item = parsed.data;
       try {
+        if (item.existingId) {
+          try {
+            const existingItem = this.vocabulary.get(userId, item.existingId);
+            if (existingItem && existingItem.language === language) {
+              const updated = this.vocabulary.update(userId, item.existingId, {
+                pronunciation: item.pronunciation ?? item.ipa ?? item.pinyin ?? existingItem.pronunciation,
+                meaningVi: item.meaningVi ?? existingItem.meaningVi,
+                partOfSpeech: item.partOfSpeech ?? existingItem.partOfSpeech,
+                example: item.example ?? existingItem.example,
+                exampleTranslation: item.exampleTranslation ?? existingItem.exampleTranslation,
+                topic: item.topic ?? existingItem.topic,
+                level: language === "en" ? item.cefr ?? existingItem.level : item.hskLevel ? `HSK${item.hskLevel}` : existingItem.level,
+                metadata: {
+                  ...existingItem.metadata,
+                  ...metadataFor(language, item)
+                }
+              });
+              existing.push(updated);
+              return;
+            }
+          } catch {}
+        }
+
         const result = this.vocabulary.create(userId, {
           language,
           term: item.term,

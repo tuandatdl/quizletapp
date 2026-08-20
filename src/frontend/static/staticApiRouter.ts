@@ -27,7 +27,9 @@ import { buildGameItems, isGameType, publicGameItem, scoreGameAnswer, type Gener
 import {
   classifyLocalSelection,
   createLocalId,
+  isLikelyIpa,
   localWordCount,
+  needsExistingVocabularyRepair,
   normalizeLocalTerm,
   parseLocalQuickInput,
   reviewLocalVocabulary,
@@ -110,10 +112,29 @@ function suggestion(enriched?: VocabularyEnrichment) {
 function suggestionFromExisting(item: VocabularyItem) {
   const meta = (item.metadata || {}) as Record<string, unknown>;
   const clean = (val: unknown) => (typeof val === "string" && val.trim() ? val.trim() : null);
+  const rawIpa = clean(meta.ipa);
+  const rawPron = clean(item.pronunciation);
+  let ipa: string | null = null;
+  if (item.language === "en") {
+    if (isLikelyIpa(rawIpa)) {
+      ipa = rawIpa;
+    } else if (isLikelyIpa(rawPron)) {
+      ipa = rawPron;
+    }
+  }
+
+  let pinyin: string | null = null;
+  if (item.language === "zh") {
+    pinyin = clean(meta.pinyin) ?? (item.language === "zh" ? rawPron : null);
+  }
+
   return {
-    pronunciation: clean(item.pronunciation) ?? clean(meta.pinyin) ?? clean(meta.ipa) ?? null,
-    ipa: clean(meta.ipa) ?? (item.language === "en" ? clean(item.pronunciation) : null),
-    pinyin: clean(meta.pinyin) ?? (item.language === "zh" ? clean(item.pronunciation) : null),
+    existingId: item.id,
+    needsRepair: needsExistingVocabularyRepair(item),
+    hasUpdate: false,
+    pronunciation: rawPron ?? clean(meta.pinyin) ?? clean(meta.ipa) ?? null,
+    ipa,
+    pinyin,
     simplified: clean(meta.simplified) ?? (item.language === "zh" ? clean(item.term) : null),
     traditional: clean(meta.traditional) ?? null,
     partOfSpeech: clean(item.partOfSpeech),
@@ -259,12 +280,22 @@ export class StaticApiRouter {
         .filter((item) => item.language === language)
         .map((item) => [item.normalizedTerm, item])
     );
-    const newTerms = terms.filter((term) => !existingMap.has(normalizeLocalTerm(term, language)));
+    const termsToEnrich: string[] = [];
+    for (const term of terms) {
+      const norm = normalizeLocalTerm(term, language);
+      const existingItem = existingMap.get(norm);
+      if (!existingItem) {
+        termsToEnrich.push(term);
+      } else if (refresh || needsExistingVocabularyRepair(existingItem)) {
+        termsToEnrich.push(term);
+      }
+    }
+
     let enrichment = new Map<string, VocabularyEnrichment>();
     let enrichmentError: Error | undefined;
-    if (this.languageApi.configured && newTerms.length) {
+    if (this.languageApi.configured && termsToEnrich.length) {
       try {
-        enrichment = new Map((await this.languageApi.enrichTerms(language, newTerms, refresh)).map((item) => [normalizeLocalTerm(item.term, language), item]));
+        enrichment = new Map((await this.languageApi.enrichTerms(language, termsToEnrich, refresh)).map((item) => [normalizeLocalTerm(item.term, language), item]));
       } catch (error) { enrichmentError = error as Error; }
     }
     return {
@@ -274,10 +305,38 @@ export class StaticApiRouter {
         const existingItem = existingMap.get(normalizedTerm);
         const duplicate = Boolean(existingItem);
         const enriched = enrichment.get(normalizedTerm);
+        const needsRepair = duplicate && existingItem ? needsExistingVocabularyRepair(existingItem) : false;
+
+        let itemSuggestion: BulkVocabularyPreview["items"][number]["suggestion"];
+        if (duplicate && existingItem) {
+          const baseExisting = suggestionFromExisting(existingItem);
+          if (enriched && (needsRepair || refresh)) {
+            itemSuggestion = {
+              ...baseExisting,
+              existingId: existingItem.id,
+              needsRepair,
+              hasUpdate: true,
+              pronunciation: enriched.pronunciation ?? baseExisting.pronunciation,
+              ipa: enriched.ipa ?? baseExisting.ipa,
+              pinyin: enriched.pinyin ?? baseExisting.pinyin,
+              partOfSpeech: enriched.partOfSpeech ?? baseExisting.partOfSpeech,
+              meaningVi: enriched.meaningVi ?? baseExisting.meaningVi,
+              synonyms: (enriched.synonyms && enriched.synonyms.length) ? enriched.synonyms : baseExisting.synonyms,
+              example: enriched.example ?? baseExisting.example,
+              exampleTranslation: enriched.exampleTranslation ?? baseExisting.exampleTranslation,
+              senses: (enriched.senses && enriched.senses.length) ? enriched.senses : baseExisting.senses,
+            };
+          } else {
+            itemSuggestion = baseExisting;
+          }
+        } else {
+          itemSuggestion = suggestion(enriched);
+        }
+
         return {
           term, normalizedTerm, duplicate,
           status: duplicate ? "EXISTS" : enriched?.meaningVi ? "READY" : "NEEDS_ENRICHMENT",
-          suggestion: duplicate && existingItem ? suggestionFromExisting(existingItem) : suggestion(enriched),
+          suggestion: itemSuggestion,
           ...(enrichmentError && !duplicate ? { error: { code: "EXTERNAL_SERVICE_ERROR" as const, message: enrichmentError.message } } : {}),
         };
       }),
@@ -292,6 +351,30 @@ export class StaticApiRouter {
         const metadata: Record<string, unknown> = {};
         for (const key of ["ipa", "pinyin", "simplified", "traditional", "cefr", "toeicLevel", "hskLevel", "toneData", "synonyms", "senses"] as const) {
           if (input[key] !== undefined) metadata[key] = input[key];
+        }
+        if (input.existingId) {
+          const existingItem = await this.persistence.get<VocabularyItem>("vocabulary", input.existingId);
+          if (existingItem && existingItem.language === language) {
+            const updated: VocabularyItem = {
+              ...existingItem,
+              pronunciation: input.pronunciation?.trim() || existingItem.pronunciation,
+              partOfSpeech: input.partOfSpeech?.trim() || existingItem.partOfSpeech,
+              meaningVi: input.meaningVi.trim() || existingItem.meaningVi,
+              example: input.example?.trim() || existingItem.example,
+              exampleTranslation: input.exampleTranslation?.trim() || existingItem.exampleTranslation,
+              topic: input.topic?.trim() || existingItem.topic,
+              level: input.cefr?.trim() || (input.hskLevel ? `HSK${input.hskLevel}` : existingItem.level),
+              metadata: {
+                ...existingItem.metadata,
+                ...metadata,
+              },
+              updatedAt: new Date().toISOString(),
+            };
+            await this.persistence.put("vocabulary", asVocabularyRecord(updated));
+            void this.syncCoordinator.queueLocalChange("vocabulary", updated.id, updated as unknown as StoredRecord, false);
+            result.existing.push(updated);
+            continue;
+          }
         }
         const created = await this.createVocabulary({ ...input, language, source: "IMPORT", metadata });
         (created.duplicate ? result.existing : result.created).push(created.item);

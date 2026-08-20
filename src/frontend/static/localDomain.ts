@@ -91,3 +91,5 @@ export function classifyLocalSelection(text: string, language: Language): "word"
     : tokenizeLocal(trimmed, "zh").filter((token) => token.type === "word").length;
   return count <= 1 ? "word" : count <= 8 ? "phrase" : "sentence";
 }
+
+export { isLikelyIpa, needsExistingVocabularyRepair } from "../../shared/schemas.js";

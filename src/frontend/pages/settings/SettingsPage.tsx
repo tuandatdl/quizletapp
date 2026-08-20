@@ -34,7 +34,7 @@ import { Button } from "../../components/ui/Button";
 import { Badge } from "../../components/ui/Badge";
 import { CardSkeleton } from "../../components/ui/Skeleton";
 import { getFriendlyErrorMessage } from "../../api/client";
-import type { UserSettings } from "../../types/api";
+import type { UserSettings, VocabularyItem } from "../../types/api";
 import { isStaticRuntime } from "../../runtime/runtime";
 import { getIndexedDbAdapter } from "../../persistence/indexedDb";
 import { backupFileName, exportBackup, importBackup, previewBackup, validateBackup, type BackupPreview } from "../../persistence/backup";
@@ -47,6 +47,9 @@ import {
   configureAudioElementPlaybackRate,
 } from "../../services/cloudTts";
 import { getCloudAuthService } from "../../services/cloudAuth";
+import { getSyncCoordinator } from "../../persistence/syncEngine";
+import { LanguageApiClient } from "../../services/languageApi";
+import { isLikelyIpa, needsExistingVocabularyRepair, normalizeLocalTerm } from "../../static/localDomain";
 import type { SyncMeta, SyncStatus } from "../../persistence/sync";
 import type { User } from "@supabase/supabase-js";
 
@@ -61,6 +64,17 @@ export const SettingsPage: React.FC = () => {
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [isPlayingPreview, setIsPlayingPreview] = useState<"en" | "zh" | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Legacy data repair state
+  const [legacyScanResult, setLegacyScanResult] = useState<{
+    total: number;
+    needsRepairCount: number;
+    missingIpaCount: number;
+    missingPosCount: number;
+    items: VocabularyItem[];
+  } | null>(null);
+  const [isScanningLegacy, setIsScanningLegacy] = useState(false);
+  const [isRepairingLegacy, setIsRepairingLegacy] = useState(false);
 
   // Cloud Sync state
   const cloudAuth = getCloudAuthService();
@@ -156,6 +170,87 @@ export const SettingsPage: React.FC = () => {
       error(getFriendlyErrorMessage(err));
     } finally {
       setIsSyncingManual(false);
+    }
+  };
+
+  const handleScanLegacyVocabulary = async () => {
+    setIsScanningLegacy(true);
+    try {
+      const adapter = getIndexedDbAdapter();
+      const allItems = await adapter.getAll<VocabularyItem>("vocabulary");
+      const enItems = allItems.filter((i) => i.language === "en");
+      const repairItems = enItems.filter((i) => needsExistingVocabularyRepair(i));
+      const missingIpa = enItems.filter((i) => !isLikelyIpa((i.metadata as any)?.ipa) && !isLikelyIpa(i.pronunciation)).length;
+      const missingPos = enItems.filter((i) => !i.partOfSpeech?.trim()).length;
+      setLegacyScanResult({
+        total: allItems.length,
+        needsRepairCount: repairItems.length,
+        missingIpaCount: missingIpa,
+        missingPosCount: missingPos,
+        items: repairItems,
+      });
+      if (repairItems.length === 0) {
+        success("Tất cả từ vựng tiếng Anh đã có đầy đủ IPA và từ loại!");
+      } else {
+        info(`Tìm thấy ${repairItems.length} từ cần cập nhật.`);
+      }
+    } catch (err: any) {
+      error(getFriendlyErrorMessage(err));
+    } finally {
+      setIsScanningLegacy(false);
+    }
+  };
+
+  const handleRepairLegacyVocabulary = async () => {
+    if (!legacyScanResult || !legacyScanResult.items.length) return;
+    setIsRepairingLegacy(true);
+    try {
+      const adapter = getIndexedDbAdapter();
+      const client = new LanguageApiClient(adapter);
+      const itemsToRepair = legacyScanResult.items;
+      let repairedCount = 0;
+
+      const BATCH_SIZE = 5;
+      for (let i = 0; i < itemsToRepair.length; i += BATCH_SIZE) {
+        const batch = itemsToRepair.slice(i, i + BATCH_SIZE);
+        const terms = batch.map((item) => item.term);
+        try {
+          const enrichments = await client.enrichTerms("en", terms, true);
+          const enrichmentMap = new Map(enrichments.map((e) => [normalizeLocalTerm(e.term, "en"), e]));
+
+          for (const item of batch) {
+            const enriched = enrichmentMap.get(normalizeLocalTerm(item.term, "en"));
+            if (enriched) {
+              const updatedMeta = {
+                ...item.metadata,
+                ipa: enriched.ipa ?? (item.metadata as any)?.ipa,
+                synonyms: enriched.synonyms?.length ? enriched.synonyms : (item.metadata as any)?.synonyms,
+                senses: enriched.senses?.length ? enriched.senses : (item.metadata as any)?.senses,
+              };
+              const updatedItem: VocabularyItem = {
+                ...item,
+                pronunciation: enriched.pronunciation ?? item.pronunciation,
+                partOfSpeech: enriched.partOfSpeech ?? item.partOfSpeech,
+                meaningVi: enriched.meaningVi ?? item.meaningVi,
+                example: enriched.example ?? item.example,
+                exampleTranslation: enriched.exampleTranslation ?? item.exampleTranslation,
+                metadata: updatedMeta,
+                updatedAt: new Date().toISOString(),
+              };
+              await adapter.put("vocabulary", updatedItem as any);
+              void getSyncCoordinator().queueLocalChange("vocabulary", updatedItem.id, updatedItem as any, false);
+              repairedCount++;
+            }
+          }
+        } catch {}
+      }
+
+      success(`Đã cập nhật thành công ${repairedCount} từ vựng!`);
+      setLegacyScanResult(null);
+    } catch (err: any) {
+      error(getFriendlyErrorMessage(err));
+    } finally {
+      setIsRepairingLegacy(false);
     }
   };
 
@@ -838,6 +933,59 @@ export const SettingsPage: React.FC = () => {
                 </div>
               </div>
             )}
+
+            {/* Legacy Data Scan & Repair Section */}
+            <div style={{ borderTop: "1px solid var(--border-default)", paddingTop: "14px" }} className="flex-col gap-3">
+              <div className="flex-row items-center justify-between" style={{ flexWrap: "wrap", gap: "8px" }}>
+                <div>
+                  <h3 style={{ fontSize: "var(--text-sm)", fontWeight: 700 }}>Kiểm tra & Khôi phục dữ liệu từ vựng cũ</h3>
+                  <p style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)" }}>
+                    Quét tìm từ vựng tiếng Anh cũ thiếu phiên âm IPA chuẩn hoặc từ loại để cập nhật an toàn
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  isLoading={isScanningLegacy}
+                  leftIcon={<Sparkles size={15} />}
+                  onClick={handleScanLegacyVocabulary}
+                >
+                  Kiểm tra dữ liệu cũ
+                </Button>
+              </div>
+
+              {legacyScanResult && (
+                <div style={{ padding: "14px", border: "1px solid var(--border-strong)", borderRadius: "var(--radius-md)", background: "var(--bg-surface)", boxShadow: "var(--shadow-sm)" }}>
+                  <p style={{ fontWeight: 700, marginBottom: "4px", fontSize: "var(--text-sm)" }}>
+                    Kết quả quét: {legacyScanResult.total} từ vựng đã kiểm tra
+                  </p>
+                  <p style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)" }}>
+                    {legacyScanResult.needsRepairCount > 0 ? (
+                      <>
+                        Phát hiện <strong>{legacyScanResult.needsRepairCount}</strong> từ cần cập nhật (trong đó <strong>{legacyScanResult.missingIpaCount}</strong> từ thiếu/sai IPA, <strong>{legacyScanResult.missingPosCount}</strong> từ thiếu từ loại).
+                      </>
+                    ) : (
+                      "Toàn bộ từ vựng đều đạt chuẩn hiện đại (IPA và từ loại đầy đủ)!"
+                    )}
+                  </p>
+                  {legacyScanResult.needsRepairCount > 0 && (
+                    <div className="flex-row gap-2" style={{ marginTop: "12px", flexWrap: "wrap" }}>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="primary"
+                        isLoading={isRepairingLegacy}
+                        onClick={handleRepairLegacyVocabulary}
+                      >
+                        ✨ Cập nhật qua AI (theo đợt an toàn)
+                      </Button>
+                      <Button type="button" size="sm" variant="ghost" onClick={() => setLegacyScanResult(null)}>Đóng</Button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
 
             {/* Local Backup / Restore Section */}
             <div style={{ borderTop: "1px solid var(--border-default)", paddingTop: "14px" }} className="flex-col gap-3">
