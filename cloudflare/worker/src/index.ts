@@ -4,8 +4,9 @@ import {
   GeminiProvider,
   OpenAiProvider,
   WorkersAiProvider,
-  createWorkerCache,
+  createKvAiGatewayCache,
   gatewayCacheKey,
+  type KvNamespaceBinding,
 } from "./aiGateway";
 
 export interface AiBinding {
@@ -18,6 +19,7 @@ export interface RateLimiterBinding {
 
 export interface Env {
   AI: AiBinding;
+  AI_CACHE?: KvNamespaceBinding;
   RATE_LIMITER?: RateLimiterBinding;
   ALLOWED_ORIGINS: string;
   ENRICHMENT_MODEL?: string;
@@ -555,7 +557,7 @@ function createAiGateway(env: Env): AiGateway {
     new GeminiProvider({ apiKey: env.GEMINI_API_KEY, model: env.GEMINI_MODEL, timeoutMs }),
     new OpenAiProvider({ apiKey: env.OPENAI_API_KEY, model: env.OPENAI_MODEL, timeoutMs }),
     new WorkersAiProvider(env.AI),
-  ], createWorkerCache());
+  ], createKvAiGatewayCache(env.AI_CACHE));
 }
 
 function normalizedGatewayTerm(term: string): string {

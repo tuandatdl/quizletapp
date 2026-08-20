@@ -5,11 +5,15 @@ import {
   AiProviderError,
   GeminiProvider,
   OpenAiProvider,
+  KV_CACHE_TTL_SECONDS,
+  createKvAiGatewayCache,
+  gatewayCacheKey,
   toGeminiCompatibleSchema,
   type AiGatewayCache,
   type AiGatewayRequest,
   type AiProvider,
   type AiProviderName,
+  type KvNamespaceBinding,
 } from "../cloudflare/worker/src/aiGateway.js";
 
 const request: AiGatewayRequest = {
@@ -38,6 +42,10 @@ function memoryCache(initial = new Map<string, unknown>()): AiGatewayCache {
     get: async (key) => initial.get(key),
     put: async (key, value) => { initial.set(key, value); },
   };
+}
+
+function kvNamespace(get: KvNamespaceBinding["get"], put = vi.fn(async () => undefined)): KvNamespaceBinding & { put: ReturnType<typeof vi.fn> } {
+  return { get, put };
 }
 
 function jsonResponse(value: unknown, status = 200): Response {
@@ -218,5 +226,74 @@ describe("Provider compatibility payloads", () => {
     await expect(gateway.run(request, validateCustomer)).rejects.toMatchObject({
       attempts: [{ provider: "workers-ai", failure: "QUOTA_EXCEEDED", upstreamCode: "4006" }],
     });
+  });
+});
+
+describe("Workers KV AI gateway cache", () => {
+  it("KV_CACHE_MISS_CALLS_PROVIDER and KV_CACHE_TTL_7_DAYS", async () => {
+    const namespace = kvNamespace(vi.fn().mockResolvedValue(null));
+    const gemini = vi.fn().mockResolvedValue({ term: "customer", meaningVi: "khách hàng" });
+    const result = await new AiGateway([provider("gemini", gemini)], createKvAiGatewayCache(namespace)).run({ ...request, cacheKey: "customer-key" }, validateCustomer);
+
+    expect(result).toMatchObject({ provider: "gemini", cacheHit: false });
+    expect(gemini).toHaveBeenCalledTimes(1);
+    expect(namespace.put).toHaveBeenCalledWith("customer-key", JSON.stringify({ term: "customer", meaningVi: "khách hàng" }), { expirationTtl: KV_CACHE_TTL_SECONDS });
+    expect(KV_CACHE_TTL_SECONDS).toBe(604_800);
+  });
+
+  it("KV_CACHE_HIT_ZERO_PROVIDER_CALLS", async () => {
+    const namespace = kvNamespace(vi.fn().mockResolvedValue({ term: "customer", meaningVi: "khách hàng" }));
+    const gemini = vi.fn();
+    const result = await new AiGateway([provider("gemini", gemini)], createKvAiGatewayCache(namespace)).run({ ...request, cacheKey: "customer-key" }, validateCustomer);
+
+    expect(result).toMatchObject({ provider: "cache", cacheHit: true });
+    expect(gemini).not.toHaveBeenCalled();
+    expect(namespace.put).not.toHaveBeenCalled();
+  });
+
+  it("KV_CACHE_STORES_VALIDATED_OUTPUT_ONLY", async () => {
+    const namespace = kvNamespace(vi.fn().mockResolvedValue(null));
+    const gateway = new AiGateway([provider("gemini", vi.fn().mockResolvedValue({ term: "customer" }))], createKvAiGatewayCache(namespace));
+
+    await expect(gateway.run({ ...request, cacheKey: "customer-key" }, validateCustomer)).rejects.toBeInstanceOf(AiGatewayExhaustedError);
+    expect(namespace.put).not.toHaveBeenCalled();
+  });
+
+  it("KV_CORRUPTED_VALUE_IGNORED", async () => {
+    const namespace = kvNamespace(vi.fn().mockResolvedValue({ malformed: true }));
+    const gemini = vi.fn().mockResolvedValue({ term: "customer", meaningVi: "khách hàng" });
+    const result = await new AiGateway([provider("gemini", gemini)], createKvAiGatewayCache(namespace)).run({ ...request, cacheKey: "customer-key" }, validateCustomer);
+
+    expect(result.provider).toBe("gemini");
+    expect(gemini).toHaveBeenCalledTimes(1);
+  });
+
+  it("KV_READ_FAILURE_FAILS_OPEN", async () => {
+    const namespace = kvNamespace(vi.fn().mockRejectedValue(new Error("KV unavailable")));
+    const gemini = vi.fn().mockResolvedValue({ term: "customer", meaningVi: "khách hàng" });
+    const result = await new AiGateway([provider("gemini", gemini)], createKvAiGatewayCache(namespace)).run({ ...request, cacheKey: "customer-key" }, validateCustomer);
+
+    expect(result.provider).toBe("gemini");
+    expect(gemini).toHaveBeenCalledTimes(1);
+  });
+
+  it("KV_WRITE_FAILURE_FAILS_OPEN", async () => {
+    const namespace = kvNamespace(vi.fn().mockResolvedValue(null), vi.fn().mockRejectedValue(new Error("KV unavailable")));
+    const gemini = vi.fn().mockResolvedValue({ term: "customer", meaningVi: "khách hàng" });
+    const result = await new AiGateway([provider("gemini", gemini)], createKvAiGatewayCache(namespace)).run({ ...request, cacheKey: "customer-key" }, validateCustomer);
+
+    expect(result).toMatchObject({ provider: "gemini", cacheHit: false });
+    expect(gemini).toHaveBeenCalledTimes(1);
+  });
+
+  it("KV_KEY_CONTEXT_ISOLATION, KV_KEY_LANGUAGE_ISOLATION, and KV_KEY_TRANSLATION_ISOLATION", () => {
+    const river = gatewayCacheKey({ version: "ai-gateway-v1", operation: "enrichment", language: "en", terms: ["bank"], contexts: [{ sentence: "They sat on the river bank." }] });
+    const financial = gatewayCacheKey({ version: "ai-gateway-v1", operation: "enrichment", language: "en", terms: ["bank"], contexts: [{ sentence: "She deposited money in the bank." }] });
+    const chinese = gatewayCacheKey({ version: "ai-gateway-v1", operation: "enrichment", language: "zh", terms: ["学习"] });
+    const translation = gatewayCacheKey({ version: "ai-gateway-v1", operation: "translation", sourceLanguage: "en", targetLanguage: "vi", text: "bank" });
+
+    expect(river).not.toBe(financial);
+    expect(river).not.toBe(chinese);
+    expect(river).not.toBe(translation);
   });
 });
