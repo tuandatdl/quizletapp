@@ -2,7 +2,6 @@ import {
   AiGateway,
   AiGatewayExhaustedError,
   GeminiProvider,
-  OpenAiProvider,
   WorkersAiProvider,
   createKvAiGatewayCache,
   gatewayCacheKey,
@@ -27,8 +26,6 @@ export interface Env {
   TRANSLATION_MODEL?: string;
   GEMINI_API_KEY?: string;
   GEMINI_MODEL?: string;
-  OPENAI_API_KEY?: string;
-  OPENAI_MODEL?: string;
   AI_PROVIDER_TIMEOUT_MS?: string;
   TTS_MODEL_EN?: string;
   TTS_MODEL_ZH?: string;
@@ -555,7 +552,6 @@ function createAiGateway(env: Env): AiGateway {
   const timeoutMs = gatewayTimeout(env);
   return new AiGateway([
     new GeminiProvider({ apiKey: env.GEMINI_API_KEY, model: env.GEMINI_MODEL, timeoutMs }),
-    new OpenAiProvider({ apiKey: env.OPENAI_API_KEY, model: env.OPENAI_MODEL, timeoutMs }),
     new WorkersAiProvider(env.AI),
   ], createKvAiGatewayCache(env.AI_CACHE));
 }

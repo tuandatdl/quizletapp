@@ -1,4 +1,4 @@
-export type AiProviderName = "gemini" | "openai" | "workers-ai";
+export type AiProviderName = "gemini" | "workers-ai";
 export type AiGatewaySource = AiProviderName | "cache";
 
 export type AiFailureCode =
@@ -119,14 +119,14 @@ export function structuredPayload(value: unknown, provider: AiProviderName): unk
   return value;
 }
 
-function safeMachineCode(provider: AiProviderName, message: string): string | undefined {
+function safeGeminiMachineCode(message: string): string | undefined {
   try {
     const value = JSON.parse(message);
     if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
     const error = (value as Record<string, unknown>).error;
     if (!error || typeof error !== "object" || Array.isArray(error)) return undefined;
     const details = error as Record<string, unknown>;
-    const candidate = provider === "gemini" ? details.status ?? details.code : details.code ?? details.type;
+    const candidate = details.status ?? details.code;
     const code = typeof candidate === "string" || typeof candidate === "number" ? String(candidate) : undefined;
     return code && /^[A-Za-z0-9_.:-]{1,80}$/u.test(code) ? code : undefined;
   } catch {
@@ -136,7 +136,7 @@ function safeMachineCode(provider: AiProviderName, message: string): string | un
 
 function classifyHttpFailure(provider: AiProviderName, status: number, message: string): AiProviderError {
   const normalized = message.toLowerCase();
-  const details = { httpStatus: status, upstreamCode: safeMachineCode(provider, message) };
+  const details = { httpStatus: status, upstreamCode: safeGeminiMachineCode(message) };
   if (status === 401 || status === 403) return new AiProviderError(provider, "AUTH_ERROR", "AI provider authentication failed.", details);
   if (status === 429) {
     return new AiProviderError(provider, /quota|resource exhausted|billing/u.test(normalized) ? "QUOTA_EXCEEDED" : "RATE_LIMITED", "AI provider rate limit reached.", details);
@@ -229,15 +229,6 @@ function textFromGemini(value: Record<string, unknown>): string {
   return text;
 }
 
-function textFromOpenAi(value: Record<string, unknown>): string {
-  const choices = value.choices;
-  if (!Array.isArray(choices) || !choices[0] || typeof choices[0] !== "object") throw new AiProviderError("openai", "MALFORMED_RESPONSE", "OpenAI returned no choice.");
-  const message = (choices[0] as Record<string, unknown>).message;
-  const content = message && typeof message === "object" ? (message as Record<string, unknown>).content : undefined;
-  if (typeof content !== "string" || !content.trim()) throw new AiProviderError("openai", "MALFORMED_RESPONSE", "OpenAI returned empty content.");
-  return content;
-}
-
 export class GeminiProvider implements AiProvider {
   readonly name = "gemini" as const;
   private readonly fetcher: FetchLike;
@@ -276,53 +267,6 @@ export class GeminiProvider implements AiProvider {
         this.name,
       );
       return parseJson(textFromGemini(await responseJson(response, this.name)), this.name);
-    } catch (caught) {
-      throw classifyFailure(this.name, caught);
-    }
-  }
-
-  async retryOnce(request: AiGatewayRequest): Promise<unknown> {
-    return this.complete(request);
-  }
-}
-
-export class OpenAiProvider implements AiProvider {
-  readonly name = "openai" as const;
-  private readonly fetcher: FetchLike;
-  private readonly timeoutMs: number;
-
-  constructor(private readonly config: HttpProviderConfig) {
-    this.fetcher = config.fetcher ?? fetch;
-    this.timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  }
-
-  isConfigured(): boolean {
-    return Boolean(this.config.apiKey && this.config.model);
-  }
-
-  async complete(request: AiGatewayRequest): Promise<unknown> {
-    if (!this.isConfigured()) throw new AiProviderError(this.name, "NOT_CONFIGURED", "OpenAI is not configured.");
-    try {
-      const response = await fetchWithTimeout(
-        this.fetcher,
-        "https://api.openai.com/v1/chat/completions",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.config.apiKey!}` },
-          body: JSON.stringify({
-            model: this.config.model,
-            max_completion_tokens: request.maxTokens,
-            messages: [
-              { role: "system", content: request.systemPrompt },
-              { role: "user", content: request.userPrompt },
-            ],
-            response_format: { type: "json_schema", json_schema: { name: `tutrinh_${request.operation}`, strict: true, schema: request.schema } },
-          }),
-        },
-        this.timeoutMs,
-        this.name,
-      );
-      return parseJson(textFromOpenAi(await responseJson(response, this.name)), this.name);
     } catch (caught) {
       throw classifyFailure(this.name, caught);
     }
