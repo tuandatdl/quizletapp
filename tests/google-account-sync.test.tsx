@@ -596,7 +596,6 @@ describe("LEXIS Google Account & Cloud Sync Integration", () => {
       vi.stubEnv("VITE_SUPABASE_URL", "https://test.supabase.co");
       vi.stubEnv("VITE_SUPABASE_ANON_KEY", "test-key");
 
-      const service = new CloudAuthService();
       // Queue 10 items in adapter
       for (let i = 1; i <= 10; i++) {
         await adapter.put("syncQueue", {
