@@ -696,7 +696,7 @@ export const ReadingDetailPage: React.FC = () => {
       setShowAllSenses(false);
       setDuplicateContextualSense(null);
       setToolbarCoords({
-        x: Math.min(window.innerWidth - 140, Math.max(140, rect.left + rect.width / 2)),
+        x: Math.min(window.innerWidth - 170, Math.max(170, rect.left + rect.width / 2)),
         y: Math.max(70, rect.top - 10),
       });
       setTranslationResult(null);
@@ -811,7 +811,7 @@ export const ReadingDetailPage: React.FC = () => {
     setActiveToken({
       token,
       coords: {
-        x: rect.left + rect.width / 2,
+        x: Math.min(window.innerWidth - 160, Math.max(160, rect.left + rect.width / 2)),
         y: Math.max(60, rect.top - 8),
       },
     });
