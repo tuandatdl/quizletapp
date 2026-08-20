@@ -5,6 +5,10 @@ compatibility_date = "2026-08-18"
 [ai]
 binding = "AI"
 
+[[kv_namespaces]]
+binding = "AI_CACHE"
+id = "659d71534e9d4086adf998b56da08cad"
+
 [vars]
 ALLOWED_ORIGINS = "http://localhost:5173,https://tuandatdl.github.io"
 ENRICHMENT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast"

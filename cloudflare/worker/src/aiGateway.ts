@@ -34,6 +34,11 @@ export interface AiGatewayCache {
   put(key: string, value: unknown): Promise<void>;
 }
 
+export interface KvNamespaceBinding {
+  get(key: string, type: "json"): Promise<unknown | null>;
+  put(key: string, value: string, options: { expirationTtl: number }): Promise<void>;
+}
+
 export interface AiProvider {
   readonly name: AiProviderName;
   isConfigured(): boolean;
@@ -358,6 +363,15 @@ export class WorkersAiProvider implements AiProvider {
 export class AiGateway {
   constructor(private readonly providers: AiProvider[], private readonly cache?: AiGatewayCache) {}
 
+  private async writeCache(key: string, value: unknown): Promise<void> {
+    if (!this.cache) return;
+    try {
+      await this.cache.put(key, value);
+    } catch {
+      console.warn(JSON.stringify({ event: "ai_gateway_cache_write_failed" }));
+    }
+  }
+
   async run<T>(request: AiGatewayRequest, validate: (value: unknown) => T): Promise<AiGatewayResult<T>> {
     if (request.cacheKey && this.cache) {
       try {
@@ -366,7 +380,7 @@ export class AiGateway {
           return { value: validate(cached), provider: "cache", fallbackCount: 0, cacheHit: true, attempts: [] };
         }
       } catch {
-        // Ignore corrupted/missing cache entries; provider validation remains authoritative.
+        console.warn(JSON.stringify({ event: "ai_gateway_cache_read_failed" }));
       }
     }
 
@@ -378,7 +392,7 @@ export class AiGateway {
       try {
         const value = validate(await provider.complete(request));
         attempts.push({ provider: provider.name, latencyMs: Date.now() - startedAt });
-        if (request.cacheKey && this.cache) await this.cache.put(request.cacheKey, value);
+        if (request.cacheKey) await this.writeCache(request.cacheKey, value);
         return { value, provider: provider.name, fallbackCount, cacheHit: false, attempts };
       } catch (caught) {
         const failure = classifyFailure(provider.name, caught);
@@ -388,7 +402,7 @@ export class AiGateway {
           try {
             const value = validate(await provider.retryOnce(request));
             attempts.push({ provider: provider.name, latencyMs: Date.now() - retryStartedAt });
-            if (request.cacheKey && this.cache) await this.cache.put(request.cacheKey, value);
+            if (request.cacheKey) await this.writeCache(request.cacheKey, value);
             return { value, provider: provider.name, fallbackCount, cacheHit: false, attempts };
           } catch (retryCaught) {
             const retryFailure = classifyFailure(provider.name, retryCaught);
@@ -405,17 +419,16 @@ export class AiGateway {
   }
 }
 
-export function createWorkerCache(): AiGatewayCache | undefined {
-  const cache = (globalThis as unknown as { caches?: { default?: { match(request: Request): Promise<Response | undefined>; put(request: Request, response: Response): Promise<void> } } }).caches?.default;
-  if (!cache) return undefined;
-  const requestFor = (key: string) => new Request(`https://tutrinh-ai-cache.invalid/${encodeURIComponent(key)}`);
+export const KV_CACHE_TTL_SECONDS = 604_800;
+
+export function createKvAiGatewayCache(namespace?: KvNamespaceBinding): AiGatewayCache | undefined {
+  if (!namespace) return undefined;
   return {
     async get(key) {
-      const response = await cache.match(requestFor(key));
-      return response ? response.json() : undefined;
+      return (await namespace.get(key, "json")) ?? undefined;
     },
     async put(key, value) {
-      await cache.put(requestFor(key), new Response(JSON.stringify(value), { headers: { "Cache-Control": "public, max-age=604800", "Content-Type": "application/json" } }));
+      await namespace.put(key, JSON.stringify(value), { expirationTtl: KV_CACHE_TTL_SECONDS });
     },
   };
 }
