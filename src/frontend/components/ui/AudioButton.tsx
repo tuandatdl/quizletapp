@@ -14,6 +14,7 @@ import {
   synthesizeCloudSpeech,
   configureAudioElementPlaybackRate,
 } from "../../services/cloudTts";
+import { synthesizeLocalEnglishSpeech } from "../../services/localTts";
 import {
   cloudFallbackMode,
   cloudVoiceFor,
@@ -48,6 +49,7 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
 }) => {
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [localLoading, setLocalLoading] = useState(false);
   const { toastError } = (() => {
     try {
       const t = useToast();
@@ -269,7 +271,11 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
       return;
     }
 
-    const engine = resolveAudioEngine(settings?.audioEngine);
+    const requestedEngine = resolveAudioEngine(settings?.audioEngine);
+    // Chinese is intentionally not part of this English-only local-model phase.
+    // Preserve its pre-existing strict Cloud behaviour until a separately licensed
+    // Chinese local model is approved.
+    const engine = requestedEngine === "LOCAL" && language !== "en" ? "CLOUD" : requestedEngine;
     safeTtsDiagnostic("tts_engine_requested", { tts_engine_requested: engine });
 
     // BROWSER is strict too: it never requests Cloud TTS or plays a cloud/static asset.
@@ -279,8 +285,9 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
       return;
     }
 
-    // Static assets stay usable in CLOUD/AUTO, but only AUTO may switch to browser speech.
-    if (audioUrl) {
+    // Static assets stay usable in CLOUD/AUTO, but LOCAL always synthesizes its
+    // supplied text through Piper and never silently switches source.
+    if (audioUrl && engine !== "LOCAL") {
       setIsLoading(true);
       await playHtmlAudio(audioUrl, {
         fallbackMode: cloudFallbackMode(engine),
@@ -302,6 +309,22 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
     try {
       await runAudioEnginePolicy({
         engine,
+        playLocal: async () => {
+          if (language !== "en") throw new Error("Local TTS hiện chỉ hỗ trợ tiếng Anh.");
+          const blob = await synthesizeLocalEnglishSpeech({
+            text: speechText,
+            speed: currentSpeed,
+            signal: controller.signal,
+            onProgress: (progress) => setLocalLoading(progress.phase === "download" || progress.phase === "load"),
+          });
+          if (!mountedRef.current || speechGenRef.current !== currentGen) return;
+          const objectUrl = URL.createObjectURL(blob);
+          await playHtmlAudio(objectUrl, {
+            fallbackMode: "NONE",
+            isObjectUrl: true,
+            source: "local",
+          });
+        },
         playCloud: async () => {
           const voice = cloudVoiceFor(language, settings?.preferredCloudVoiceEn);
         const blob = await synthesizeCloudSpeech({
@@ -332,7 +355,11 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
       const aborted = err instanceof DOMException && err.name === "AbortError";
       if (aborted || controller.signal.aborted || !mountedRef.current || speechGenRef.current !== currentGen) return;
       setIsLoading(false);
-      toastError("Cloud TTS không khả dụng. CLOUD mode không chuyển sang giọng của thiết bị.");
+      toastError(engine === "LOCAL"
+        ? "Local TTS chưa sẵn sàng. Hãy tải lại model trong Cài đặt hoặc chọn AUTO."
+        : "Cloud TTS không khả dụng. CLOUD mode không chuyển sang giọng của thiết bị.");
+    } finally {
+      if (mountedRef.current && speechGenRef.current === currentGen) setLocalLoading(false);
     }
   };
 
@@ -345,7 +372,7 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
       onClick={handlePlay}
       disabled={isLoading || (!audioUrl && !speechText)}
       aria-label={label}
-      title={label}
+      title={localLoading ? "Đang tải giọng đọc..." : label}
       style={{
         display: "inline-flex",
         alignItems: "center",
