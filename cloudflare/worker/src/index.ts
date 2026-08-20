@@ -603,7 +603,7 @@ async function runEnrichmentBatch(env: Env, language: Language, terms: string[],
     maxTokens: Math.min(3500, Math.max(1200, terms.length * 700)),
     cacheKey: enrichmentGatewayCacheKey(language, terms, contexts, adjudicating ? "adjudicate" : "standard"),
     workersModel: workersPrimaryModel,
-  }, (payload) => validateEnrichmentItems(payload, terms, language));
+  }, (payload) => validateEnrichmentItems(payload, terms, language), (cached) => validateEnrichmentItems({ items: cached }, terms, language));
   logGatewayResult("enrichment", result);
   return result.value.map((item) => ({ ...item, enrichmentProvider: result.provider }));
 }
@@ -696,6 +696,10 @@ async function translate(body: Record<string, unknown>, env: Env): Promise<strin
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new TypeError("AI translation output is invalid.");
     const translation = cleanString((payload as Record<string, unknown>).translation, 50_000);
     if (!translation) throw new TypeError("AI translation is empty.");
+    return translation;
+  }, (cached) => {
+    const translation = cleanString(cached, 50_000);
+    if (!translation) throw new TypeError("AI translation cache output is invalid.");
     return translation;
   });
   logGatewayResult("translation", result);
