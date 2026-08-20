@@ -77,6 +77,8 @@ export interface SyncResult {
 
 export interface RemoteSyncAdapter {
   pull(cursor?: string): Promise<{ changes: SyncChange[]; cursor?: string; hasMore?: boolean }>;
+  /** Converts a pre-change_seq timestamp cursor to its safe server sequence boundary. */
+  translateLegacyCursor?(legacyCursor: string): Promise<string>;
   /**
    * Acknowledgements are `${store}:${id}`, never bare record IDs. Record IDs
    * are only unique within a local store.

@@ -14,7 +14,7 @@ import {
   type SyncableStore,
 } from "./sync.js";
 import { cloudSyncAvailable, getSupabaseClient } from "./supabaseClient.js";
-import { SupabaseRemoteSyncAdapter } from "./supabaseAdapter.js";
+import { isChangeSeqCursor, SupabaseRemoteSyncAdapter } from "./supabaseAdapter.js";
 
 const DEFAULT_SYNC_META: SyncMeta = {
   id: "sync-meta",
@@ -264,6 +264,10 @@ export class LocalFirstSyncCoordinator implements SyncCoordinator {
       const page = await adapter.pull(cursor);
       changes.push(...page.changes);
 
+      if (page.cursor !== undefined && !isChangeSeqCursor(page.cursor)) {
+        throw new Error("Máy chủ trả về cursor change_seq không hợp lệ.");
+      }
+
       if (page.hasMore && (!page.cursor || page.cursor === cursor)) {
         throw new Error("Máy chủ trả về trang đồng bộ không tiến được cursor.");
       }
@@ -273,6 +277,22 @@ export class LocalFirstSyncCoordinator implements SyncCoordinator {
     } while (true);
 
     return { changes, cursor };
+  }
+
+  private async upgradeLegacyCursor(adapter: RemoteSyncAdapter, legacyCursor: string): Promise<string> {
+    if (!adapter.translateLegacyCursor) {
+      throw new Error("Không thể nâng cấp cursor đồng bộ cũ một cách an toàn. Vui lòng thử lại khi kết nối đám mây sẵn sàng.");
+    }
+
+    const upgradedCursor = await adapter.translateLegacyCursor(legacyCursor);
+    if (!isChangeSeqCursor(upgradedCursor)) {
+      throw new Error("Máy chủ trả về cursor đồng bộ đã nâng cấp không hợp lệ.");
+    }
+
+    // Persist only a proven numeric boundary. The legacy timestamp remains
+    // untouched when the authenticated lookup fails, allowing a safe retry.
+    await this.saveMeta({ lastCursor: upgradedCursor });
+    return upgradedCursor;
   }
 
   private async applyRemoteChanges(
@@ -404,8 +424,16 @@ export class LocalFirstSyncCoordinator implements SyncCoordinator {
         }
       }
 
-      // ================= 1. PULL ALL REMOTE CHANGES =================
-      const cursor = force ? undefined : meta.lastCursor ?? undefined;
+      // ================= 1. UPGRADE / PULL REMOTE CHANGES =================
+      // Old clients persisted an ISO updated_at cursor. Translate it before
+      // querying change_seq so we neither send invalid bigint input nor replay
+      // all historic rows as false concurrent changes.
+      let effectiveCursor = meta.lastCursor ?? undefined;
+      if (effectiveCursor !== undefined && !isChangeSeqCursor(effectiveCursor)) {
+        effectiveCursor = await this.upgradeLegacyCursor(adapter, effectiveCursor);
+      }
+
+      const cursor = force ? undefined : effectiveCursor;
       const pullResult = await this.pullAll(adapter, cursor);
 
       if (userId && !meta.localDatasetOwnerUserId) {
@@ -430,7 +458,7 @@ export class LocalFirstSyncCoordinator implements SyncCoordinator {
         }
       }
 
-      const applied = await this.applyRemoteChanges(pullResult.changes, meta.lastCursor);
+      const applied = await this.applyRemoteChanges(pullResult.changes, effectiveCursor);
       pulledCount += applied.pulledCount;
       conflictsCount += applied.conflictsCount;
 
@@ -462,7 +490,7 @@ export class LocalFirstSyncCoordinator implements SyncCoordinator {
       const now = new Date().toISOString();
 
       await this.saveMeta({
-        lastCursor: pullResult.cursor ?? meta.lastCursor,
+        lastCursor: pullResult.cursor ?? effectiveCursor ?? null,
         lastSyncAt: now,
         lastSyncStatus: updatedStatus,
         lastSyncError: null,
