@@ -48,8 +48,8 @@ import {
   synthesizeCloudSpeech,
   prefetchCloudSpeech,
   configureAudioElementPlaybackRate,
-  DEFAULT_CLOUD_VOICE_EN,
 } from "../../services/cloudTts";
+import { cloudFallbackMode, cloudVoiceFor, resolveAudioEngine, safeTtsDiagnostic } from "../../services/audioEnginePolicy";
 
 export const ReadingDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -462,7 +462,9 @@ export const ReadingDetailPage: React.FC = () => {
 
       currentSentenceIdxRef.current = index;
       const effectiveSpeed = speedOverride ?? playbackSpeedRef.current;
-      const isCloudPreferred = (settings?.audioEngine !== "BROWSER") && passage.language === "en";
+      const audioEngine = resolveAudioEngine(settings?.audioEngine);
+      const isCloudPreferred = audioEngine !== "BROWSER";
+      safeTtsDiagnostic("tts_engine_requested", { tts_engine_requested: audioEngine });
 
       setPlaybackState((prev) => ({
         ...prev,
@@ -485,15 +487,19 @@ export const ReadingDetailPage: React.FC = () => {
 
           cleanupActiveAudio();
 
-          if (isSequential) {
-            void playBrowserSentenceSequential(index, sentence, effectiveSpeed, sessionId, attemptId);
+          if (cloudFallbackMode(audioEngine) === "BROWSER") {
+            safeTtsDiagnostic("tts_browser_fallback", { tts_engine_requested: "AUTO", tts_source_used: "browser" });
+            if (isSequential) void playBrowserSentenceSequential(index, sentence, effectiveSpeed, sessionId, attemptId);
+            else void playBrowserSentence(index, sentence, effectiveSpeed, sessionId, attemptId);
           } else {
-            void playBrowserSentence(index, sentence, effectiveSpeed, sessionId, attemptId);
+            setPlaybackState((prev) => ({ ...prev, status: "paused", loading: false }));
+            isPlayingRef.current = false;
+            error("Cloud TTS không khả dụng. CLOUD mode không chuyển sang giọng thiết bị.");
           }
         };
 
         try {
-          const voice = settings?.preferredCloudVoiceEn || DEFAULT_CLOUD_VOICE_EN;
+          const voice = cloudVoiceFor(passage.language, settings?.preferredCloudVoiceEn);
           const controller = new AbortController();
           cloudAbortRef.current?.abort();
           cloudAbortRef.current = controller;
@@ -502,14 +508,14 @@ export const ReadingDetailPage: React.FC = () => {
           if (index + 1 < passage.sentences.length) {
             void prefetchCloudSpeech({
               text: passage.sentences[index + 1]!.text,
-              language: "en",
+              language: passage.language,
               voice,
             });
           }
 
           const blob = await synthesizeCloudSpeech({
             text: sentence.text,
-            language: "en",
+            language: passage.language,
             voice,
             signal: controller.signal,
           });
@@ -529,6 +535,7 @@ export const ReadingDetailPage: React.FC = () => {
 
           audio.onplay = () => {
             if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId || sentencePlayAttemptRef.current !== attemptId) return;
+            safeTtsDiagnostic("tts_source_used", { tts_source_used: "cloud", cloud_voice: voice });
             setPlaybackState((prev) => ({ ...prev, loading: false, status: "playing" }));
           };
 
@@ -552,6 +559,7 @@ export const ReadingDetailPage: React.FC = () => {
         }
       } else {
         cleanupActiveAudio();
+        safeTtsDiagnostic("tts_source_used", { tts_source_used: "browser" });
         if (isSequential) {
           void playBrowserSentenceSequential(index, sentence, effectiveSpeed, sessionId, attemptId);
         } else {
@@ -559,7 +567,7 @@ export const ReadingDetailPage: React.FC = () => {
         }
       }
     },
-    [passage, settings?.preferredVoiceZh, settings?.preferredVoiceEn, settings?.preferredCloudVoiceEn, settings?.audioEngine]
+    [passage, settings?.preferredVoiceZh, settings?.preferredVoiceEn, settings?.preferredCloudVoiceEn, settings?.audioEngine, error]
   );
 
   const handlePlay = useCallback(() => {
