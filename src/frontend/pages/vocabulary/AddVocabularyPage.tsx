@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import {
   Plus,
@@ -28,10 +28,11 @@ import type {
   BulkVocabularyInputItem,
   BulkVocabularyPreview,
   Language,
+  VocabularyItem,
   VocabularySenseSuggestion,
 } from "../../types/api";
 import {
-  parseStructuredQuickVocabularyInput,
+  parseHighVolumeQuickVocabularyInput,
   isLikelyIpa,
   normalizeLocalTerm,
   type ParsedQuickVocabularyDraft,
@@ -39,6 +40,15 @@ import {
 import { getVocabularyTopics, normalizeVocabularyTopics } from "../../../shared/vocabularyIntelligence";
 import { QuickAddPreviewRows } from "./QuickAddPreviewRows";
 import { QuickAddTopicPicker } from "./QuickAddTopicPicker";
+import {
+  HIGH_VOLUME_BATCH_SIZE,
+  HIGH_VOLUME_MAX_CONCURRENCY,
+  HIGH_VOLUME_SAVE_BATCH_SIZE,
+  buildHighVolumeImportPlan,
+  progressForImport,
+  runBoundedBatches,
+  windowHighVolumeItems,
+} from "./highVolumePipeline";
 
 type TabMode = "quick" | "detailed";
 type TopicPickerTarget = { mode: "batch" } | { mode: "item"; itemId: string };
@@ -72,8 +82,9 @@ export interface EditablePreviewItem {
   senses: VocabularySenseSuggestion[];
   lexicalStatus?: "VALID" | "UNCERTAIN" | "INVALID";
   lexicalReason?: string;
-  enrichmentState: "loading" | "ready" | "partial" | "invalid" | "failed" | "exists";
+  enrichmentState: "loading" | "ready" | "partial" | "invalid" | "failed" | "exists" | "saved";
   enrichmentError?: string;
+  pipelineFailurePhase?: "analysis" | "save";
   sourceDraft?: ParsedQuickVocabularyDraft;
 }
 
@@ -211,9 +222,72 @@ const mergeRetryPreview = (replacement: EditablePreviewItem, current: EditablePr
 const needsEnrichmentRetry = (item: EditablePreviewItem): boolean =>
   !item.duplicate &&
   (
-    item.enrichmentState === "failed" ||
+    (item.enrichmentState === "failed" && item.pipelineFailurePhase !== "save") ||
     !item.meaningVi.trim()
   );
+
+const toExistingPreview = (item: VocabularyItem, index: number, language: Language): EditablePreviewItem => {
+  const metadata = item.metadata ?? {};
+  const isChinese = language === "zh";
+  const pronunciation = item.pronunciation ?? (isChinese ? String(metadata.pinyin ?? "") : String(metadata.ipa ?? ""));
+  return {
+    id: `existing-${item.id}-${index}`,
+    existingId: item.id,
+    repairAccepted: false,
+    term: item.term,
+    normalizedTerm: normalizeLocalTerm(item.term, language),
+    duplicate: true,
+    meaningVi: item.meaningVi,
+    partOfSpeech: item.partOfSpeech ?? "",
+    pronunciation,
+    ipa: isChinese ? undefined : (String(metadata.ipa ?? pronunciation) || undefined),
+    pinyin: isChinese ? (String(metadata.pinyin ?? pronunciation) || undefined) : undefined,
+    synonyms: Array.isArray(metadata.synonyms) ? metadata.synonyms.join(", ") : "",
+    example: item.example ?? "",
+    exampleTranslation: item.exampleTranslation ?? "",
+    topic: item.topic ?? "",
+    topics: getVocabularyTopics(item),
+    suggestedTopics: [],
+    level: item.level ?? "",
+    toeicLevel: String(metadata.toeicLevel ?? ""),
+    tone: "",
+    traditional: String(metadata.traditional ?? ""),
+    selected: false,
+    expandedDetails: false,
+    senses: Array.isArray(metadata.senses) ? metadata.senses as VocabularySenseSuggestion[] : [],
+    enrichmentState: "exists",
+  };
+};
+
+const toBulkPayload = (item: EditablePreviewItem, language: Language): BulkVocabularyInputItem => {
+  const topics = normalizeVocabularyTopics([...item.topics, item.topic]);
+  const payload: BulkVocabularyInputItem = {
+    term: item.term.trim(),
+    meaningVi: item.meaningVi.trim(),
+    partOfSpeech: item.partOfSpeech.trim() || undefined,
+    pronunciation: item.pronunciation.trim() || undefined,
+    example: item.example.trim() || undefined,
+    exampleTranslation: item.exampleTranslation.trim() || undefined,
+    topic: topics[0] ?? (item.topic.trim() || undefined),
+    topics,
+  };
+  if (item.repairAccepted && item.needsRepair && item.hasUpdate && item.existingId) {
+    payload.existingId = item.existingId;
+    payload.repairExisting = true;
+  }
+  if (language === "zh") {
+    if (item.pronunciation.trim()) payload.pinyin = item.pronunciation.trim();
+    if (item.traditional.trim()) payload.traditional = item.traditional.trim();
+    if (/^HSK[1-6]$/.test(item.level)) payload.hskLevel = Number(item.level.slice(3));
+    if (item.tone && item.tone !== "neutral") payload.toneData = [Number(item.tone) as 0 | 1 | 2 | 3 | 4];
+  } else {
+    if (item.pronunciation.trim()) payload.ipa = item.pronunciation.trim();
+    if (item.level) payload.cefr = item.level;
+    if (item.toeicLevel) payload.toeicLevel = item.toeicLevel;
+    if (item.synonyms.trim()) payload.synonyms = item.synonyms.split(",").map((value) => value.trim()).filter(Boolean);
+  }
+  return payload;
+};
 
 export const AddVocabularyPage: React.FC = () => {
   const { language: currentAppLang } = useLanguage();
@@ -240,6 +314,10 @@ export const AddVocabularyPage: React.FC = () => {
   const [availableTopics, setAvailableTopics] = useState<string[]>([]);
   const [isLoadingTopics, setIsLoadingTopics] = useState(false);
   const loadedTopicLanguagesRef = useRef(new Set<Language>());
+  const [highVolumeMeta, setHighVolumeMeta] = useState({ parsed: 0, duplicates: 0, existing: 0 });
+  const [previewPage, setPreviewPage] = useState(0);
+  const [previewFilter, setPreviewFilter] = useState<"all" | "ready" | "invalid" | "failed" | "existing">("all");
+  const [previewSearch, setPreviewSearch] = useState("");
 
   // Detailed Add State (Preserved Form)
   const [term, setTerm] = useState("");
@@ -268,6 +346,10 @@ export const AddVocabularyPage: React.FC = () => {
     setIsPreviewLoading(false);
     setIsRetryingEnrichment(false);
     setTopicPickerTarget(null);
+    setHighVolumeMeta({ parsed: 0, duplicates: 0, existing: 0 });
+    setPreviewPage(0);
+    setPreviewFilter("all");
+    setPreviewSearch("");
   }, []);
 
   const handleQuickInputChange = useCallback((event: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -297,11 +379,49 @@ export const AddVocabularyPage: React.FC = () => {
 
     setIsPreviewLoading(true);
     setBulkSaveResult(null);
-    let drafts: ParsedQuickVocabularyDraft[];
+    let plan: ReturnType<typeof buildHighVolumeImportPlan>;
     try {
-      drafts = parseStructuredQuickVocabularyInput(inputSnapshot, languageSnapshot);
+      const parsed = parseHighVolumeQuickVocabularyInput(inputSnapshot, languageSnapshot);
+      if (parsed.drafts.length <= 100) {
+        const drafts = parsed.drafts;
+        setHighVolumeMeta({ parsed: drafts.length, duplicates: parsed.duplicateCount, existing: 0 });
+        setPreviewItems(drafts.map((draft, index) => loadingPreview(draft, index, languageSnapshot)));
+        setHasParsed(true);
+        try {
+          const response = await vocabularyApi.bulkPreview(languageSnapshot, drafts.map((draft) => draft.term).join("\n"));
+          if (!isLatestRequest()) return;
+          setEnrichmentConfigured(response.enrichment.configured);
+          const byTerm = new Map(response.items.map((item) => [normalizeLocalTerm(item.term, languageSnapshot), item]));
+          const items = drafts.map((draft, index) => {
+            const responseItem = byTerm.get(normalizeLocalTerm(draft.term, languageSnapshot));
+            return responseItem
+              ? toEditablePreview(responseItem, index, languageSnapshot, draft)
+              : { ...loadingPreview(draft, index, languageSnapshot), enrichmentState: "failed" as const, pipelineFailurePhase: "analysis" as const, enrichmentError: "Không nhận được dữ liệu bổ sung cho từ này." };
+          });
+          setPreviewItems(items);
+          if (items.length > 0) success(`Đã nhận diện thành công ${items.length} từ!`);
+        } catch (caught) {
+          if (!isLatestRequest()) return;
+          setPreviewItems((items) => items.map((item) => ({ ...item, enrichmentState: "failed", pipelineFailurePhase: "analysis", enrichmentError: getFriendlyErrorMessage(caught) })));
+          error(getFriendlyErrorMessage(caught));
+        } finally {
+          if (isLatestRequest()) setIsPreviewLoading(false);
+        }
+        return;
+      }
+      const existingVocabulary = await vocabularyApi.list({ language: languageSnapshot, limit: 3_000 }).catch(() => [] as VocabularyItem[]);
       if (!isLatestRequest()) return;
-      setPreviewItems(drafts.map((draft, idx) => loadingPreview(draft, idx, languageSnapshot)));
+      plan = buildHighVolumeImportPlan(parsed, languageSnapshot, Array.isArray(existingVocabulary) ? existingVocabulary : []);
+      setHighVolumeMeta({ parsed: plan.parsed, duplicates: plan.duplicates, existing: plan.existing });
+      setPreviewPage(0);
+      setPreviewItems(plan.items.map((entry) => {
+        if (entry.state === "SKIPPED_EXISTING") {
+          const existing = (existingVocabulary as VocabularyItem[]).find((item) => item.language === languageSnapshot && normalizeLocalTerm(item.term, languageSnapshot) === normalizeLocalTerm(entry.draft.term, languageSnapshot));
+          return existing ? toExistingPreview(existing, entry.index, languageSnapshot) : loadingPreview(entry.draft, entry.index, languageSnapshot);
+        }
+        const item = loadingPreview(entry.draft, entry.index, languageSnapshot);
+        return entry.state === "READY" ? { ...item, enrichmentState: "ready" } : item;
+      }));
       setHasParsed(true);
     } catch (caught) {
       if (!isLatestRequest()) return;
@@ -309,34 +429,34 @@ export const AddVocabularyPage: React.FC = () => {
       setIsPreviewLoading(false);
       return;
     }
-    try {
-      const res = await vocabularyApi.bulkPreview(languageSnapshot, drafts.map((draft) => draft.term).join("\n"));
-      if (!isLatestRequest()) return;
-      setEnrichmentConfigured(res.enrichment.configured);
-      const responseByTerm = new Map(res.items.map((item) => [normalizeLocalTerm(item.term, languageSnapshot), item]));
-      const items = drafts.map((draft, idx) => {
-        const responseItem = responseByTerm.get(normalizeLocalTerm(draft.term, languageSnapshot));
-        if (!responseItem) {
-          return {
-            ...loadingPreview(draft, idx, languageSnapshot),
-            enrichmentState: "failed" as const,
-            enrichmentError: "Không nhận được dữ liệu bổ sung cho từ này.",
-          };
-        }
-        return toEditablePreview(responseItem, idx, languageSnapshot, draft);
-      });
-
-      setPreviewItems(items);
-      setHasParsed(true);
-      if (items.length > 0) {
-        success(`Đã nhận diện thành công ${items.length} từ!`);
-      }
-    } catch (err: any) {
-      if (!isLatestRequest()) return;
-      setPreviewItems((items) => items.map((item) => ({ ...item, enrichmentState: "failed", enrichmentError: getFriendlyErrorMessage(err) })));
-      error(getFriendlyErrorMessage(err));
-    } finally {
-      if (isLatestRequest()) setIsPreviewLoading(false);
+    const queued = plan.items.filter((entry) => entry.state === "QUEUED");
+    await runBoundedBatches({
+      items: queued,
+      batchSize: HIGH_VOLUME_BATCH_SIZE,
+      concurrency: HIGH_VOLUME_MAX_CONCURRENCY,
+      isActive: isLatestRequest,
+      process: async (batch) => vocabularyApi.bulkPreview(languageSnapshot, batch.map((entry) => entry.draft.term).join("\n")),
+      onStart: (batch) => setPreviewItems((items) => items.map((item) => batch.some((entry) => item.id === `loading-${entry.index}`)
+        ? { ...item, enrichmentState: "loading", pipelineFailurePhase: undefined, enrichmentError: undefined }
+        : item)),
+      onSuccess: (batch, response) => {
+        setEnrichmentConfigured(response.enrichment.configured);
+        const byTerm = new Map(response.items.map((item) => [normalizeLocalTerm(item.term, languageSnapshot), item]));
+        setPreviewItems((items) => items.map((current) => {
+          const entry = batch.find((candidate) => current.id === `loading-${candidate.index}`);
+          if (!entry) return current;
+          const responseItem = byTerm.get(normalizeLocalTerm(entry.draft.term, languageSnapshot));
+          if (!responseItem) return { ...current, enrichmentState: "failed", pipelineFailurePhase: "analysis", enrichmentError: "Không nhận được dữ liệu bổ sung cho từ này." };
+          return mergeRetryPreview(toEditablePreview(responseItem, entry.index, languageSnapshot, entry.draft), current);
+        }));
+      },
+      onFailure: (batch, caught) => setPreviewItems((items) => items.map((item) => batch.some((entry) => item.id === `loading-${entry.index}`)
+        ? { ...item, enrichmentState: "failed", pipelineFailurePhase: "analysis", enrichmentError: getFriendlyErrorMessage(caught) }
+        : item)),
+    });
+    if (isLatestRequest()) {
+      setIsPreviewLoading(false);
+      success(`Đã nhận diện ${plan.parsed} từ${plan.duplicates ? `, bỏ qua ${plan.duplicates} từ trùng` : ""}.`);
     }
   };
 
@@ -344,26 +464,57 @@ export const AddVocabularyPage: React.FC = () => {
     const requestGeneration = analyzeGenerationRef.current;
     const languageSnapshot = formLang;
     const isCurrentAnalysis = () => analyzeGenerationRef.current === requestGeneration;
-    const targets = terms ?? previewItemsRef.current.filter(needsEnrichmentRetry).map((item) => item.term);
+    const targets = (terms
+      ? previewItemsRef.current.filter((item) => terms.some((term) => item.term === term))
+      : previewItemsRef.current.filter(needsEnrichmentRetry));
     if (!targets.length) return;
-    const normalizedTargets = new Set(targets.map((term) => normalizeLocalTerm(term, languageSnapshot)));
     setIsRetryingEnrichment(true);
-    setPreviewItems((items) => items.map((item) => normalizedTargets.has(item.normalizedTerm) ? { ...item, enrichmentState: "loading", enrichmentError: undefined } : item));
-    try {
-      const res = await vocabularyApi.bulkPreview(languageSnapshot, targets.join("\n"), true);
-      if (!isCurrentAnalysis()) return;
-      const replacements = new Map(res.items.map((item, idx) => [normalizeLocalTerm(item.term, languageSnapshot), toEditablePreview(item, idx, languageSnapshot)]));
-      setPreviewItems((items) => items.map((item) => {
-        const replacement = replacements.get(item.normalizedTerm);
-        return replacement ? mergeRetryPreview(replacement, item) : item;
-      }));
-    } catch (caught) {
-      if (!isCurrentAnalysis()) return;
-      setPreviewItems((items) => items.map((item) => normalizedTargets.has(item.normalizedTerm) ? { ...item, enrichmentState: "failed", enrichmentError: getFriendlyErrorMessage(caught) } : item));
-      error(getFriendlyErrorMessage(caught));
-    } finally {
-      if (isCurrentAnalysis()) setIsRetryingEnrichment(false);
+    if (targets.length <= 100) {
+      setPreviewItems((items) => items.map((item) => targets.some((target) => target.id === item.id)
+        ? { ...item, enrichmentState: "loading", enrichmentError: undefined, pipelineFailurePhase: undefined }
+        : item));
+      try {
+        const response = await vocabularyApi.bulkPreview(languageSnapshot, targets.map((item) => item.term).join("\n"), true);
+        if (!isCurrentAnalysis()) return;
+        const replacements = new Map(response.items.map((item, index) => [normalizeLocalTerm(item.term, languageSnapshot), toEditablePreview(item, index, languageSnapshot)]));
+        setPreviewItems((items) => items.map((item) => {
+          if (!targets.some((target) => target.id === item.id)) return item;
+          const replacement = replacements.get(item.normalizedTerm);
+          return replacement ? mergeRetryPreview(replacement, item) : item;
+        }));
+      } catch (caught) {
+        if (!isCurrentAnalysis()) return;
+        setPreviewItems((items) => items.map((item) => targets.some((target) => target.id === item.id)
+          ? { ...item, enrichmentState: "failed", pipelineFailurePhase: "analysis", enrichmentError: getFriendlyErrorMessage(caught) }
+          : item));
+        error(getFriendlyErrorMessage(caught));
+      } finally {
+        if (isCurrentAnalysis()) setIsRetryingEnrichment(false);
+      }
+      return;
     }
+    await runBoundedBatches({
+      items: targets,
+      batchSize: HIGH_VOLUME_BATCH_SIZE,
+      concurrency: HIGH_VOLUME_MAX_CONCURRENCY,
+      isActive: isCurrentAnalysis,
+      process: async (batch) => vocabularyApi.bulkPreview(languageSnapshot, batch.map((item) => item.term).join("\n"), true),
+      onStart: (batch) => setPreviewItems((items) => items.map((item) => batch.some((target) => target.id === item.id)
+        ? { ...item, enrichmentState: "loading", enrichmentError: undefined, pipelineFailurePhase: undefined }
+        : item)),
+      onSuccess: (batch, response) => {
+        const replacements = new Map(response.items.map((item, index) => [normalizeLocalTerm(item.term, languageSnapshot), toEditablePreview(item, index, languageSnapshot)]));
+        setPreviewItems((items) => items.map((item) => {
+          if (!batch.some((target) => target.id === item.id)) return item;
+          const replacement = replacements.get(item.normalizedTerm);
+          return replacement ? mergeRetryPreview(replacement, item) : { ...item, enrichmentState: "failed", pipelineFailurePhase: "analysis", enrichmentError: "Không nhận được dữ liệu bổ sung cho từ này." };
+        }));
+      },
+      onFailure: (batch, caught) => setPreviewItems((items) => items.map((item) => batch.some((target) => target.id === item.id)
+        ? { ...item, enrichmentState: "failed", pipelineFailurePhase: "analysis", enrichmentError: getFriendlyErrorMessage(caught) }
+        : item)),
+    });
+    if (isCurrentAnalysis()) setIsRetryingEnrichment(false);
   }, [error, formLang]);
 
   const handleChooseSense = useCallback((id: string, senseIndex: number) => {
@@ -393,15 +544,29 @@ export const AddVocabularyPage: React.FC = () => {
   };
 
   const handleClearAllChips = () => {
+    analyzeGenerationRef.current += 1;
     setPreviewItems([]);
     setHasParsed(false);
     setBulkSaveResult(null);
   };
 
+  const handleCancelHighVolumeAnalysis = useCallback(() => {
+    analyzeGenerationRef.current += 1;
+    setIsPreviewLoading(false);
+    setIsRetryingEnrichment(false);
+    setPreviewItems((items) => items.map((item) => item.enrichmentState === "loading"
+      ? { ...item, enrichmentState: "failed", pipelineFailurePhase: "analysis", enrichmentError: "Đã hủy trước khi hoàn tất. Có thể thử lại riêng các từ này." }
+      : item));
+    info("Đã hủy phân tích. Kết quả đã hoàn tất được giữ lại.");
+  }, [info]);
+
   const handleToggleSelectAll = () => {
     setPreviewItems((prev) => {
-      const allSelected = prev.every((item) => item.selected);
-      return prev.map((item) => ({ ...item, selected: !allSelected }));
+      const selectable = prev.filter((item) => !item.duplicate && item.enrichmentState !== "invalid" && item.enrichmentState !== "saved");
+      const allSelected = selectable.length > 0 && selectable.every((item) => item.selected);
+      return prev.map((item) => !item.duplicate && item.enrichmentState !== "invalid" && item.enrichmentState !== "saved"
+        ? { ...item, selected: !allSelected }
+        : item);
     });
   };
 
@@ -541,8 +706,8 @@ export const AddVocabularyPage: React.FC = () => {
 
   const handleCloseTopicPicker = useCallback(() => setTopicPickerTarget(null), []);
 
-  const handleBulkSave = async () => {
-    const selectedItems = previewItems.filter((i) => i.selected);
+  const handleBulkSave = async (itemsOverride?: EditablePreviewItem[]) => {
+    const selectedItems = (itemsOverride ?? previewItemsRef.current).filter((i) => i.selected && !i.duplicate && i.enrichmentState !== "invalid" && i.enrichmentState !== "saved");
     if (selectedItems.length === 0) {
       error("Vui lòng chọn ít nhất một từ để lưu.");
       return;
@@ -555,57 +720,53 @@ export const AddVocabularyPage: React.FC = () => {
     }
 
     setIsBulkSaving(true);
+    const aggregate: BulkVocabularyCreateResult = { mode: "PARTIAL", created: [], existing: [], failed: [] };
     try {
-      const payload: BulkVocabularyInputItem[] = selectedItems.map((i) => {
-        const topics = normalizeVocabularyTopics([...i.topics, i.topic]);
-        const itemPayload: BulkVocabularyInputItem = {
-          term: i.term.trim(),
-          meaningVi: i.meaningVi.trim(),
-          partOfSpeech: i.partOfSpeech.trim() || undefined,
-          pronunciation: i.pronunciation.trim() || undefined,
-          example: i.example.trim() || undefined,
-          exampleTranslation: i.exampleTranslation.trim() || undefined,
-          topic: topics[0] ?? (i.topic.trim() || undefined),
-          topics,
-        };
-        if (i.repairAccepted && i.needsRepair && i.hasUpdate && i.existingId) {
-          itemPayload.existingId = i.existingId;
-          itemPayload.repairExisting = true;
-        }
-
-        if (formLang === "zh") {
-          if (i.pronunciation.trim()) itemPayload.pinyin = i.pronunciation.trim();
-          if (i.traditional.trim()) itemPayload.traditional = i.traditional.trim();
-          if (/^HSK[1-6]$/.test(i.level)) itemPayload.hskLevel = Number(i.level.slice(3));
-          if (i.tone && i.tone !== "neutral") {
-            itemPayload.toneData = [Number(i.tone) as any];
-          }
-        } else {
-          if (i.pronunciation.trim()) itemPayload.ipa = i.pronunciation.trim();
-          if (i.level) itemPayload.cefr = i.level;
-          if (i.toeicLevel) itemPayload.toeicLevel = i.toeicLevel;
-          if (i.synonyms.trim()) {
-            itemPayload.synonyms = i.synonyms
-              .split(",")
-              .map((s) => s.trim())
-              .filter(Boolean);
-          }
-        }
-
-        return itemPayload;
+      await runBoundedBatches({
+        items: selectedItems,
+        batchSize: HIGH_VOLUME_SAVE_BATCH_SIZE,
+        concurrency: 1,
+        maxAttempts: 1,
+        isActive: () => true,
+        process: async (batch) => vocabularyApi.bulkCreate(formLang, batch.map((item) => toBulkPayload(item, formLang))),
+        onSuccess: (batch, result) => {
+          aggregate.created.push(...result.created);
+          aggregate.existing.push(...result.existing);
+          aggregate.failed.push(...result.failed);
+          setPreviewItems((items) => items.map((item) => {
+            const batchIndex = batch.findIndex((candidate) => candidate.id === item.id);
+            if (batchIndex < 0) return item;
+            const failure = result.failed.find((candidate) => candidate.index === batchIndex);
+            return failure
+              ? { ...item, enrichmentState: "failed", pipelineFailurePhase: "save", enrichmentError: failure.message }
+              : { ...item, enrichmentState: "saved", selected: false, pipelineFailurePhase: undefined, enrichmentError: undefined };
+          }));
+        },
+        onFailure: (batch, caught) => {
+          const message = getFriendlyErrorMessage(caught);
+          aggregate.failed.push(...batch.map((item, index) => ({ index, term: item.term, code: "SAVE_FAILED", message })));
+          setPreviewItems((items) => items.map((item) => batch.some((candidate) => candidate.id === item.id)
+            ? { ...item, enrichmentState: "failed", pipelineFailurePhase: "save", enrichmentError: message }
+            : item));
+        },
       });
-
-      const res = await vocabularyApi.bulkCreate(formLang, payload);
-      setBulkSaveResult(res);
-
-      if (res.created.length > 0) {
-        success(`Đã lưu thành công ${res.created.length} từ vào kho!`);
-      }
-    } catch (err: any) {
-      error(getFriendlyErrorMessage(err));
+      setBulkSaveResult(aggregate);
+      if (aggregate.created.length > 0) success(`Đã lưu thành công ${aggregate.created.length} từ vào kho!`);
+    } catch (caught) {
+      error(getFriendlyErrorMessage(caught));
     } finally {
       setIsBulkSaving(false);
     }
+  };
+
+  const handleRetryFailedSaves = async () => {
+    const retryItems = previewItemsRef.current.filter((item) => item.enrichmentState === "failed" && item.pipelineFailurePhase === "save");
+    if (!retryItems.length) return;
+    const readyToRetry = retryItems.map((item) => ({ ...item, selected: true, enrichmentState: "ready" as const, pipelineFailurePhase: undefined, enrichmentError: undefined }));
+    setPreviewItems((items) => items.map((item) => retryItems.some((candidate) => candidate.id === item.id)
+      ? { ...item, selected: true, enrichmentState: "ready", pipelineFailurePhase: undefined, enrichmentError: undefined }
+      : item));
+    await handleBulkSave(readyToRetry);
   };
 
   const handleContinueAddMore = () => {
@@ -677,7 +838,38 @@ export const AddVocabularyPage: React.FC = () => {
     }
   };
 
-  const selectedCount = previewItems.filter((i) => i.selected).length;
+  const pipelineProgress = useMemo(() => progressForImport({
+    parsed: highVolumeMeta.parsed,
+    duplicates: highVolumeMeta.duplicates,
+    existing: highVolumeMeta.existing,
+    items: previewItems.map((item, index) => ({
+      id: item.id,
+      index,
+      draft: item.sourceDraft ?? { term: item.term },
+      normalizedTerm: item.normalizedTerm,
+      state: item.enrichmentState === "loading" ? "PROCESSING"
+        : item.enrichmentState === "invalid" ? "INVALID"
+          : item.enrichmentState === "failed" ? "FAILED"
+            : item.enrichmentState === "exists" ? "SKIPPED_EXISTING"
+              : item.enrichmentState === "saved" ? "SAVED"
+                : "READY",
+    })),
+  }), [highVolumeMeta, previewItems]);
+  const selectedCount = previewItems.filter((i) => i.selected && !i.duplicate && i.enrichmentState !== "invalid" && i.enrichmentState !== "saved").length;
+  const filteredPreviewItems = useMemo(() => previewItems.filter((item) => {
+    const searchMatches = !previewSearch.trim() || item.term.toLocaleLowerCase().includes(previewSearch.trim().toLocaleLowerCase());
+    const statusMatches = previewFilter === "all"
+      || (previewFilter === "ready" && ["ready", "partial"].includes(item.enrichmentState))
+      || (previewFilter === "invalid" && item.enrichmentState === "invalid")
+      || (previewFilter === "failed" && item.enrichmentState === "failed")
+      || (previewFilter === "existing" && item.enrichmentState === "exists");
+    return searchMatches && statusMatches;
+  }), [previewFilter, previewItems, previewSearch]);
+  const previewPageSize = 50;
+  const previewPageCount = Math.max(1, Math.ceil(filteredPreviewItems.length / previewPageSize));
+  const safePreviewPage = Math.min(previewPage, previewPageCount - 1);
+  const visiblePreviewItems = windowHighVolumeItems(filteredPreviewItems, safePreviewPage, previewPageSize);
+  const failedSaveCount = previewItems.filter((item) => item.enrichmentState === "failed" && item.pipelineFailurePhase === "save").length;
   const topicPickerTargetLabel = topicPickerTarget?.mode === "item"
     ? `“${previewItems.find((item) => item.id === topicPickerTarget.itemId)?.term ?? "từ này"}”`
     : `${selectedCount} từ đã chọn`;
@@ -847,7 +1039,12 @@ export const AddVocabularyPage: React.FC = () => {
             </div>
 
             {/* CTA Button */}
-            <div className="flex-row justify-end">
+            <div className="flex-row justify-end gap-2">
+              {isPreviewLoading && (
+                <Button variant="outline" size="lg" onClick={handleCancelHighVolumeAnalysis}>
+                  Hủy phân tích
+                </Button>
+              )}
               <Button
                 variant={isZh ? "zh" : "primary"}
                 size="lg"
@@ -855,13 +1052,13 @@ export const AddVocabularyPage: React.FC = () => {
                 onClick={handleAnalyzeQuickInput}
                 leftIcon={<Sparkles size={18} />}
               >
-                {isPreviewLoading ? `Đang tự động bổ sung ${previewItems.length || ""} từ...` : "Phân tích & tự động bổ sung"}
+                {isPreviewLoading ? `Đang tự động bổ sung ${pipelineProgress.processing + pipelineProgress.ready + pipelineProgress.invalid + pipelineProgress.failed || previewItems.length} từ...` : "Phân tích & tự động bổ sung"}
               </Button>
             </div>
           </Card>
 
           {/* ================= TERM CHIPS & PREVIEW TABLE ================= */}
-          {hasParsed && previewItems.length > 0 && !bulkSaveResult && (
+          {hasParsed && previewItems.length > 0 && (!bulkSaveResult || failedSaveCount > 0) && (
             <Card elevated className="flex-col gap-6 animate-fade-in">
               {/* Chips Area Header */}
               <div className="flex-row justify-between items-center" style={{ flexWrap: "wrap", gap: "10px" }}>
@@ -896,6 +1093,17 @@ export const AddVocabularyPage: React.FC = () => {
                       {isRetryingEnrichment ? "Đang thử lại..." : "Thử lại các từ lỗi"}
                     </Button>
                   )}
+                  {failedSaveCount > 0 && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      isLoading={isBulkSaving}
+                      disabled={isBulkSaving || isPreviewLoading}
+                      onClick={() => void handleRetryFailedSaves()}
+                    >
+                      Thử lại {failedSaveCount} lượt lưu lỗi
+                    </Button>
+                  )}
                   <Button variant="ghost" size="sm" onClick={handleToggleSelectAll}>
                     {previewItems.every((i) => i.selected) ? "Bỏ chọn tất cả" : "Chọn tất cả"}
                   </Button>
@@ -905,9 +1113,23 @@ export const AddVocabularyPage: React.FC = () => {
                 </div>
               </div>
 
+              <div
+                role="status"
+                aria-live="polite"
+                style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: "8px", fontSize: "var(--text-xs)" }}
+              >
+                <span>Đã phân tích {pipelineProgress.ready + pipelineProgress.invalid + pipelineProgress.failed + pipelineProgress.processing} / {pipelineProgress.parsed}</span>
+                <span>Sẵn sàng: {pipelineProgress.ready}</span>
+                <span>Không hợp lệ: {pipelineProgress.invalid}</span>
+                <span>Lỗi cần thử lại: {pipelineProgress.failed}</span>
+                <span>Đã có: {pipelineProgress.existing}</span>
+                {pipelineProgress.duplicates > 0 && <span>Trùng trong danh sách: {pipelineProgress.duplicates}</span>}
+                {pipelineProgress.saved > 0 && <span>Đã lưu: {pipelineProgress.saved}</span>}
+              </div>
+
               {/* Compact Chips Preview */}
               <div className="flex-row gap-2" style={{ flexWrap: "wrap" }}>
-                {previewItems.map((item, idx) => (
+                {visiblePreviewItems.map((item) => (
                   <div
                     key={item.id}
                     style={{
@@ -945,7 +1167,7 @@ export const AddVocabularyPage: React.FC = () => {
                     )}
                     <button
                       type="button"
-                      onClick={() => handleRemoveChip(idx)}
+                      onClick={() => handleRemovePreviewItem(item.id)}
                       style={{ color: "inherit", padding: "1px", display: "flex" }}
                       aria-label={`Xóa từ ${item.term}`}
                     >
@@ -976,8 +1198,27 @@ export const AddVocabularyPage: React.FC = () => {
               )}
 
               {/* ================= EDITABLE ROWS TABLE ================= */}
+              {previewItems.length > previewPageSize && (
+                <div className="flex-row gap-2" style={{ alignItems: "center", flexWrap: "wrap" }}>
+                  <input
+                    aria-label="Tìm trong danh sách nhập"
+                    value={previewSearch}
+                    onChange={(event) => { setPreviewSearch(event.target.value); setPreviewPage(0); }}
+                    placeholder="Tìm từ…"
+                    style={{ minWidth: "180px", padding: "8px 10px", borderRadius: "var(--radius-md)", border: "1px solid var(--border-default)", background: "var(--bg-surface)" }}
+                  />
+                  {(["all", "ready", "invalid", "failed", "existing"] as const).map((filter) => (
+                    <Button key={filter} size="sm" variant={previewFilter === filter ? "primary" : "outline"} onClick={() => { setPreviewFilter(filter); setPreviewPage(0); }}>
+                      {{ all: "Tất cả", ready: "Sẵn sàng", invalid: "Không hợp lệ", failed: "Lỗi", existing: "Đã có" }[filter]}
+                    </Button>
+                  ))}
+                  <Button size="sm" variant="outline" disabled={safePreviewPage === 0} onClick={() => setPreviewPage((page) => Math.max(0, page - 1))}>Trước</Button>
+                  <span style={{ fontSize: "var(--text-xs)" }}>Trang {safePreviewPage + 1} / {previewPageCount} · {filteredPreviewItems.length} mục</span>
+                  <Button size="sm" variant="outline" disabled={safePreviewPage >= previewPageCount - 1} onClick={() => setPreviewPage((page) => Math.min(previewPageCount - 1, page + 1))}>Sau</Button>
+                </div>
+              )}
               <QuickAddPreviewRows
-                items={previewItems}
+                items={visiblePreviewItems}
                 isZh={isZh}
                 onToggleSelect={handleToggleSelectItem}
                 onUpdateField={handleUpdateItemField}
@@ -1014,7 +1255,7 @@ export const AddVocabularyPage: React.FC = () => {
                   size="lg"
                   isLoading={isBulkSaving}
                   disabled={selectedCount === 0 || isPreviewLoading}
-                  onClick={handleBulkSave}
+                  onClick={() => void handleBulkSave()}
                   leftIcon={<Bookmark size={18} />}
                 >
                   {isBulkSaving ? "Đang lưu..." : `Lưu ${selectedCount} từ vào kho`}
