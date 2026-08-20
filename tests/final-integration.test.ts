@@ -156,12 +156,12 @@ describe("final integration contract",()=>{
   });
 
   it("runs required English and Chinese quiz contracts without leaking answers",async()=>{const c=await testContext();contexts.push(c);const vocab=new VocabularyService(c.db);
-    vocab.create(c.userId,{language:"en",term:"patience",meaningVi:"sự kiên nhẫn",pronunciation:"/peɪʃəns/",source:"MANUAL",metadata:{ipa:"/peɪʃəns/"}});
+    for(const [term,meaningVi] of [["patience","sự kiên nhẫn"],["routine","thói quen"],["review","ôn tập"],["abundant","dồi dào"]] as const)vocab.create(c.userId,{language:"en",term,meaningVi,pronunciation:"/peɪʃəns/",source:"MANUAL",metadata:{ipa:"/peɪʃəns/"}});
     vocab.create(c.userId,{language:"zh",term:"朋友",meaningVi:"bạn bè",pronunciation:"péngyou",source:"MANUAL",metadata:{pinyin:"péngyou",toneData:[2,0]}});
     for(const [language,type] of [["en","TERM_TO_MEANING"],["en","MEANING_TO_TERM"],["en","LISTENING"],["zh","HANZI_TO_MEANING"],["zh","HANZI_TO_PINYIN"],["zh","TONE_SELECTION"]] as const){
       const started=(await request(c,"POST","/api/quizzes",{language,type,count:1})).json().data;
       expect(started.currentQuestion).not.toHaveProperty("answer");
-      if(type==="LISTENING"){expect(started.currentQuestion.prompt).toContain("Nghe");expect(started.currentQuestion.audioText).toBe("patience");}
+      if(type==="LISTENING"){expect(started.currentQuestion.prompt).toContain("Nghe");expect(started.currentQuestion.audioText).toBeTruthy();expect(started.currentQuestion).not.toHaveProperty("feedback");}
       const stored=c.db.get<{questions_json:string}>("SELECT questions_json FROM quiz_sessions WHERE id=?",started.id)!;
       const expected=(JSON.parse(stored.questions_json) as Array<{answer:string}>)[0]!.answer;
       expect(expected).not.toBe("");

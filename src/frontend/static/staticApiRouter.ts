@@ -26,6 +26,7 @@ import { LocalFirstSyncCoordinator } from "../persistence/syncEngine";
 import { STATIC_LOCAL_USER } from "../runtime/runtime";
 import { LanguageApiClient, type VocabularyEnrichment, type VocabularyContext } from "../services/languageApi";
 import { buildGameItems, isGameType, publicGameItem, scoreGameAnswer, type GeneratedGameItem } from "../../shared/gameModes";
+import { buildQuizQuestions, publicQuizQuestion, type GeneratedQuizQuestion } from "../../shared/quizModes";
 import { bulkVocabularyItemSchema } from "../../shared/schemas";
 import { calculateCefrStatistics, filterVocabularyByScope, getVocabularyTopics, normalizeCefrLevel, normalizeCollectionIds, normalizeVocabularyTopics } from "../../shared/vocabularyIntelligence.js";
 import {
@@ -52,7 +53,7 @@ interface ActivityRecord extends StoredRecord {
 
 interface StoredQuizSession extends StoredRecord {
   public: QuizSession;
-  questions: Array<QuizQuestion & { answer: string }>;
+  questions: GeneratedQuizQuestion[];
 }
 
 interface StoredGameSession extends StoredRecord {
@@ -687,14 +688,17 @@ export class StaticApiRouter {
   }
 
   private async startQuiz(body: any): Promise<QuizSession> {
-    const vocab = (await this.persistence.getAll<VocabularyItem>("vocabulary")).filter((item) => item.language === body.language).slice(0, body.count ?? 10);
+    const vocab = (await this.persistence.getAll<VocabularyItem>("vocabulary")).filter((item) => item.language === body.language);
     if (!vocab.length) throw new Error("Chưa có từ vựng cho bài quiz.");
-    const questions = vocab.map((item) => {
-      const reversed = ["MEANING_TO_TERM", "MEANING_TO_HANZI"].includes(body.type);
-      return { id: createLocalId(), prompt: reversed ? item.meaningVi : item.term, answer: reversed ? item.term : item.meaningVi, type: body.type, vocabularyId: item.id };
+    const questions = buildQuizQuestions({
+      language: body.language,
+      type: body.type,
+      count: body.count ?? 10,
+      vocabulary: vocab.map((item) => ({ id: item.id, language: item.language, term: item.term, meaningVi: item.meaningVi, pronunciation: item.pronunciation, example: item.example, metadata: item.metadata || {} })),
+      createId: createLocalId,
     });
     const id = createLocalId();
-    const session: QuizSession = { id, language: body.language, type: body.type, totalQuestions: questions.length, currentIndex: 0, correct: 0, incorrect: 0, score: 0, status: "ACTIVE", startedAt: new Date().toISOString(), completedAt: null, currentQuestion: (({ answer: _, ...question }) => question)(questions[0]!) };
+    const session: QuizSession = { id, language: body.language, type: body.type, totalQuestions: questions.length, currentIndex: 0, correct: 0, incorrect: 0, score: 0, status: "ACTIVE", startedAt: new Date().toISOString(), completedAt: null, currentQuestion: publicQuizQuestion(questions[0]!) };
     await this.persistence.put("quizSessions", { id, public: session, questions } as StoredQuizSession);
     return session;
   }
@@ -708,14 +712,14 @@ export class StaticApiRouter {
     const correctCount = stored.public.correct + (correct ? 1 : 0);
     const done = currentIndex >= stored.questions.length;
     const next = stored.questions[currentIndex];
-    const session: QuizSession = { ...stored.public, currentIndex, correct: correctCount, incorrect: stored.public.incorrect + (correct ? 0 : 1), score: Math.round(correctCount / stored.questions.length * 100), status: done ? "COMPLETED" : "ACTIVE", completedAt: done ? new Date().toISOString() : null, currentQuestion: next ? (({ answer: _, ...question }) => question)(next) : null };
+    const session: QuizSession = { ...stored.public, currentIndex, correct: correctCount, incorrect: stored.public.incorrect + (correct ? 0 : 1), score: Math.round(correctCount / stored.questions.length * 100), status: done ? "COMPLETED" : "ACTIVE", completedAt: done ? new Date().toISOString() : null, currentQuestion: next ? publicQuizQuestion(next) : null };
     await this.persistence.put("quizSessions", { ...stored, public: session });
     if (done) {
       await this.persistence.put("quizHistory", { ...session });
       void this.syncCoordinator.queueLocalChange("quizHistory", session.id, { ...session }, false);
       await this.recordActivity({ quizzes: 1, studySeconds: 60 });
     }
-    return { correct, expectedAnswer: current.answer, session };
+    return { correct, expectedAnswer: current.answer, feedback: current.feedback, session };
   }
 
   private async startGame(body: any): Promise<GameSession> {
