@@ -1,3 +1,4 @@
+/// <reference types="vite/client" />
 export type RuntimeMode = "server" | "static";
 
 export function getRuntimeMode(): RuntimeMode {
