@@ -314,16 +314,16 @@ describe("automatic enrichment", () => {
     const persistence = adapter();
     // Cache a previous enrichment in IndexedDB
     await persistence.put("enrichmentCache", {
-      id: "vocabulary-enrichment-v2:en:car",
-      version: "vocabulary-enrichment-v2",
+      id: "vocabulary-enrichment-v3:en:car",
+      version: "vocabulary-enrichment-v3",
       language: "en",
       normalizedTerm: "car",
-      value: { term: "car", language: "en", meaningVi: "xe hơi cũ", partOfSpeech: "noun" },
+      value: { term: "car", language: "en", meaningVi: "xe hơi cũ", partOfSpeech: "noun", ipa: "/kɑːr/", pronunciation: "/kɑːr/" },
       updatedAt: new Date().toISOString(),
     });
 
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ data: { items: [
-      { term: "car", language: "en", meaningVi: "xe ô tô mới", partOfSpeech: "noun" },
+      { term: "car", language: "en", meaningVi: "xe ô tô mới", partOfSpeech: "noun", ipa: "/kɑːr/", pronunciation: "/kɑːr/" },
     ] } }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
 
