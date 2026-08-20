@@ -94,9 +94,14 @@ export const LanguageSelector: React.FC<LanguageSelectorProps> = ({
   useEffect(() => {
     if (!isOpen) return;
 
+    const previousBodyOverflow = document.body.style.overflow;
+    const focusAtOpen = document.activeElement;
+    let focusFrame: number | undefined;
     if (isMobile) {
       document.body.style.overflow = "hidden";
-      requestAnimationFrame(() => closeButtonRef.current?.focus());
+      focusFrame = requestAnimationFrame(() => {
+        if (document.activeElement === focusAtOpen || document.activeElement === document.body) closeButtonRef.current?.focus();
+      });
     }
 
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -108,8 +113,9 @@ export const LanguageSelector: React.FC<LanguageSelectorProps> = ({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => {
+      if (focusFrame !== undefined) cancelAnimationFrame(focusFrame);
       if (isMobile) {
-        document.body.style.overflow = "";
+        document.body.style.overflow = previousBodyOverflow;
       }
       window.removeEventListener("keydown", handleKeyDown);
     };

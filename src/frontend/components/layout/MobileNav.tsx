@@ -13,8 +13,12 @@ export const MobileNav: React.FC = () => {
 
   useEffect(() => {
     if (!drawerOpen) return;
+    const previousBodyOverflow = document.body.style.overflow;
+    const focusAtOpen = document.activeElement;
     document.body.style.overflow = "hidden";
-    requestAnimationFrame(() => closeButtonRef.current?.focus());
+    const focusFrame = requestAnimationFrame(() => {
+      if (document.activeElement === focusAtOpen || document.activeElement === document.body) closeButtonRef.current?.focus();
+    });
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") { setDrawerOpen(false); return; }
       if (event.key !== "Tab" || !drawerRef.current) return;
@@ -26,7 +30,8 @@ export const MobileNav: React.FC = () => {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => {
-      document.body.style.overflow = "";
+      cancelAnimationFrame(focusFrame);
+      document.body.style.overflow = previousBodyOverflow;
       window.removeEventListener("keydown", handleKeyDown);
       menuButtonRef.current?.focus();
     };
