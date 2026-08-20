@@ -47,14 +47,22 @@ export const CloudAccountProvider: React.FC<{ children: React.ReactNode; service
     if (!cloudAvailable) {
       setUser(null);
       setSession(null);
+      setSyncStatus("UNCONFIGURED");
       setIsLoading(false);
       return;
     }
 
     try {
       const currentSession = await authService.getCurrentSession();
-      setSession(currentSession);
-      setUser(currentSession?.user ?? null);
+      if (!currentSession || !currentSession.user) {
+        setSession(null);
+        setUser(null);
+        setSyncStatus("SIGNED_OUT");
+      } else {
+        setSession(currentSession);
+        setUser(currentSession.user);
+        setSyncStatus(authService.getSyncStatus());
+      }
 
       const [meta, pending, confs] = await Promise.all([
         authService.getSyncMeta(),
@@ -111,6 +119,7 @@ export const CloudAccountProvider: React.FC<{ children: React.ReactNode; service
     await authService.signOut();
     setUser(null);
     setSession(null);
+    setSyncStatus("SIGNED_OUT");
     await refreshAccount();
   }, [authService, refreshAccount]);
 

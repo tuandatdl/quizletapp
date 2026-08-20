@@ -182,13 +182,25 @@ export class CloudAuthService {
 
   getUserProvider(user: User | null): string {
     if (!user) return "none";
+
+    const identities = (user as any)?.identities;
+    if (Array.isArray(identities) && identities.some((id: any) => id?.provider === "google")) {
+      return "google";
+    }
+
+    const providers = user.app_metadata?.providers;
+    if (Array.isArray(providers) && providers.includes("google")) {
+      return "google";
+    }
+
     if (user.app_metadata?.provider && typeof user.app_metadata.provider === "string") {
       return user.app_metadata.provider;
     }
-    const identities = (user as any)?.identities;
+
     if (Array.isArray(identities) && identities.length > 0 && identities[0]?.provider) {
       return identities[0].provider;
     }
+
     return "email";
   }
 

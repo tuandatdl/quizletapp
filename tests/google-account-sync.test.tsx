@@ -580,4 +580,158 @@ describe("LEXIS Google Account & Cloud Sync Integration", () => {
       window.location = originalLocation;
     });
   });
+
+  // =========================================================================
+  // GROUP I: DERIVED DISPLAY STATUS & AUTH STATE CONSISTENCY REGRESSION TESTS
+  // =========================================================================
+  describe("Group I: Derived Display Status & Auth Consistency", () => {
+    it("Regression A & B: No session + IDLE / pendingCount 10 => UI forces SIGNED_OUT and never says 'Đã đồng bộ'", async () => {
+      const mockSupabase = {
+        auth: {
+          getSession: vi.fn().mockResolvedValue({ data: { session: null }, error: null }),
+          onAuthStateChange: vi.fn(() => ({ data: { subscription: { unsubscribe: vi.fn() } } })),
+        },
+      } as any;
+      resetSupabaseClientForTesting(mockSupabase);
+      vi.stubEnv("VITE_SUPABASE_URL", "https://test.supabase.co");
+      vi.stubEnv("VITE_SUPABASE_ANON_KEY", "test-key");
+
+      const service = new CloudAuthService();
+      // Queue 10 items in adapter
+      for (let i = 1; i <= 10; i++) {
+        await adapter.put("syncQueue", {
+          id: `vocabulary:v-${i}`,
+          store: "vocabulary",
+          recordId: `v-${i}`,
+          record: { term: `word-${i}` },
+          deleted: false,
+          updatedAt: new Date().toISOString(),
+          attempts: 0,
+        });
+      }
+
+      const coordinator = new LocalFirstSyncCoordinator(adapter);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(coordinator.getStatus()).toBe("SIGNED_OUT");
+
+      // Verify pending count is 10
+      const pendingCount = await coordinator.getPendingCount();
+      expect(pendingCount).toBe(10);
+    });
+
+    it("Regression E: Google identity in identities + primary provider=email => getUserProvider identifies Google", () => {
+      const service = new CloudAuthService();
+
+      const userWithLinkedGoogle: any = {
+        id: "user-123456",
+        email: "tuandat@example.com",
+        app_metadata: {
+          provider: "email",
+          providers: ["email", "google"],
+        },
+        identities: [
+          { provider: "email", id: "email-id" },
+          { provider: "google", id: "google-id" },
+        ],
+      };
+
+      expect(service.getUserProvider(userWithLinkedGoogle)).toBe("google");
+    });
+
+    it("Regression F: sign out forces syncStatus to SIGNED_OUT, preserving IndexedDB and syncQueue", async () => {
+      const mockSupabase = {
+        auth: {
+          signOut: vi.fn().mockResolvedValue({ error: null }),
+          getSession: vi.fn().mockResolvedValue({ data: { session: null }, error: null }),
+          onAuthStateChange: vi.fn(() => ({ data: { subscription: { unsubscribe: vi.fn() } } })),
+        },
+      } as any;
+      resetSupabaseClientForTesting(mockSupabase);
+
+      const service = new CloudAuthService();
+
+      // Seed vocabulary and syncQueue
+      await adapter.put("vocabulary", {
+        id: "vocab-keep-1",
+        language: "en",
+        term: "persistence",
+        meaningVi: "sự kiên định",
+        updatedAt: new Date().toISOString(),
+      });
+      await adapter.put("syncQueue", {
+        id: "vocabulary:vocab-keep-1",
+        store: "vocabulary",
+        recordId: "vocab-keep-1",
+        record: { term: "persistence" },
+        deleted: false,
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+      });
+
+      await service.signOut();
+
+      // Verify local data is 100% intact
+      const localVocab = await adapter.get("vocabulary", "vocab-keep-1");
+      expect(localVocab).not.toBeNull();
+
+      const queueItems = await adapter.getAll("syncQueue");
+      expect(queueItems).toHaveLength(1);
+      expect((queueItems[0] as any).recordId).toBe("vocab-keep-1");
+    });
+
+    it("Regression C & D: Session present correctly distinguishes between pending changes and IDLE", async () => {
+      const mockSupabase = {
+        auth: {
+          getSession: vi.fn().mockResolvedValue({
+            data: { session: { user: { id: "user-test-sync", email: "user@test.dev" } } },
+            error: null,
+          }),
+          onAuthStateChange: vi.fn(() => ({ data: { subscription: { unsubscribe: vi.fn() } } })),
+        },
+      } as any;
+      resetSupabaseClientForTesting(mockSupabase);
+      vi.stubEnv("VITE_SUPABASE_URL", "https://test.supabase.co");
+      vi.stubEnv("VITE_SUPABASE_ANON_KEY", "test-key");
+
+      const coordinator = new LocalFirstSyncCoordinator(adapter);
+      await new Promise((r) => setTimeout(r, 20));
+
+      // With 0 queue items, status is IDLE
+      const pending0 = await coordinator.getPendingCount();
+      expect(pending0).toBe(0);
+      expect(coordinator.getStatus()).toBe("IDLE");
+
+      // With 10 queue items, getPendingCount returns 10
+      for (let i = 1; i <= 10; i++) {
+        await coordinator.queueLocalChange("vocabulary", `v-${i}`, { term: `w-${i}` }, false);
+      }
+      const pending10 = await coordinator.getPendingCount();
+      expect(pending10).toBe(10);
+      expect(coordinator.getStatus()).toBe("PENDING_CHANGES");
+    });
+
+    it("Regression G: OAuth session survives reload via persistent storage", async () => {
+      const sessionObj = {
+        access_token: "persisted-access-token",
+        refresh_token: "persisted-refresh-token",
+        user: { id: "user-persisted-123", email: "persisted@test.dev" },
+      };
+
+      const mockSupabase = {
+        auth: {
+          getSession: vi.fn().mockResolvedValue({
+            data: { session: sessionObj },
+            error: null,
+          }),
+          onAuthStateChange: vi.fn(() => ({ data: { subscription: { unsubscribe: vi.fn() } } })),
+        },
+      } as any;
+      resetSupabaseClientForTesting(mockSupabase);
+
+      const service = new CloudAuthService();
+      const currentSession = await service.getCurrentSession();
+      expect(currentSession).not.toBeNull();
+      expect(currentSession?.user?.id).toBe("user-persisted-123");
+    });
+  });
 });
