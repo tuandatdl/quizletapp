@@ -17,6 +17,7 @@ import type {
   UserSettings,
   VocabularyInput,
   VocabularyItem,
+  VocabularyCollection,
 } from "../types/api";
 import { getIndexedDbAdapter } from "../persistence/indexedDb";
 import type { PersistenceAdapter, StoredRecord } from "../persistence/types";
@@ -25,6 +26,7 @@ import { STATIC_LOCAL_USER } from "../runtime/runtime";
 import { LanguageApiClient, type VocabularyEnrichment, type VocabularyContext } from "../services/languageApi";
 import { buildGameItems, isGameType, publicGameItem, scoreGameAnswer, type GeneratedGameItem } from "../../shared/gameModes";
 import { bulkVocabularyItemSchema } from "../../shared/schemas";
+import { calculateCefrStatistics, filterVocabularyByScope, getVocabularyTopics, normalizeCefrLevel, normalizeCollectionIds, normalizeVocabularyTopics } from "../../shared/vocabularyIntelligence.js";
 import {
   classifyLocalSelection,
   createLocalId,
@@ -103,7 +105,11 @@ function suggestion(enriched?: VocabularyEnrichment) {
     example: enriched?.example ?? null,
     exampleTranslation: enriched?.exampleTranslation ?? null,
     topic: null,
-    cefr: null,
+    cefr: enriched?.cefr ?? null,
+    lexicalStatus: enriched?.lexicalStatus ?? "VALID",
+    lexicalConfidence: enriched?.lexicalConfidence,
+    lexicalReason: enriched?.lexicalReason,
+    suggestedTopics: enriched?.suggestedTopics ?? [],
     toeicLevel: null,
     hskLevel: null,
     toneData: enriched?.toneData ?? [],
@@ -167,6 +173,7 @@ export class StaticApiRouter {
     const path = url.pathname;
     const method = options.method ?? "GET";
     const body = asBody(options);
+    let match: RegExpMatchArray | null;
 
     if (path === "/api/me") return STATIC_LOCAL_USER as T;
     if (["/api/auth/login", "/api/auth/register"].includes(path)) return { user: STATIC_LOCAL_USER, token: "local-profile" } as T;
@@ -193,9 +200,13 @@ export class StaticApiRouter {
     if (path === "/api/vocabulary/from-selection" && method === "POST") return this.saveSelection(body) as Promise<T>;
     if (path === "/api/vocabulary" && method === "POST") return this.createVocabulary(body) as Promise<T>;
     if (path === "/api/vocabulary" && method === "GET") return this.listVocabulary(url.searchParams) as Promise<T>;
+    if (path === "/api/collections" && method === "GET") return this.listCollections() as Promise<T>;
+    if (path === "/api/collections" && method === "POST") return this.createCollection(body) as Promise<T>;
+    match = path.match(/^\/api\/collections\/([^/]+)$/u);
+    if (match) return this.collectionRequest(match[1]!, method, body) as Promise<T>;
     if (path === "/api/flashcards" && method === "GET") return this.listVocabulary(url.searchParams) as Promise<T>;
 
-    let match = path.match(/^\/api\/(?:vocabulary|flashcards)\/([^/]+)(?:\/(review|favorite|answer))?$/u);
+    match = path.match(/^\/api\/(?:vocabulary|flashcards)\/([^/]+)(?:\/(review|favorite|answer))?$/u);
     if (match) return this.vocabularyItemRequest(match[1]!, match[2], method, body) as Promise<T>;
 
     if (path === "/api/readings" && method === "POST") return this.createReading(body) as Promise<T>;
@@ -242,8 +253,20 @@ export class StaticApiRouter {
     const topic = params.get("topic");
     const status = params.get("status");
     if (language) items = items.filter((item) => item.language === language);
-    if (topic) items = items.filter((item) => item.topic === topic);
+    if (topic) items = items.filter((item) => getVocabularyTopics(item).some((value) => value.localeCompare(topic, undefined, { sensitivity: "accent" }) === 0));
     if (status) items = items.filter((item) => item.progress.status === status);
+    items = filterVocabularyByScope(items, {
+      cefrLevels: params.get("cefr")?.split(",").flatMap((value) => {
+        const normalized = normalizeCefrLevel(value);
+        return normalized ? [normalized] : [];
+      }),
+      topics: params.get("topics")?.split(","),
+      collectionIds: params.get("collectionIds")?.split(","),
+      statuses: params.get("statuses")?.split(",") as any,
+      learned: params.has("learned") ? params.get("learned") === "true" : undefined,
+      mastered: params.has("mastered") ? params.get("mastered") === "true" : undefined,
+      due: params.get("due") === "true",
+    });
     if (params.get("due") === "true") {
       const now = Date.now();
       items = items.filter((item) => !item.progress.nextReviewAt || Date.parse(item.progress.nextReviewAt) <= now);
@@ -253,20 +276,75 @@ export class StaticApiRouter {
     return items.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, Number.isFinite(limit) ? limit : 50);
   }
 
+  private async listCollections(): Promise<VocabularyCollection[]> {
+    return (await this.persistence.getAll<VocabularyCollection>("collections"))
+      .filter((collection) => collection.userId === STATIC_LOCAL_USER.id)
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  private async createCollection(input: Partial<VocabularyCollection>): Promise<VocabularyCollection> {
+    const name = typeof input.name === "string" ? input.name.normalize("NFKC").trim().replace(/\s+/gu, " ") : "";
+    if (!name || name.length > 60) throw new Error("Tên bộ sưu tập phải có từ 1 đến 60 ký tự.");
+    const normalizedName = name.toLocaleLowerCase();
+    if ((await this.listCollections()).some((collection) => collection.normalizedName === normalizedName)) throw new Error("Tên bộ sưu tập đã tồn tại.");
+    const now = new Date().toISOString();
+    const collection: VocabularyCollection = {
+      id: createLocalId(), userId: STATIC_LOCAL_USER.id, name, normalizedName,
+      description: typeof input.description === "string" ? input.description.trim().slice(0, 500) || null : null,
+      emoji: typeof input.emoji === "string" ? input.emoji.trim().slice(0, 16) || null : null,
+      createdAt: now, updatedAt: now,
+    };
+    await this.persistence.put("collections", collection as VocabularyCollection & StoredRecord);
+    void this.syncCoordinator.queueLocalChange("collections", collection.id, collection as unknown as StoredRecord, false);
+    return collection;
+  }
+
+  private async collectionRequest(id: string, method: string, input: Partial<VocabularyCollection>): Promise<VocabularyCollection | undefined> {
+    const collection = await this.persistence.get<VocabularyCollection>("collections", id);
+    if (!collection || collection.userId !== STATIC_LOCAL_USER.id) throw new Error("Không tìm thấy bộ sưu tập.");
+    if (method === "DELETE") {
+      const vocabulary = await this.persistence.getAll<VocabularyItem>("vocabulary");
+      for (const item of vocabulary) {
+        const collectionIds = normalizeCollectionIds(item.collectionIds).filter((collectionId) => collectionId !== id);
+        if (collectionIds.length === normalizeCollectionIds(item.collectionIds).length) continue;
+        const updated = { ...item, collectionIds, updatedAt: new Date().toISOString() };
+        await this.persistence.put("vocabulary", asVocabularyRecord(updated));
+        await this.syncCoordinator.queueLocalChange("vocabulary", updated.id, updated as unknown as StoredRecord, false);
+      }
+      await this.persistence.delete("collections", id);
+      await this.syncCoordinator.queueLocalChange("collections", id, undefined, true);
+      return undefined;
+    }
+    if (method === "PATCH") {
+      const name = typeof input.name === "string" ? input.name.normalize("NFKC").trim().replace(/\s+/gu, " ") : collection.name;
+      const normalizedName = name.toLocaleLowerCase();
+      if (!name || name.length > 60) throw new Error("Tên bộ sưu tập không hợp lệ.");
+      if ((await this.listCollections()).some((other) => other.id !== id && other.normalizedName === normalizedName)) throw new Error("Tên bộ sưu tập đã tồn tại.");
+      const updated: VocabularyCollection = { ...collection, ...input, id, userId: collection.userId, name, normalizedName, updatedAt: new Date().toISOString() };
+      await this.persistence.put("collections", updated as VocabularyCollection & StoredRecord);
+      await this.syncCoordinator.queueLocalChange("collections", id, updated as unknown as StoredRecord, false);
+      return updated;
+    }
+    return collection;
+  }
+
   private async createVocabulary(input: VocabularyInput): Promise<CreateVocabularyResult> {
     const term = input.term.trim();
     const normalizedTerm = normalizeLocalTerm(term, input.language);
     const existing = (await this.persistence.getAll<VocabularyItem>("vocabulary")).find((item) => item.language === input.language && item.normalizedTerm === normalizedTerm);
     if (existing) return { item: existing, duplicate: true };
     if (!input.meaningVi?.trim()) throw new Error("Nghĩa tiếng Việt là bắt buộc.");
+    const collectionIds = normalizeCollectionIds(input.collectionIds);
+    const availableCollectionIds = new Set((await this.listCollections()).map((collection) => collection.id));
+    if (collectionIds.some((id) => !availableCollectionIds.has(id))) throw new Error("Bộ sưu tập được chọn không tồn tại.");
     const now = new Date().toISOString();
     const item: VocabularyItem = {
       id: createLocalId(), userId: STATIC_LOCAL_USER.id, language: input.language, term, normalizedTerm,
       pronunciation: input.pronunciation?.trim() || null, meaningVi: input.meaningVi.trim(), partOfSpeech: input.partOfSpeech?.trim() || null,
       example: input.example?.trim() || null, exampleTranslation: input.exampleTranslation?.trim() || null,
-      topic: input.topic?.trim() || null, level: input.level?.trim() || null, note: input.note?.trim() || null,
+      topic: input.topic?.trim() || null, topics: normalizeVocabularyTopics(input.topics ?? [input.topic]), collectionIds, level: input.language === "en" ? normalizeCefrLevel((input.metadata as any)?.cefr) ?? normalizeCefrLevel(input.level) : input.level?.trim() || null, note: input.note?.trim() || null,
       source: input.source ?? "MANUAL", sourceReadingId: input.sourceReadingId ?? null, audioUrl: input.audioUrl ?? null,
-      audioAvailable: Boolean(input.audioUrl), favorite: false, metadata: input.metadata ?? {}, createdAt: now, updatedAt: now,
+      audioAvailable: Boolean(input.audioUrl), favorite: false, metadata: input.language === "en" && (normalizeCefrLevel((input.metadata as any)?.cefr) ?? normalizeCefrLevel(input.level)) ? { ...(input.metadata ?? {}), cefr: normalizeCefrLevel((input.metadata as any)?.cefr) ?? normalizeCefrLevel(input.level)! } : (input.metadata ?? {}), createdAt: now, updatedAt: now,
       progress: { status: "NEW", ease: 2.5, intervalDays: 0, repetitions: 0, nextReviewAt: null, lastReviewedAt: null, correctCount: 0, incorrectCount: 0 },
     };
     await this.persistence.put("vocabulary", asVocabularyRecord(item));
@@ -337,7 +415,7 @@ export class StaticApiRouter {
 
         return {
           term, normalizedTerm, duplicate,
-          status: duplicate ? "EXISTS" : enriched?.meaningVi ? "READY" : "NEEDS_ENRICHMENT",
+          status: duplicate ? "EXISTS" : enriched?.lexicalStatus === "INVALID" ? "INVALID" : enriched?.meaningVi ? "READY" : "NEEDS_ENRICHMENT",
           suggestion: itemSuggestion,
           ...(enrichmentError && !duplicate ? { error: { code: "EXTERNAL_SERVICE_ERROR" as const, message: enrichmentError.message } } : {}),
         };
@@ -357,6 +435,12 @@ export class StaticApiRouter {
         continue;
       }
       try {
+        const collectionIds = normalizeCollectionIds(input.collectionIds);
+        const availableCollectionIds = new Set((await this.listCollections()).map((collection) => collection.id));
+        if (collectionIds.some((id) => !availableCollectionIds.has(id))) {
+          result.failed.push({ index, term: input.term, code: "VALIDATION_ERROR", message: "Bộ sưu tập được chọn không tồn tại." });
+          continue;
+        }
         const metadata: Record<string, unknown> = {};
         for (const key of ["ipa", "pinyin", "simplified", "traditional", "cefr", "toeicLevel", "hskLevel", "toneData", "synonyms", "senses"] as const) {
           if (input[key] !== undefined) metadata[key] = input[key];
@@ -396,8 +480,12 @@ export class StaticApiRouter {
             example: input.example ?? existingItem.example,
             exampleTranslation: input.exampleTranslation ?? existingItem.exampleTranslation,
             topic: input.topic ?? existingItem.topic,
-            level: input.cefr ?? (input.hskLevel ? `HSK${input.hskLevel}` : existingItem.level),
-            metadata: { ...existingItem.metadata, ...metadata },
+            topics: input.topics ? normalizeVocabularyTopics(input.topics) : getVocabularyTopics(existingItem),
+            collectionIds: input.collectionIds ? collectionIds : normalizeCollectionIds(existingItem.collectionIds),
+            level: language === "en" ? normalizeCefrLevel(input.cefr) ?? existingItem.level : (input.hskLevel ? `HSK${input.hskLevel}` : existingItem.level),
+            metadata: language === "en" && normalizeCefrLevel(input.cefr)
+              ? { ...existingItem.metadata, ...metadata, cefr: normalizeCefrLevel(input.cefr)! }
+              : { ...existingItem.metadata, ...metadata },
             updatedAt: new Date().toISOString(),
           };
           await this.persistence.put("vocabulary", asVocabularyRecord(updated));
@@ -436,7 +524,19 @@ export class StaticApiRouter {
       return updated;
     }
     if (method === "PATCH") {
-      const updated = { ...item, ...body, id: item.id, language: item.language, term: item.term, normalizedTerm: item.normalizedTerm, updatedAt: new Date().toISOString() };
+      const proposedCollectionIds = body.collectionIds === undefined ? normalizeCollectionIds(item.collectionIds) : normalizeCollectionIds(body.collectionIds);
+      const availableCollectionIds = new Set((await this.listCollections()).map((collection) => collection.id));
+      if (proposedCollectionIds.some((collectionId) => !availableCollectionIds.has(collectionId))) throw new Error("Bộ sưu tập được chọn không tồn tại.");
+      const proposedMetadata = { ...item.metadata, ...(body.metadata && typeof body.metadata === "object" ? body.metadata : {}) };
+      const cefr = item.language === "en" ? normalizeCefrLevel(proposedMetadata.cefr) ?? normalizeCefrLevel(body.level) ?? normalizeCefrLevel(item.level) : null;
+      const updated = {
+        ...item, ...body, id: item.id, language: item.language, term: item.term, normalizedTerm: item.normalizedTerm,
+        topics: body.topics === undefined ? getVocabularyTopics(item) : normalizeVocabularyTopics(body.topics),
+        collectionIds: proposedCollectionIds,
+        level: cefr ?? (body.level ?? item.level),
+        metadata: item.language === "en" && cefr ? { ...proposedMetadata, cefr } : proposedMetadata,
+        updatedAt: new Date().toISOString(),
+      };
       await this.persistence.put("vocabulary", asVocabularyRecord(updated));
       void this.syncCoordinator.queueLocalChange("vocabulary", updated.id, updated as unknown as StoredRecord, false);
       return updated;
@@ -589,6 +689,7 @@ export class StaticApiRouter {
     return {
       languages: { en: buildLanguage("en"), zh: { ...buildLanguage("zh"), toneAccuracy: 0 } },
       global: { streak: await this.streak(), todayGoal: settings.dailyGoal, todayCompleted: Math.min(settings.dailyGoal, Math.round(today.studySeconds / 60)), totalStudyTimeSeconds: activities.reduce((sum, item) => sum + item.studySeconds, 0) },
+      cefr: calculateCefrStatistics(vocab),
     };
   }
 

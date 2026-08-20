@@ -23,7 +23,10 @@ const DEFAULT_SYNC_META: SyncMeta = {
   lastSyncAt: null,
   lastSyncStatus: "SIGNED_OUT",
   lastSyncError: null,
+  syncDataSchemaVersion: 1,
 };
+
+export const CURRENT_SYNC_DATA_SCHEMA_VERSION = 2;
 
 function syncKey(store: SyncableStore, recordId: string): string {
   return `${store}:${recordId}`;
@@ -428,12 +431,13 @@ export class LocalFirstSyncCoordinator implements SyncCoordinator {
       // Old clients persisted an ISO updated_at cursor. Translate it before
       // querying change_seq so we neither send invalid bigint input nor replay
       // all historic rows as false concurrent changes.
+      const needsSyncSchemaUpgrade = (meta.syncDataSchemaVersion ?? 1) < CURRENT_SYNC_DATA_SCHEMA_VERSION;
       let effectiveCursor = meta.lastCursor ?? undefined;
       if (effectiveCursor !== undefined && !isChangeSeqCursor(effectiveCursor)) {
         effectiveCursor = await this.upgradeLegacyCursor(adapter, effectiveCursor);
       }
 
-      const cursor = force ? undefined : effectiveCursor;
+      const cursor = force || needsSyncSchemaUpgrade ? undefined : effectiveCursor;
       const pullResult = await this.pullAll(adapter, cursor);
 
       if (userId && !meta.localDatasetOwnerUserId) {
@@ -494,6 +498,7 @@ export class LocalFirstSyncCoordinator implements SyncCoordinator {
         lastSyncAt: now,
         lastSyncStatus: updatedStatus,
         lastSyncError: null,
+        ...(needsSyncSchemaUpgrade ? { syncDataSchemaVersion: CURRENT_SYNC_DATA_SCHEMA_VERSION } : {}),
       });
 
       this.setStatus(updatedStatus);

@@ -12,7 +12,7 @@ import {
   Check,
   RotateCcw,
 } from "lucide-react";
-import { vocabularyApi } from "../../api/vocabulary.api";
+import { collectionApi, vocabularyApi } from "../../api/vocabulary.api";
 import { useLanguage } from "../../context/LanguageContext";
 import { useToast } from "../../context/ToastContext";
 import { Card } from "../../components/ui/Card";
@@ -24,9 +24,10 @@ import { AudioButton } from "../../components/ui/AudioButton";
 import { LanguageSelector } from "../../components/ui/LanguageSelector";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { CardSkeleton } from "../../components/ui/Skeleton";
-import type { Language, VocabularyItem, VocabularyStatus } from "../../types/api";
+import type { Language, VocabularyCollection, VocabularyItem } from "../../types/api";
 import { APP_ROUTES } from "../../runtime/routes";
 import { isLikelyIpa } from "../../static/localDomain";
+import { getVocabularyCefr, getVocabularyTopics } from "../../../shared/vocabularyIntelligence";
 
 export const VocabularyListPage: React.FC = () => {
   const navigate = useNavigate();
@@ -39,8 +40,15 @@ export const VocabularyListPage: React.FC = () => {
   const [selectedLanguage, setSelectedLanguage] = useState<string>(currentAppLanguage);
   const [selectedStatus, setSelectedStatus] = useState<string>("ALL");
   const [selectedTopic, setSelectedTopic] = useState<string>("ALL");
+  const [selectedCefr, setSelectedCefr] = useState<string>("ALL");
+  const [selectedCollection, setSelectedCollection] = useState<string>("ALL");
   const [onlyFavorites, setOnlyFavorites] = useState<boolean>(false);
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
+  const [collections, setCollections] = useState<VocabularyCollection[]>([]);
+  const [newCollectionName, setNewCollectionName] = useState("");
+  const [collectionDrafts, setCollectionDrafts] = useState<Record<string, string>>({});
+  const [isSavingCollection, setIsSavingCollection] = useState(false);
+  const [collectionToDelete, setCollectionToDelete] = useState<VocabularyCollection | null>(null);
 
   // Delete modal state
   const [itemToDelete, setItemToDelete] = useState<VocabularyItem | null>(null);
@@ -55,6 +63,8 @@ export const VocabularyListPage: React.FC = () => {
     example: "",
     exampleTranslation: "",
     topic: "",
+    topics: "",
+    collectionIds: [] as string[],
     level: "",
     note: "",
   });
@@ -75,6 +85,16 @@ export const VocabularyListPage: React.FC = () => {
     }
   };
 
+  const fetchCollections = async () => {
+    try {
+      const data = await collectionApi.list();
+      setCollections(data);
+      setCollectionDrafts(Object.fromEntries(data.map((collection) => [collection.id, collection.name])));
+    } catch {
+      setCollections([]);
+    }
+  };
+
   useEffect(() => {
     setSelectedLanguage(currentAppLanguage);
   }, [currentAppLanguage]);
@@ -83,11 +103,15 @@ export const VocabularyListPage: React.FC = () => {
     fetchItems();
   }, [selectedLanguage]);
 
+  useEffect(() => {
+    fetchCollections();
+  }, []);
+
   // Unique topics from current items
   const topics = useMemo(() => {
     const set = new Set<string>();
     items.forEach((item) => {
-      if (item.topic) set.add(item.topic);
+      getVocabularyTopics(item).forEach((topic) => set.add(topic));
     });
     return Array.from(set);
   }, [items]);
@@ -97,7 +121,9 @@ export const VocabularyListPage: React.FC = () => {
     return items.filter((item) => {
       if (onlyFavorites && !item.favorite) return false;
       if (selectedStatus !== "ALL" && item.progress.status !== selectedStatus) return false;
-      if (selectedTopic !== "ALL" && item.topic !== selectedTopic) return false;
+      if (selectedTopic !== "ALL" && !getVocabularyTopics(item).some((topic) => topic.localeCompare(selectedTopic, undefined, { sensitivity: "accent" }) === 0)) return false;
+      if (selectedCefr !== "ALL" && getVocabularyCefr(item) !== selectedCefr) return false;
+      if (selectedCollection !== "ALL" && !item.collectionIds?.includes(selectedCollection)) return false;
       if (searchTerm.trim()) {
         const query = searchTerm.toLowerCase();
         const matchTerm = item.term.toLowerCase().includes(query);
@@ -107,7 +133,55 @@ export const VocabularyListPage: React.FC = () => {
       }
       return true;
     });
-  }, [items, onlyFavorites, selectedStatus, selectedTopic, searchTerm]);
+  }, [items, onlyFavorites, selectedStatus, selectedTopic, selectedCefr, selectedCollection, searchTerm]);
+
+  const handleCreateCollection = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const name = newCollectionName.trim();
+    if (!name) return;
+    setIsSavingCollection(true);
+    try {
+      await collectionApi.create(name);
+      setNewCollectionName("");
+      await fetchCollections();
+      success("Đã tạo bộ sưu tập.");
+    } catch {
+      error("Không thể tạo bộ sưu tập.");
+    } finally {
+      setIsSavingCollection(false);
+    }
+  };
+
+  const handleRenameCollection = async (collection: VocabularyCollection) => {
+    const name = collectionDrafts[collection.id]?.trim();
+    if (!name || name === collection.name) return;
+    setIsSavingCollection(true);
+    try {
+      await collectionApi.rename(collection.id, name);
+      await fetchCollections();
+      success("Đã đổi tên bộ sưu tập.");
+    } catch {
+      error("Không thể đổi tên bộ sưu tập.");
+    } finally {
+      setIsSavingCollection(false);
+    }
+  };
+
+  const handleDeleteCollection = async () => {
+    if (!collectionToDelete) return;
+    setIsSavingCollection(true);
+    try {
+      await collectionApi.delete(collectionToDelete.id);
+      if (selectedCollection === collectionToDelete.id) setSelectedCollection("ALL");
+      setCollectionToDelete(null);
+      await Promise.all([fetchCollections(), fetchItems()]);
+      success("Đã xóa bộ sưu tập.");
+    } catch {
+      error("Không thể xóa bộ sưu tập.");
+    } finally {
+      setIsSavingCollection(false);
+    }
+  };
 
   const handleToggleFavorite = async (item: VocabularyItem, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -145,6 +219,8 @@ export const VocabularyListPage: React.FC = () => {
       example: item.example || "",
       exampleTranslation: item.exampleTranslation || "",
       topic: item.topic || "",
+      topics: getVocabularyTopics(item).join(", "),
+      collectionIds: item.collectionIds ?? [],
       level: item.level || "",
       note: item.note || "",
     });
@@ -155,7 +231,12 @@ export const VocabularyListPage: React.FC = () => {
     if (!itemToEdit) return;
     setIsSavingEdit(true);
     try {
-      const updated = await vocabularyApi.update(itemToEdit.id, editForm);
+      const topics = editForm.topics.split(",").map((topic) => topic.trim()).filter(Boolean);
+      const updated = await vocabularyApi.update(itemToEdit.id, {
+        ...editForm,
+        topic: topics[0] ?? null,
+        topics,
+      });
       setItems((prev) => prev.map((i) => (i.id === itemToEdit.id ? updated : i)));
       success("Đã cập nhật từ vựng.");
       setItemToEdit(null);
@@ -185,6 +266,46 @@ export const VocabularyListPage: React.FC = () => {
           </Link>
         </div>
       </div>
+
+      <Card padding="sm" className="flex-col gap-3">
+        <div>
+          <h2 style={{ fontSize: "var(--text-base)", fontWeight: 700 }}>Bộ sưu tập</h2>
+          <p style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)" }}>
+            Tạo nhóm học riêng và gán một từ vào nhiều bộ sưu tập.
+          </p>
+        </div>
+        <form onSubmit={handleCreateCollection} className="flex-row gap-2" style={{ flexWrap: "wrap" }}>
+          <input
+            aria-label="Tên bộ sưu tập mới"
+            value={newCollectionName}
+            onChange={(e) => setNewCollectionName(e.target.value)}
+            maxLength={60}
+            placeholder="Tên bộ sưu tập mới"
+            style={{ flex: "1 1 220px", padding: "8px 12px", borderRadius: "var(--radius-md)", border: "1px solid var(--border-default)", backgroundColor: "var(--bg-surface)" }}
+          />
+          <Button type="submit" size="sm" isLoading={isSavingCollection}>Tạo bộ sưu tập</Button>
+        </form>
+        {collections.length > 0 && (
+          <div className="flex-col gap-2">
+            {collections.map((collection) => (
+              <div key={collection.id} className="flex-row items-center gap-2" style={{ flexWrap: "wrap" }}>
+                <input
+                  aria-label={`Tên bộ sưu tập ${collection.name}`}
+                  value={collectionDrafts[collection.id] ?? collection.name}
+                  onChange={(e) => setCollectionDrafts((current) => ({ ...current, [collection.id]: e.target.value }))}
+                  maxLength={60}
+                  style={{ flex: "1 1 180px", padding: "7px 10px", borderRadius: "var(--radius-md)", border: "1px solid var(--border-default)", backgroundColor: "var(--bg-surface)" }}
+                />
+                <Button type="button" variant="secondary" size="sm" onClick={() => setSelectedCollection(selectedCollection === collection.id ? "ALL" : collection.id)}>
+                  {selectedCollection === collection.id ? "Bỏ lọc" : "Lọc"} ({items.filter((item) => item.collectionIds?.includes(collection.id)).length})
+                </Button>
+                <Button type="button" variant="secondary" size="sm" onClick={() => handleRenameCollection(collection)}>Đổi tên</Button>
+                <Button type="button" variant="danger" size="sm" onClick={() => setCollectionToDelete(collection)}>Xóa</Button>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
 
       {/* Filter & Search Toolbar */}
       <Card padding="sm" className="flex-col gap-3">
@@ -245,6 +366,28 @@ export const VocabularyListPage: React.FC = () => {
               <option value="LEARNING">Đang học (LEARNING)</option>
               <option value="REVIEW">Ôn tập (REVIEW)</option>
               <option value="MASTERED">Đã thuộc (MASTERED)</option>
+            </select>
+
+            {collections.length > 0 && (
+              <select
+                aria-label="Lọc theo bộ sưu tập"
+                value={selectedCollection}
+                onChange={(e) => setSelectedCollection(e.target.value)}
+                style={{ padding: "8px 12px", borderRadius: "var(--radius-md)", border: "1px solid var(--border-default)", backgroundColor: "var(--bg-surface)", fontSize: "var(--text-xs)", fontWeight: 600 }}
+              >
+                <option value="ALL">Tất cả bộ sưu tập</option>
+                {collections.map((collection) => <option key={collection.id} value={collection.id}>{collection.name}</option>)}
+              </select>
+            )}
+
+            <select
+              value={selectedCefr}
+              onChange={(e) => setSelectedCefr(e.target.value)}
+              style={{ padding: "8px 12px", borderRadius: "var(--radius-md)", border: "1px solid var(--border-default)", backgroundColor: "var(--bg-surface)", fontSize: "var(--text-xs)", fontWeight: 600 }}
+              aria-label="Lọc theo trình độ CEFR"
+            >
+              <option value="ALL">Tất cả CEFR</option>
+              {(["A1", "A2", "B1", "B2", "C1", "C2"] as const).map((level) => <option key={level} value={level}>{level}</option>)}
             </select>
 
             {/* Topic filter */}
@@ -490,11 +633,9 @@ export const VocabularyListPage: React.FC = () => {
                         {item.partOfSpeech}
                       </span>
                     )}
-                    {item.topic && (
-                      <Badge variant="default" size="sm">
-                        {item.topic}
-                      </Badge>
-                    )}
+                    {getVocabularyTopics(item).map((topic) => (
+                      <Badge key={topic} variant="default" size="sm">{topic}</Badge>
+                    ))}
                   </div>
 
                   <div className="flex-row items-center gap-1">
@@ -608,6 +749,23 @@ export const VocabularyListPage: React.FC = () => {
         </p>
       </Modal>
 
+      <Modal
+        isOpen={Boolean(collectionToDelete)}
+        onClose={() => setCollectionToDelete(null)}
+        title="Xóa bộ sưu tập"
+        size="sm"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setCollectionToDelete(null)}>Hủy</Button>
+            <Button variant="danger" isLoading={isSavingCollection} onClick={handleDeleteCollection}>Xóa</Button>
+          </>
+        }
+      >
+        <p style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)" }}>
+          Xóa <strong>{collectionToDelete?.name}</strong>? Từ vựng sẽ được giữ lại và chỉ bỏ liên kết bộ sưu tập.
+        </p>
+      </Modal>
+
       {/* Edit Vocabulary Modal */}
       <Modal
         isOpen={Boolean(itemToEdit)}
@@ -644,6 +802,42 @@ export const VocabularyListPage: React.FC = () => {
               }}
             />
           </div>
+
+          <div>
+            <label style={{ display: "block", fontSize: "var(--text-xs)", fontWeight: 700, marginBottom: "4px" }}>
+              Chủ đề (phân tách bằng dấu phẩy)
+            </label>
+            <input
+              type="text"
+              value={editForm.topics}
+              onChange={(e) => setEditForm({ ...editForm, topics: e.target.value })}
+              placeholder="Giao tiếp, Công việc"
+              style={{ width: "100%", padding: "8px 12px", borderRadius: "var(--radius-md)", border: "1px solid var(--border-strong)", backgroundColor: "var(--bg-surface)" }}
+            />
+          </div>
+
+          {collections.length > 0 && (
+            <fieldset style={{ border: 0, padding: 0, margin: 0 }}>
+              <legend style={{ fontSize: "var(--text-xs)", fontWeight: 700, marginBottom: "8px" }}>Bộ sưu tập</legend>
+              <div className="flex-row gap-3" style={{ flexWrap: "wrap" }}>
+                {collections.map((collection) => (
+                  <label key={collection.id} className="flex-row items-center gap-1" style={{ fontSize: "var(--text-sm)" }}>
+                    <input
+                      type="checkbox"
+                      checked={editForm.collectionIds.includes(collection.id)}
+                      onChange={(e) => setEditForm({
+                        ...editForm,
+                        collectionIds: e.target.checked
+                          ? [...editForm.collectionIds, collection.id]
+                          : editForm.collectionIds.filter((id) => id !== collection.id),
+                      })}
+                    />
+                    {collection.name}
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+          )}
 
           <div className="responsive-two-col" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
             <div>

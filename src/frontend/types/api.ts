@@ -1,12 +1,17 @@
 import type {
   Language as SharedLanguage,
   ReviewAction as SharedReviewAction,
-  VocabularyStatus as SharedVocabularyStatus
+  VocabularyStatus as SharedVocabularyStatus,
+  CEFRLevel as SharedCEFRLevel,
 } from "../../shared/schemas.js";
+import type { LexicalStatus, VocabularyCollection as SharedVocabularyCollection } from "../../shared/vocabularyIntelligence.js";
 
 export type Language = SharedLanguage;
 export type TargetLanguage = "vi";
 export type VocabularyStatus = SharedVocabularyStatus;
+export type CEFRLevel = SharedCEFRLevel;
+export type { LexicalStatus };
+export type VocabularyCollection = SharedVocabularyCollection;
 export type ReviewAction = SharedReviewAction;
 export type SelectionType = "word" | "phrase" | "sentence";
 export type ProviderAvailability = "AVAILABLE" | "NOT_CONFIGURED";
@@ -100,6 +105,8 @@ export interface VocabularyItem {
   example: string | null;
   exampleTranslation: string | null;
   topic: string | null;
+  topics?: string[];
+  collectionIds?: string[];
   level: string | null;
   note: string | null;
   source: "MANUAL" | "READING_SELECTION" | "IMPORT";
@@ -131,6 +138,8 @@ export interface VocabularyInput {
   example?: string | null;
   exampleTranslation?: string | null;
   topic?: string | null;
+  topics?: string[];
+  collectionIds?: string[];
   level?: string | null;
   note?: string | null;
   source?: "MANUAL" | "READING_SELECTION" | "IMPORT";
@@ -171,6 +180,10 @@ export interface BulkVocabularySuggestion {
   exampleTranslation: string | null;
   topic: string | null;
   cefr: string | null;
+  lexicalStatus?: LexicalStatus;
+  lexicalConfidence?: number;
+  lexicalReason?: string;
+  suggestedTopics?: string[];
   toeicLevel: string | null;
   hskLevel: number | null;
   toneData: Array<0 | 1 | 2 | 3 | 4>;
@@ -183,7 +196,7 @@ export interface BulkVocabularyPreview {
     term: string;
     normalizedTerm: string;
     duplicate: boolean;
-    status: "READY" | "NEEDS_ENRICHMENT" | "EXISTS";
+    status: "READY" | "NEEDS_ENRICHMENT" | "INVALID" | "EXISTS";
     suggestion: BulkVocabularySuggestion;
     error?: { code: "SERVICE_NOT_CONFIGURED" | "EXTERNAL_SERVICE_ERROR"; message: string };
   }>;
@@ -203,6 +216,8 @@ export interface BulkVocabularyInputItem {
   exampleTranslation?: string | null;
   topic?: string | null;
   cefr?: string;
+  topics?: string[];
+  collectionIds?: string[];
   toeicLevel?: string;
   simplified?: string;
   traditional?: string;
@@ -440,6 +455,7 @@ export interface Dashboard {
     todayCompleted: number;
     totalStudyTimeSeconds: number;
   };
+  cefr?: import("../../shared/vocabularyIntelligence.js").CefrStatistics;
 }
 
 export interface TodayPlan {

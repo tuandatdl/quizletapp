@@ -135,8 +135,8 @@ describe("English IPA Vocabulary Enrichment & Cache Safety (Tests A - H)", () =>
   describe("Test C: Cache safety against corrupted/mismatched terms", () => {
     it("discards cache record where normalizedTerm is 'customer' but value.term is 'go'", () => {
       const corruptRecord = {
-        id: "vocabulary-enrichment-v3:en:customer",
-        version: "vocabulary-enrichment-v3",
+        id: "vocabulary-enrichment-v5:en:customer",
+        version: "vocabulary-enrichment-v5",
         language: "en" as const,
         normalizedTerm: "customer",
         value: {
@@ -153,8 +153,8 @@ describe("English IPA Vocabulary Enrichment & Cache Safety (Tests A - H)", () =>
 
     it("discards cache record with anomalous /ɡoʊ/ for a word other than 'go'", () => {
       const badIpaRecord = {
-        id: "vocabulary-enrichment-v3:en:customer",
-        version: "vocabulary-enrichment-v3",
+        id: "vocabulary-enrichment-v5:en:customer",
+        version: "vocabulary-enrichment-v5",
         language: "en" as const,
         normalizedTerm: "customer",
         value: {
@@ -171,8 +171,8 @@ describe("English IPA Vocabulary Enrichment & Cache Safety (Tests A - H)", () =>
 
     it("accepts valid cache record matching term and language", () => {
       const validRecord = {
-        id: "vocabulary-enrichment-v3:en:customer",
-        version: "vocabulary-enrichment-v3",
+        id: "vocabulary-enrichment-v5:en:customer",
+        version: "vocabulary-enrichment-v5",
         language: "en" as const,
         normalizedTerm: "customer",
         value: {
@@ -181,6 +181,8 @@ describe("English IPA Vocabulary Enrichment & Cache Safety (Tests A - H)", () =>
           meaningVi: "khách hàng",
           partOfSpeech: "noun",
           ipa: "/ˈkʌs.tə.mɚ/",
+          lexicalStatus: "VALID",
+          cefr: "A2",
           pronunciation: "/ˈkʌs.tə.mɚ/",
         },
         updatedAt: new Date().toISOString(),
@@ -189,9 +191,9 @@ describe("English IPA Vocabulary Enrichment & Cache Safety (Tests A - H)", () =>
     });
   });
 
-  describe("Test D: Invalidate old vocabulary-enrichment-v2 cache after v3 bump", () => {
-    it("ENRICHMENT_VERSION is vocabulary-enrichment-v3", () => {
-      expect(ENRICHMENT_VERSION).toBe("vocabulary-enrichment-v3");
+  describe("Test D: Invalidate old enrichment cache after v5 bump", () => {
+    it("ENRICHMENT_VERSION is vocabulary-enrichment-v5", () => {
+      expect(ENRICHMENT_VERSION).toBe("vocabulary-enrichment-v5");
     });
 
     it("ignores old v2 cache record", () => {
@@ -229,6 +231,8 @@ describe("English IPA Vocabulary Enrichment & Cache Safety (Tests A - H)", () =>
           partOfSpeech: "noun",
           ipa: "/ˈkʌs.tə.mɚ/",
           pronunciation: "/ˈkʌs.tə.mɚ/",
+          lexicalStatus: "VALID",
+          cefr: "A2",
         },
         updatedAt: new Date().toISOString(),
       });
@@ -245,6 +249,8 @@ describe("English IPA Vocabulary Enrichment & Cache Safety (Tests A - H)", () =>
                   partOfSpeech: "noun",
                   ipa: "/ˈkʌs.tə.mɚ/",
                   pronunciation: "/ˈkʌs.tə.mɚ/",
+                  lexicalStatus: "VALID",
+                  cefr: "A2",
                 },
               ],
             },

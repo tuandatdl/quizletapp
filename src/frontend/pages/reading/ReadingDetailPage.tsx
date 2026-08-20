@@ -1288,7 +1288,7 @@ export const ReadingDetailPage: React.FC = () => {
                       </button>
                       {showAllSenses && (
                         <div style={{ marginTop: "6px", display: "flex", flexDirection: "column", gap: "4px" }}>
-                          <button type="button" onClick={() => { setSelectedSenseIndex(-1); setManualMeaningVi(contextualEnrichment.meaningVi); }}
+                          <button type="button" onClick={() => { setSelectedSenseIndex(-1); setManualMeaningVi(contextualEnrichment.meaningVi ?? ""); }}
                             style={{ textAlign: "left", padding: "5px 8px", borderRadius: "var(--radius-md)", backgroundColor: selectedSenseIndex === -1 ? (isZh ? "var(--accent-zh-subtle)" : "var(--accent-en-subtle)") : "var(--bg-muted)", border: selectedSenseIndex === -1 ? `1px solid ${isZh ? "var(--accent-zh-border)" : "var(--accent-en-border)"}` : "1px solid transparent", fontSize: "var(--text-xs)" }}>
                             <span style={{ fontWeight: 700 }}>{contextualEnrichment.meaningVi}</span>
                             {contextualEnrichment.partOfSpeech && <span style={{ color: "var(--text-tertiary)", marginLeft: "4px" }}>({contextualEnrichment.partOfSpeech})</span>}

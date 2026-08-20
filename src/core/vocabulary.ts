@@ -2,11 +2,12 @@ import { randomUUID } from "node:crypto";
 import type { Database, SqlValue } from "../db/database.js";
 import { errors } from "../shared/errors.js";
 import type { Language, ReviewAction } from "../shared/schemas.js";
+import { getVocabularyTopics, normalizeCefrLevel, normalizeCollectionIds, normalizeVocabularyTopics } from "../shared/vocabularyIntelligence.js";
 import { reviewSrs } from "./srs.js";
 
 export interface VocabularyInput {
   language: Language; term: string; pronunciation?: string | null; meaningVi: string; partOfSpeech?: string | null;
-  example?: string | null; exampleTranslation?: string | null; topic?: string | null; level?: string | null; note?: string | null;
+  example?: string | null; exampleTranslation?: string | null; topic?: string | null; topics?: string[]; collectionIds?: string[]; level?: string | null; note?: string | null;
   source: "MANUAL" | "READING_SELECTION" | "IMPORT"; sourceReadingId?: string | null; audioUrl?: string | null; metadata: Record<string, unknown>;
 }
 
@@ -21,13 +22,26 @@ export function normalizeTerm(term: string, language: Language): string {
   return language === "en" ? term.normalize("NFKC").trim().toLocaleLowerCase("en") : term.normalize("NFKC").replace(/\s+/g, "").trim();
 }
 
+function normalizedVocabularyMetadata(input: VocabularyInput): Record<string, unknown> {
+  const metadata = { ...input.metadata };
+  const topics = normalizeVocabularyTopics(input.topics ?? [input.topic]);
+  const collectionIds = normalizeCollectionIds(input.collectionIds);
+  if (input.topics !== undefined) metadata.topics = topics;
+  if (input.collectionIds !== undefined) metadata.collectionIds = collectionIds;
+  const cefr = input.language === "en" ? normalizeCefrLevel(metadata.cefr) ?? normalizeCefrLevel(input.level) : null;
+  if (cefr) metadata.cefr = cefr;
+  return metadata;
+}
+
 const selectVocab = `SELECT v.*,p.status,p.ease,p.interval_days,p.repetitions,p.next_review_at,p.last_reviewed_at,p.correct_count,p.incorrect_count FROM vocabulary_items v JOIN vocabulary_progress p ON p.vocabulary_id=v.id`;
 function mapVocabulary(row: VocabRow) {
+  const metadata = JSON.parse(row.metadata_json) as Record<string, unknown>;
   return {
     id: row.id, userId: row.user_id, language: row.language, term: row.term, normalizedTerm: row.normalized_term, pronunciation: row.pronunciation,
     meaningVi: row.meaning_vi, partOfSpeech: row.part_of_speech, example: row.example, exampleTranslation: row.example_translation, topic: row.topic,
-    level: row.level, note: row.note, source: row.source, sourceReadingId: row.source_reading_id, audioUrl: row.audio_url, audioAvailable: Boolean(row.audio_url), favorite: Boolean(row.favorite),
-    metadata: JSON.parse(row.metadata_json) as Record<string, unknown>, createdAt: row.created_at, updatedAt: row.updated_at,
+    topics: getVocabularyTopics({ language: row.language, topic: row.topic, topics: metadata.topics }), collectionIds: normalizeCollectionIds(metadata.collectionIds),
+    level: row.language === "en" ? normalizeCefrLevel(metadata.cefr) ?? normalizeCefrLevel(row.level) : row.level, note: row.note, source: row.source, sourceReadingId: row.source_reading_id, audioUrl: row.audio_url, audioAvailable: Boolean(row.audio_url), favorite: Boolean(row.favorite),
+    metadata, createdAt: row.created_at, updatedAt: row.updated_at,
     progress: { status: row.status, ease: row.ease, intervalDays: row.interval_days, repetitions: row.repetitions, nextReviewAt: row.next_review_at, lastReviewedAt: row.last_reviewed_at, correctCount: row.correct_count, incorrectCount: row.incorrect_count }
   };
 }
@@ -44,10 +58,11 @@ export class VocabularyService {
     const normalized = normalizeTerm(input.term, input.language);
     const existing = this.findByNormalized(userId, input.language, normalized);
     if (existing) return { item: existing, duplicate: true };
-    const id = randomUUID(); const now = new Date().toISOString();
+    const id = randomUUID(); const now = new Date().toISOString(); const metadata = normalizedVocabularyMetadata(input);
+    const level = input.language === "en" ? normalizeCefrLevel(metadata.cefr) : input.level ?? null;
     this.db.transaction(() => {
       this.db.run(`INSERT INTO vocabulary_items(id,user_id,language,term,normalized_term,pronunciation,meaning_vi,part_of_speech,example,example_translation,topic,level,note,source,source_reading_id,audio_url,metadata_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-        id,userId,input.language,input.term,normalized,input.pronunciation ?? null,input.meaningVi,input.partOfSpeech ?? null,input.example ?? null,input.exampleTranslation ?? null,input.topic ?? null,input.level ?? null,input.note ?? null,input.source,input.sourceReadingId ?? null,input.audioUrl ?? null,JSON.stringify(input.metadata),now,now);
+        id,userId,input.language,input.term,normalized,input.pronunciation ?? null,input.meaningVi,input.partOfSpeech ?? null,input.example ?? null,input.exampleTranslation ?? null,input.topic ?? null,level,input.note ?? null,input.source,input.sourceReadingId ?? null,input.audioUrl ?? null,JSON.stringify(metadata),now,now);
       this.db.run("INSERT INTO vocabulary_progress(vocabulary_id) VALUES(?)", id);
     });
     return { item: this.get(userId, id), duplicate: false };
@@ -70,11 +85,27 @@ export class VocabularyService {
   }
 
   update(userId: string, id: string, patch: Partial<Omit<VocabularyInput, "language" | "term">>) {
-    this.get(userId, id);
+    const current = this.get(userId, id);
     const columns: string[] = []; const params: SqlValue[] = [];
     const mapping: Record<string, string> = { pronunciation:"pronunciation",meaningVi:"meaning_vi",partOfSpeech:"part_of_speech",example:"example",exampleTranslation:"example_translation",topic:"topic",level:"level",note:"note",source:"source",sourceReadingId:"source_reading_id",audioUrl:"audio_url" };
     for (const [key, column] of Object.entries(mapping)) if (key in patch) { columns.push(`${column}=?`); params.push((patch as Record<string, SqlValue>)[key] ?? null); }
-    if (patch.metadata) { columns.push("metadata_json=?"); params.push(JSON.stringify(patch.metadata)); }
+    if (patch.metadata || patch.topics || patch.collectionIds || patch.level !== undefined) {
+      const metadata = normalizedVocabularyMetadata({
+        ...current,
+        ...patch,
+        language: current.language,
+        term: current.term,
+        source: (patch.source ?? current.source) as VocabularyInput["source"],
+        metadata: { ...current.metadata, ...(patch.metadata ?? {}) },
+        topics: patch.topics ?? getVocabularyTopics(current),
+        collectionIds: patch.collectionIds ?? normalizeCollectionIds(current.collectionIds),
+      });
+      if (current.language === "en") {
+        const cefr = normalizeCefrLevel(metadata.cefr) ?? normalizeCefrLevel(patch.level) ?? normalizeCefrLevel(current.level);
+        if (cefr && !columns.includes("level=?")) { columns.push("level=?"); params.push(cefr); }
+      }
+      columns.push("metadata_json=?"); params.push(JSON.stringify(metadata));
+    }
     if (columns.length) this.db.run(`UPDATE vocabulary_items SET ${columns.join(",")},updated_at=? WHERE id=? AND user_id=?`, ...params, new Date().toISOString(), id, userId);
     return this.get(userId, id);
   }
