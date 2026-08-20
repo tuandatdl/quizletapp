@@ -46,6 +46,7 @@ import {
   synthesizeCloudSpeech,
   configureAudioElementPlaybackRate,
 } from "../../services/cloudTts";
+import { cloudFallbackMode, cloudVoiceFor, resolveAudioEngine } from "../../services/audioEnginePolicy";
 import { getCloudAuthService } from "../../services/cloudAuth";
 import { getSyncCoordinator } from "../../persistence/syncEngine";
 import { LanguageApiClient } from "../../services/languageApi";
@@ -336,14 +337,14 @@ export const SettingsPage: React.FC = () => {
       ? "Hello! Learning languages every day brings great results."
       : "你好！每天坚持学习语言会带来很大的进步。";
     const currentSpeed = form.audioSpeed || 1;
-    const isCloud = (form.audioEngine !== "BROWSER") && lang === "en";
+    const engine = resolveAudioEngine(form.audioEngine);
 
     setIsPlayingPreview(lang);
 
-    if (isCloud) {
+    if (engine !== "BROWSER") {
       try {
-        const voice = form.preferredCloudVoiceEn || DEFAULT_CLOUD_VOICE_EN;
-        const blob = await synthesizeCloudSpeech({ text: testText, language: "en", voice });
+        const voice = cloudVoiceFor(lang, form.preferredCloudVoiceEn);
+        const blob = await synthesizeCloudSpeech({ text: testText, language: lang, voice });
         const url = URL.createObjectURL(blob);
         const audio = new Audio(url);
         previewAudioRef.current = audio;
@@ -355,12 +356,21 @@ export const SettingsPage: React.FC = () => {
         audio.onerror = () => {
           setIsPlayingPreview(null);
           URL.revokeObjectURL(url);
-          testBrowserVoice(lang, testText, currentSpeed);
+          if (cloudFallbackMode(engine) === "BROWSER") testBrowserVoice(lang, testText, currentSpeed);
+          else error("Cloud TTS không thể phát âm thanh. CLOUD mode không chuyển sang giọng thiết bị.");
         };
-        await audio.play();
+        try {
+          await audio.play();
+        } catch {
+          audio.onerror?.(new Event("error"));
+        }
         return;
       } catch {
-        testBrowserVoice(lang, testText, currentSpeed);
+        if (cloudFallbackMode(engine) === "BROWSER") testBrowserVoice(lang, testText, currentSpeed);
+        else {
+          setIsPlayingPreview(null);
+          error("Cloud TTS không khả dụng. CLOUD mode không chuyển sang giọng thiết bị.");
+        }
         return;
       }
     }
@@ -583,7 +593,7 @@ export const SettingsPage: React.FC = () => {
               Cơ chế phát âm (Audio Engine)
             </label>
             <select
-              value={form.audioEngine || "AUTO"}
+              value={resolveAudioEngine(form.audioEngine)}
               onChange={(e) => handleChange("audioEngine", e.target.value)}
               style={{
                 width: "100%",
@@ -595,9 +605,9 @@ export const SettingsPage: React.FC = () => {
                 fontWeight: 600,
               }}
             >
-              <option value="AUTO">✨ [Tự động - Khuyên dùng] Cloud TTS (Đồng nhất mọi thiết bị, tự động chuyển giọng thiết bị khi offline)</option>
-              <option value="CLOUD">☁️ Chỉ dùng Cloud TTS (Âm thanh studio cao cấp)</option>
-              <option value="BROWSER">💻 Chỉ dùng giọng trình duyệt (Web Speech API thiết bị)</option>
+              <option value="CLOUD">☁️ Cloud TTS — Giọng đồng nhất trên mọi thiết bị</option>
+              <option value="AUTO">✨ Cloud TTS trước, tự chuyển sang giọng thiết bị nếu Cloud không khả dụng</option>
+              <option value="BROWSER">💻 Giọng của thiết bị — có thể khác nhau giữa các máy</option>
             </select>
           </div>
 

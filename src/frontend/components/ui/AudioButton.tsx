@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Volume2, VolumeX, Loader2 } from "lucide-react";
-import { ttsApi } from "../../api/tts.api";
 import { useToast } from "../../context/ToastContext";
 import { useLanguage } from "../../context/LanguageContext";
 import type { Language } from "../../types/api";
@@ -14,8 +13,16 @@ import {
 import {
   synthesizeCloudSpeech,
   configureAudioElementPlaybackRate,
-  DEFAULT_CLOUD_VOICE_EN,
 } from "../../services/cloudTts";
+import {
+  cloudFallbackMode,
+  cloudVoiceFor,
+  resolveAudioEngine,
+  runAudioEnginePolicy,
+  safeTtsDiagnostic,
+  type HtmlAudioFallbackMode,
+  type TtsSource,
+} from "../../services/audioEnginePolicy";
 
 let activeHtmlAudio: HTMLAudioElement | null = null;
 let activeObjectUrl: string | null = null;
@@ -112,6 +119,7 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
   }, []);
 
   const playBrowserSpeech = async (textToSpeak: string, lang: Language) => {
+    safeTtsDiagnostic("tts_source_used", { tts_source_used: "browser" });
     if (!("speechSynthesis" in window)) {
       toastError("Trình duyệt không hỗ trợ phát âm (SpeechSynthesis).");
       return;
@@ -163,7 +171,13 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
     }
   };
 
-  const playHtmlAudio = async (url: string, fallbackText?: string, isObjectUrl = false) => {
+  const playHtmlAudio = async (url: string, options: {
+    fallbackMode: HtmlAudioFallbackMode;
+    fallbackText?: string;
+    isObjectUrl?: boolean;
+    source: TtsSource;
+    cloudVoice?: string;
+  }) => {
     speechGenRef.current += 1;
     const currentGen = speechGenRef.current;
 
@@ -196,7 +210,7 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
     const audio = new Audio(url);
     audioRef.current = audio;
     activeHtmlAudio = audio;
-    if (isObjectUrl) {
+    if (options.isObjectUrl) {
       objectUrlRef.current = url;
       activeObjectUrl = url;
     }
@@ -212,12 +226,20 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
       if (!mountedRef.current || speechGenRef.current !== currentGen) return;
       setIsLoading(false);
       setIsPlaying(false);
-      if (fallbackText) void playBrowserSpeech(fallbackText, language);
-      else toastError("Không thể phát tệp âm thanh.");
+      if (options.fallbackMode === "BROWSER" && options.fallbackText) {
+        safeTtsDiagnostic("tts_browser_fallback", { tts_engine_requested: "AUTO", tts_source_used: "browser" });
+        void playBrowserSpeech(options.fallbackText, language);
+      } else {
+        toastError(options.source === "cloud" ? "Cloud TTS không thể phát âm thanh. Vui lòng thử lại." : "Không thể phát tệp âm thanh.");
+      }
     };
 
     audio.onplay = () => {
       if (!mountedRef.current || speechGenRef.current !== currentGen) return;
+      safeTtsDiagnostic("tts_source_used", {
+        tts_source_used: options.source,
+        cloud_voice: options.source === "cloud" ? options.cloudVoice : undefined,
+      });
       setIsLoading(false);
       setIsPlaying(true);
     };
@@ -247,10 +269,24 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
       return;
     }
 
-    // 1. If static audioUrl exists, play directly
+    const engine = resolveAudioEngine(settings?.audioEngine);
+    safeTtsDiagnostic("tts_engine_requested", { tts_engine_requested: engine });
+
+    // BROWSER is strict too: it never requests Cloud TTS or plays a cloud/static asset.
+    if (engine === "BROWSER") {
+      if (speechText) await playBrowserSpeech(speechText, language);
+      else toastError("Không có văn bản để phát bằng giọng của thiết bị.");
+      return;
+    }
+
+    // Static assets stay usable in CLOUD/AUTO, but only AUTO may switch to browser speech.
     if (audioUrl) {
       setIsLoading(true);
-      await playHtmlAudio(audioUrl, speechText || undefined);
+      await playHtmlAudio(audioUrl, {
+        fallbackMode: cloudFallbackMode(engine),
+        fallbackText: speechText || undefined,
+        source: "static",
+      });
       return;
     }
 
@@ -263,50 +299,40 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
     speechGenRef.current += 1;
     const currentGen = speechGenRef.current;
 
-    // 2. If English & Cloud TTS enabled (AUTO or CLOUD), use Cloud TTS first
-    const isCloudEnabled = (settings?.audioEngine !== "BROWSER") && language === "en";
-    if (isCloudEnabled) {
-      try {
-        const voice = settings?.preferredCloudVoiceEn || DEFAULT_CLOUD_VOICE_EN;
+    try {
+      await runAudioEnginePolicy({
+        engine,
+        playCloud: async () => {
+          const voice = cloudVoiceFor(language, settings?.preferredCloudVoiceEn);
         const blob = await synthesizeCloudSpeech({
           text: speechText,
-          language: "en",
+            language,
           voice,
           signal: controller.signal,
         });
         if (!mountedRef.current || speechGenRef.current !== currentGen) return;
 
         const objectUrl = URL.createObjectURL(blob);
-        await playHtmlAudio(objectUrl, speechText, true);
-        return;
-      } catch (err: any) {
-        if (controller.signal.aborted || !mountedRef.current || speechGenRef.current !== currentGen) return;
-        // Fallback to SpeechSynthesis if Cloud TTS failed or offline
-        setIsLoading(false);
-        await playBrowserSpeech(speechText, language);
-        return;
-      }
-    }
-
-    // 3. Fallback / Chinese / Browser engine mode
-    try {
-      const res = await ttsApi.synthesize({
-        text: speechText,
-        language,
-        speed: currentSpeed,
-      }, controller.signal);
-      if (!mountedRef.current || speechGenRef.current !== currentGen) return;
-
-      if (res?.audioUrl) {
-        await playHtmlAudio(res.audioUrl, speechText);
-      } else {
-        setIsLoading(false);
-        await playBrowserSpeech(speechText, language);
-      }
-    } catch (err: any) {
-      if (err?.name === "AbortError" || !mountedRef.current || speechGenRef.current !== currentGen) return;
+          await playHtmlAudio(objectUrl, {
+            fallbackMode: cloudFallbackMode(engine),
+            fallbackText: speechText,
+            isObjectUrl: true,
+            source: "cloud",
+            cloudVoice: voice,
+          });
+        },
+        playBrowser: async () => {
+          if (!mountedRef.current || speechGenRef.current !== currentGen) return;
+          safeTtsDiagnostic("tts_browser_fallback", { tts_engine_requested: "AUTO", tts_source_used: "browser" });
+          setIsLoading(false);
+          await playBrowserSpeech(speechText, language);
+        },
+      });
+    } catch (err: unknown) {
+      const aborted = err instanceof DOMException && err.name === "AbortError";
+      if (aborted || controller.signal.aborted || !mountedRef.current || speechGenRef.current !== currentGen) return;
       setIsLoading(false);
-      await playBrowserSpeech(speechText, language);
+      toastError("Cloud TTS không khả dụng. CLOUD mode không chuyển sang giọng của thiết bị.");
     }
   };
 
