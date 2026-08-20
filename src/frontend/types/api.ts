@@ -156,6 +156,9 @@ export interface VocabularySenseSuggestion {
 }
 
 export interface BulkVocabularySuggestion {
+  existingId?: string;
+  needsRepair?: boolean;
+  hasUpdate?: boolean;
   pronunciation: string | null;
   ipa: string | null;
   pinyin: string | null;
@@ -187,6 +190,7 @@ export interface BulkVocabularyPreview {
 }
 
 export interface BulkVocabularyInputItem {
+  existingId?: string;
   term: string;
   meaningVi: string;
   pronunciation?: string | null;

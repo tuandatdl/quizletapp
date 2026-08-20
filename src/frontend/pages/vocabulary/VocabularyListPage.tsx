@@ -26,6 +26,7 @@ import { EmptyState } from "../../components/ui/EmptyState";
 import { CardSkeleton } from "../../components/ui/Skeleton";
 import type { Language, VocabularyItem, VocabularyStatus } from "../../types/api";
 import { APP_ROUTES } from "../../runtime/routes";
+import { isLikelyIpa } from "../../static/localDomain";
 
 export const VocabularyListPage: React.FC = () => {
   const navigate = useNavigate();
@@ -357,7 +358,9 @@ export const VocabularyListPage: React.FC = () => {
         >
           {filteredItems.map((item) => {
             const isZh = item.language === "zh";
-            const pinyin = item.metadata?.pinyin || item.pronunciation;
+            const pronunciationDisplay = isZh
+              ? (item.metadata?.pinyin || item.pronunciation)
+              : (item.metadata?.ipa || (isLikelyIpa(item.pronunciation) ? item.pronunciation : null));
 
             return (
               <Card
@@ -421,8 +424,8 @@ export const VocabularyListPage: React.FC = () => {
                       />
                     </div>
 
-                    {/* Pronunciation / Pinyin */}
-                    {pinyin && (
+                    {/* Pronunciation / Pinyin / IPA */}
+                    {pronunciationDisplay && (
                       <div
                         className={isZh ? "pinyin" : ""}
                         style={{
@@ -432,7 +435,7 @@ export const VocabularyListPage: React.FC = () => {
                           fontFamily: isZh ? "var(--font-body)" : "var(--font-mono)",
                         }}
                       >
-                        {pinyin}
+                        {pronunciationDisplay}
                       </div>
                     )}
                   </div>
@@ -449,54 +452,50 @@ export const VocabularyListPage: React.FC = () => {
                     {item.meaningVi}
                   </div>
 
-                  {/* Part of Speech & Example */}
-                  {item.partOfSpeech && (
-                    <span
-                      style={{
-                        fontSize: "var(--text-xs)",
-                        fontStyle: "italic",
-                        color: "var(--text-tertiary)",
-                        display: "inline-block",
-                        marginBottom: "var(--space-2)",
-                      }}
-                    >
-                      ({item.partOfSpeech})
-                    </span>
-                  )}
-
+                  {/* Example */}
                   {item.example && (
                     <div
                       style={{
                         fontSize: "var(--text-xs)",
                         color: "var(--text-secondary)",
                         backgroundColor: "var(--bg-muted)",
-                        padding: "8px 10px",
+                        padding: "var(--space-2) var(--space-3)",
                         borderRadius: "var(--radius-sm)",
-                        marginTop: "6px",
+                        fontStyle: "italic",
                       }}
                     >
-                      <div>{item.example}</div>
-                      {item.exampleTranslation && (
-                        <div style={{ color: "var(--text-tertiary)", marginTop: "2px" }}>
-                          {item.exampleTranslation}
-                        </div>
-                      )}
+                      "{item.example}"
                     </div>
                   )}
                 </div>
 
-                {/* Footer Controls: Edit & Delete */}
+                {/* Footer: Tags / Senses & Actions */}
                 <div
                   className="flex-row justify-between items-center"
                   style={{
                     borderTop: "1px solid var(--border-subtle)",
-                    paddingTop: "var(--space-3)",
-                    marginTop: "var(--space-4)",
+                    paddingTop: "var(--space-2)",
+                    marginTop: "var(--space-3)",
                   }}
                 >
-                  <span style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>
-                    Lần ôn: {item.progress.repetitions}
-                  </span>
+                  <div className="flex-row items-center gap-1">
+                    {item.partOfSpeech && (
+                      <span
+                        style={{
+                          fontSize: "var(--text-xs)",
+                          color: "var(--text-tertiary)",
+                          fontWeight: 500,
+                        }}
+                      >
+                        {item.partOfSpeech}
+                      </span>
+                    )}
+                    {item.topic && (
+                      <Badge variant="default" size="sm">
+                        {item.topic}
+                      </Badge>
+                    )}
+                  </div>
 
                   <div className="flex-row items-center gap-1">
                     <IconButton
@@ -524,21 +523,26 @@ export const VocabularyListPage: React.FC = () => {
           })}
         </div>
       ) : (
-        /* List View */
-        <Card padding="none" style={{ overflow: "hidden" }}>
+        /* List View (Table Layout) */
+        <Card padding="none">
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "var(--text-sm)" }}>
               <thead>
-                <tr style={{ borderBottom: "1px solid var(--border-default)", backgroundColor: "var(--bg-subtle)" }}>
-                  <th style={{ padding: "12px 16px" }}>Từ vựng</th>
-                  <th style={{ padding: "12px 16px" }}>Phát âm / Pinyin</th>
-                  <th style={{ padding: "12px 16px" }}>Ý nghĩa tiếng Việt</th>
-                  <th style={{ padding: "12px 16px" }}>Trạng thái</th>
-                  <th style={{ padding: "12px 16px", textAlign: "right" }}>Thao tác</th>
+                <tr style={{ borderBottom: "1px solid var(--border-default)", backgroundColor: "var(--bg-muted)" }}>
+                  <th style={{ padding: "12px 16px", fontWeight: 600, color: "var(--text-secondary)" }}>TỪ VỰNG</th>
+                  <th style={{ padding: "12px 16px", fontWeight: 600, color: "var(--text-secondary)" }}>PHIÊN ÂM / PINYIN</th>
+                  <th style={{ padding: "12px 16px", fontWeight: 600, color: "var(--text-secondary)" }}>NGHĨA TIẾNG VIỆT</th>
+                  <th style={{ padding: "12px 16px", fontWeight: 600, color: "var(--text-secondary)" }}>TRẠNG THÁI</th>
+                  <th style={{ padding: "12px 16px", fontWeight: 600, color: "var(--text-secondary)", textAlign: "right" }}>THAO TÁC</th>
                 </tr>
               </thead>
               <tbody>
-                {filteredItems.map((item) => (
+                {filteredItems.map((item) => {
+                  const isItemZh = item.language === "zh";
+                  const itemPronDisplay = isItemZh
+                    ? (item.metadata?.pinyin || item.pronunciation)
+                    : (item.metadata?.ipa || (isLikelyIpa(item.pronunciation) ? item.pronunciation : null));
+                  return (
                   <tr
                     key={item.id}
                     style={{
@@ -553,8 +557,8 @@ export const VocabularyListPage: React.FC = () => {
                         {item.favorite && <Star size={12} fill="#F59E0B" color="#F59E0B" />}
                       </div>
                     </td>
-                    <td style={{ padding: "12px 16px", color: "var(--text-tertiary)" }}>
-                      {item.pronunciation || item.metadata?.pinyin || "—"}
+                    <td style={{ padding: "12px 16px", color: "var(--text-tertiary)", fontFamily: isItemZh ? "var(--font-body)" : "var(--font-mono)" }}>
+                      {itemPronDisplay || "—"}
                     </td>
                     <td style={{ padding: "12px 16px", fontWeight: 500 }}>{item.meaningVi}</td>
                     <td style={{ padding: "12px 16px" }}>
@@ -573,7 +577,8 @@ export const VocabularyListPage: React.FC = () => {
                       </div>
                     </td>
                   </tr>
-                ))}
+                );
+              })}
               </tbody>
             </table>
           </div>

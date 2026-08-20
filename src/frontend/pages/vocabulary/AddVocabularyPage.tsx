@@ -32,12 +32,15 @@ import type {
   Language,
   VocabularySenseSuggestion,
 } from "../../types/api";
-import { parseLocalQuickInput } from "../../static/localDomain";
+import { parseLocalQuickInput, isLikelyIpa } from "../../static/localDomain";
 
 type TabMode = "quick" | "detailed";
 
 interface EditablePreviewItem {
   id: string;
+  existingId?: string;
+  needsRepair?: boolean;
+  hasUpdate?: boolean;
   term: string;
   normalizedTerm: string;
   duplicate: boolean;
@@ -67,14 +70,25 @@ const toEditablePreview = (
   language: Language = "en"
 ): EditablePreviewItem => {
   const isChinese = language === "zh" || Boolean(item.suggestion.pinyin);
+  const rawIpa = item.suggestion.ipa;
+  const rawPron = item.suggestion.pronunciation;
+  const validIpa = isLikelyIpa(rawIpa) ? rawIpa : isLikelyIpa(rawPron) ? rawPron : "";
   const pronunciation = isChinese
     ? (item.suggestion.pinyin || item.suggestion.pronunciation || item.suggestion.ipa || "")
-    : (item.suggestion.ipa || item.suggestion.pronunciation || "");
-  const ipa = item.suggestion.ipa || (!isChinese && pronunciation ? pronunciation : undefined);
+    : (validIpa || "");
+  const ipa = isChinese ? undefined : (validIpa || undefined);
   const pinyin = item.suggestion.pinyin || (isChinese && pronunciation ? pronunciation : undefined);
+
+  const isDuplicate = item.duplicate;
+  const isNeedsRepair = Boolean(item.suggestion.needsRepair);
+  const hasUpdate = Boolean(item.suggestion.hasUpdate);
+  const existingId = item.suggestion.existingId;
 
   return {
     id: `${item.normalizedTerm}-${idx}`,
+    existingId,
+    needsRepair: isNeedsRepair,
+    hasUpdate,
     term: item.term,
     normalizedTerm: item.normalizedTerm,
     duplicate: item.duplicate,
@@ -275,6 +289,7 @@ export const AddVocabularyPage: React.FC = () => {
     try {
       const payload: BulkVocabularyInputItem[] = selectedItems.map((i) => {
         const itemPayload: BulkVocabularyInputItem = {
+          existingId: i.existingId,
           term: i.term.trim(),
           meaningVi: i.meaningVi.trim(),
           partOfSpeech: i.partOfSpeech.trim() || undefined,
@@ -638,7 +653,9 @@ export const AddVocabularyPage: React.FC = () => {
                   >
                     <span className={isZh ? "hanzi" : ""}>{item.term}</span>
                     {item.duplicate && (
-                      <span style={{ fontSize: "var(--text-xs)", opacity: 0.7 }} title="Từ đã tồn tại trong kho">(đã có)</span>
+                      <span style={{ fontSize: "var(--text-xs)", opacity: 0.7 }} title={item.needsRepair ? "Từ đã tồn tại nhưng có dữ liệu cũ cần cập nhật" : "Từ đã tồn tại trong kho"}>
+                        {item.needsRepair ? "(đã có · dữ liệu cũ)" : "(đã có)"}
+                      </span>
                     )}
                     <button
                       type="button"
@@ -730,9 +747,40 @@ export const AddVocabularyPage: React.FC = () => {
                             <button type="button" onClick={() => handleRetryEnrichment([item.term])} style={{ color: "inherit", textDecoration: "underline" }}>Thử lại</button>
                           )}
                           {item.enrichmentState === "exists" && (
-                            !item.meaningVi.trim()
-                              ? <span style={{ color: "var(--color-warning, #d97706)" }}>Từ này đã có trong kho nhưng thiếu thông tin</span>
-                              : "Đã có trong kho"
+                            item.hasUpdate ? (
+                              <span style={{ color: "var(--color-success, #16a34a)", fontWeight: 500 }}>
+                                ✓ Đã có trong kho · Có bản cập nhật đề xuất
+                              </span>
+                            ) : item.needsRepair ? (
+                              <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                                <span style={{ color: "var(--color-warning, #d97706)", fontWeight: 500 }}>
+                                  Đã có trong kho · dữ liệu cũ
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRetryEnrichment([item.term])}
+                                  style={{
+                                    background: "none",
+                                    border: "none",
+                                    color: "var(--accent-en-primary, #2563eb)",
+                                    textDecoration: "underline",
+                                    cursor: "pointer",
+                                    fontSize: "0.7rem",
+                                    padding: 0,
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    gap: "2px",
+                                    fontWeight: 600,
+                                  }}
+                                >
+                                  <Sparkles size={11} /> Cập nhật bằng AI
+                                </button>
+                              </span>
+                            ) : !item.meaningVi.trim() ? (
+                              <span style={{ color: "var(--color-warning, #d97706)" }}>Từ này đã có trong kho nhưng thiếu thông tin</span>
+                            ) : (
+                              "Đã có trong kho"
+                            )
                           )}
                         </div>
                       </div>
