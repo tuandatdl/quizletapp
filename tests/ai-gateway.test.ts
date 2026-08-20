@@ -4,7 +4,6 @@ import {
   AiGatewayExhaustedError,
   AiProviderError,
   GeminiProvider,
-  OpenAiProvider,
   KV_CACHE_TTL_SECONDS,
   createKvAiGatewayCache,
   gatewayCacheKey,
@@ -52,134 +51,96 @@ function jsonResponse(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
 }
 
-describe("Multi-provider AI gateway fallback matrix", () => {
-  it("A: uses Gemini success without calling fallback providers", async () => {
-    const gemini = vi.fn().mockResolvedValue({ term: "customer", meaningVi: "khách hàng" });
-    const openai = vi.fn();
+describe("Gemini and Workers AI gateway fallback matrix", () => {
+  it("A: uses a KV cache hit without calling Gemini or Workers AI", async () => {
+    const cache = memoryCache(new Map([["customer-key", { term: "customer", meaningVi: "khách hàng" }]]));
+    const gemini = vi.fn();
     const workers = vi.fn();
     const result = await new AiGateway([
-      provider("gemini", gemini), provider("openai", openai), provider("workers-ai", workers),
+      provider("gemini", gemini), provider("workers-ai", workers),
+    ], cache).run({ ...request, cacheKey: "customer-key" }, validateCustomer);
+
+    expect(result).toMatchObject({ provider: "cache", cacheHit: true, attempts: [] });
+    expect(gemini).not.toHaveBeenCalled();
+    expect(workers).not.toHaveBeenCalled();
+  });
+
+  it("B: uses Gemini on a KV miss without calling Workers AI", async () => {
+    const gemini = vi.fn().mockResolvedValue({ term: "customer", meaningVi: "khách hàng" });
+    const workers = vi.fn();
+    const result = await new AiGateway([
+      provider("gemini", gemini), provider("workers-ai", workers),
     ]).run(request, validateCustomer);
 
     expect(result).toMatchObject({ provider: "gemini", fallbackCount: 0, cacheHit: false });
-    expect(openai).not.toHaveBeenCalled();
     expect(workers).not.toHaveBeenCalled();
   });
 
-  it("B: falls back from Gemini 429/rate limit to OpenAI", async () => {
-    const gemini = vi.fn().mockRejectedValue(new AiProviderError("gemini", "RATE_LIMITED", "429"));
-    const openai = vi.fn().mockResolvedValue({ term: "customer", meaningVi: "khách hàng" });
-    const workers = vi.fn();
-    const result = await new AiGateway([
-      provider("gemini", gemini), provider("openai", openai), provider("workers-ai", workers),
-    ]).run(request, validateCustomer);
-
-    expect(result).toMatchObject({ provider: "openai", fallbackCount: 1 });
-    expect(workers).not.toHaveBeenCalled();
-  });
-
-  it("C: falls back Gemini quota -> OpenAI quota -> Workers AI", async () => {
+  it("C: falls back from Gemini quota exhaustion to Workers AI", async () => {
     const gemini = vi.fn().mockRejectedValue(new AiProviderError("gemini", "QUOTA_EXCEEDED", "quota"));
-    const openai = vi.fn().mockRejectedValue(new AiProviderError("openai", "QUOTA_EXCEEDED", "quota"));
     const workers = vi.fn().mockResolvedValue({ term: "customer", meaningVi: "khách hàng" });
     const result = await new AiGateway([
-      provider("gemini", gemini), provider("openai", openai), provider("workers-ai", workers),
+      provider("gemini", gemini), provider("workers-ai", workers),
     ]).run(request, validateCustomer);
 
-    expect(result).toMatchObject({ provider: "workers-ai", fallbackCount: 2 });
+    expect(result).toMatchObject({ provider: "workers-ai", fallbackCount: 1 });
+    expect(workers).toHaveBeenCalledTimes(1);
   });
 
-  it("D: returns a controlled exhausted error when all providers fail", async () => {
+  it("D: falls back from Gemini timeout to Workers AI", async () => {
+    const gemini = vi.fn().mockRejectedValue(new AiProviderError("gemini", "TIMEOUT", "timeout"));
+    const workers = vi.fn().mockResolvedValue({ term: "customer", meaningVi: "khách hàng" });
+    const result = await new AiGateway([
+      provider("gemini", gemini), provider("workers-ai", workers),
+    ]).run(request, validateCustomer);
+
+    expect(result).toMatchObject({ provider: "workers-ai", fallbackCount: 1 });
+  });
+
+  it("E: falls back after Gemini malformed structured output", async () => {
+    const gemini = vi.fn().mockResolvedValue({ term: "customer" });
+    const workers = vi.fn().mockResolvedValue({ term: "customer", meaningVi: "khách hàng" });
+    const result = await new AiGateway([
+      provider("gemini", gemini), provider("workers-ai", workers),
+    ]).run(request, validateCustomer);
+
+    expect(result.provider).toBe("workers-ai");
+    expect(result.attempts[0]).toMatchObject({ provider: "gemini", failure: "MALFORMED_RESPONSE" });
+  });
+
+  it("F: falls back from Gemini identity mismatch to Workers AI", async () => {
+    const gemini = vi.fn().mockResolvedValue({ term: "car", meaningVi: "xe hơi" });
+    const workers = vi.fn().mockResolvedValue({ term: "customer", meaningVi: "khách hàng" });
+    const result = await new AiGateway([
+      provider("gemini", gemini), provider("workers-ai", workers),
+    ]).run(request, validateCustomer);
+
+    expect(result).toMatchObject({ provider: "workers-ai", value: { term: "customer" } });
+    expect(result.attempts[0]).toMatchObject({ failure: "IDENTITY_MISMATCH" });
+  });
+
+  it("G: falls back from Gemini model unavailability to Workers AI", async () => {
+    const gemini = vi.fn().mockRejectedValue(new AiProviderError("gemini", "MODEL_NOT_AVAILABLE", "unavailable"));
+    const workers = vi.fn().mockResolvedValue({ term: "customer", meaningVi: "khách hàng" });
+    const result = await new AiGateway([
+      provider("gemini", gemini), provider("workers-ai", workers),
+    ]).run(request, validateCustomer);
+
+    expect(result).toMatchObject({ provider: "workers-ai", value: { term: "customer" } });
+    expect(result.attempts[0]).toMatchObject({ provider: "gemini", failure: "MODEL_NOT_AVAILABLE" });
+  });
+
+  it("H: returns a controlled exhausted error when Gemini and Workers AI both fail", async () => {
     const gateway = new AiGateway([
       provider("gemini", vi.fn().mockRejectedValue(new AiProviderError("gemini", "QUOTA_EXCEEDED", "quota"))),
-      provider("openai", vi.fn().mockRejectedValue(new AiProviderError("openai", "UPSTREAM_5XX", "500"))),
       provider("workers-ai", vi.fn().mockRejectedValue(new AiProviderError("workers-ai", "NETWORK_ERROR", "network"))),
     ]);
 
     await expect(gateway.run(request, validateCustomer)).rejects.toBeInstanceOf(AiGatewayExhaustedError);
   });
-
-  it("E: falls back after Gemini malformed structured output", async () => {
-    const gemini = vi.fn().mockResolvedValue({ term: "customer" });
-    const openai = vi.fn().mockResolvedValue({ term: "customer", meaningVi: "khách hàng" });
-    const result = await new AiGateway([
-      provider("gemini", gemini), provider("openai", openai), provider("workers-ai", vi.fn()),
-    ]).run(request, validateCustomer);
-
-    expect(result.provider).toBe("openai");
-    expect(result.attempts[0]).toMatchObject({ provider: "gemini", failure: "MALFORMED_RESPONSE" });
-  });
-
-  it("F: rejects a Gemini wrong-term response and falls back by normalized identity", async () => {
-    const gemini = vi.fn().mockResolvedValue({ term: "car", meaningVi: "xe hơi" });
-    const openai = vi.fn().mockResolvedValue({ term: "customer", meaningVi: "khách hàng" });
-    const result = await new AiGateway([
-      provider("gemini", gemini), provider("openai", openai), provider("workers-ai", vi.fn()),
-    ]).run(request, validateCustomer);
-
-    expect(result).toMatchObject({ provider: "openai", value: { term: "customer" } });
-    expect(result.attempts[0]).toMatchObject({ failure: "IDENTITY_MISMATCH" });
-  });
-
-  it("G: rejects an OpenAI wrong-term response and falls back to Workers AI", async () => {
-    const gemini = vi.fn().mockRejectedValue(new AiProviderError("gemini", "RATE_LIMITED", "429"));
-    const openai = vi.fn().mockResolvedValue({ term: "go", meaningVi: "đi" });
-    const workers = vi.fn().mockResolvedValue({ term: "customer", meaningVi: "khách hàng" });
-    const result = await new AiGateway([
-      provider("gemini", gemini), provider("openai", openai), provider("workers-ai", workers),
-    ]).run(request, validateCustomer);
-
-    expect(result).toMatchObject({ provider: "workers-ai", value: { term: "customer" } });
-    expect(result.attempts[1]).toMatchObject({ provider: "openai", failure: "IDENTITY_MISMATCH" });
-  });
-
-  it("H: treats a Gemini timeout as eligible for fallback", async () => {
-    const gemini = vi.fn().mockRejectedValue(new AiProviderError("gemini", "TIMEOUT", "timeout"));
-    const openai = vi.fn().mockResolvedValue({ term: "customer", meaningVi: "khách hàng" });
-    const result = await new AiGateway([
-      { ...provider("gemini", gemini), retryOnce: gemini }, provider("openai", openai), provider("workers-ai", vi.fn()),
-    ]).run(request, validateCustomer);
-
-    expect(result.provider).toBe("openai");
-    expect(gemini).toHaveBeenCalledTimes(2);
-  });
-
-  it("I: skips providers that are not configured", async () => {
-    const gemini = vi.fn();
-    const openai = vi.fn().mockResolvedValue({ term: "customer", meaningVi: "khách hàng" });
-    const result = await new AiGateway([
-      provider("gemini", gemini, false), provider("openai", openai), provider("workers-ai", vi.fn()),
-    ]).run(request, validateCustomer);
-
-    expect(result.provider).toBe("openai");
-    expect(gemini).not.toHaveBeenCalled();
-  });
-
-  it("J: validates a cache hit and makes zero provider calls", async () => {
-    const cache = memoryCache(new Map([["customer-key", { term: "customer", meaningVi: "khách hàng" }]]));
-    const gemini = vi.fn();
-    const result = await new AiGateway([
-      provider("gemini", gemini), provider("openai", vi.fn()), provider("workers-ai", vi.fn()),
-    ], cache).run({ ...request, cacheKey: "customer-key" }, validateCustomer);
-
-    expect(result).toMatchObject({ provider: "cache", cacheHit: true, value: { term: "customer" } });
-    expect(gemini).not.toHaveBeenCalled();
-  });
 });
 
 describe("Provider compatibility payloads", () => {
-  it("OPENAI_GPT5_MINI_NO_TEMPERATURE and OPENAI_STRUCTURED_OUTPUT_PRESERVED", async () => {
-    const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse({ choices: [{ message: { content: '{"term":"customer","meaningVi":"khách hàng"}' } }] }));
-    const schema = { type: "object", properties: { term: { type: "string" } }, required: ["term"], additionalProperties: false };
-    await new OpenAiProvider({ apiKey: "test-key", model: "gpt-5-mini", fetcher: fetcher as unknown as typeof fetch }).complete({ ...request, schema });
-
-    const init = fetcher.mock.calls[0]![1]!;
-    const body = JSON.parse(init.body as string) as Record<string, unknown>;
-    expect(body).not.toHaveProperty("temperature");
-    expect(body).not.toHaveProperty("top_p");
-    expect(body.response_format).toEqual({ type: "json_schema", json_schema: { name: "tutrinh_enrichment", strict: true, schema } });
-  });
-
   it("GEMINI_CONST_TO_ENUM and GEMINI_SCHEMA_RECURSIVE_TRANSFORM", () => {
     const source = {
       type: "object",
@@ -208,14 +169,11 @@ describe("Provider compatibility payloads", () => {
     expect(body.generationConfig.responseJsonSchema).toEqual({ type: "object", properties: { language: { type: "string", enum: ["zh"] } } });
   });
 
-  it("records only safe HTTP status and machine code for provider failures", async () => {
+  it("records only safe Gemini HTTP status and machine code for provider failures", async () => {
     const geminiFetcher = vi.fn(async () => jsonResponse({ error: { status: "INVALID_ARGUMENT", message: "Invalid request schema" } }, 400)) as unknown as typeof fetch;
-    const openAiFetcher = vi.fn(async () => jsonResponse({ error: { type: "insufficient_quota", code: "insufficient_quota", message: "billing unavailable" } }, 429)) as unknown as typeof fetch;
 
     await expect(new GeminiProvider({ apiKey: "test-key", model: "gemini-2.5-flash-lite", fetcher: geminiFetcher }).complete(request))
       .rejects.toMatchObject({ code: "VALIDATION_ERROR", details: { httpStatus: 400, upstreamCode: "INVALID_ARGUMENT" } });
-    await expect(new OpenAiProvider({ apiKey: "test-key", model: "gpt-5-mini", fetcher: openAiFetcher }).complete(request))
-      .rejects.toMatchObject({ code: "QUOTA_EXCEEDED", details: { httpStatus: 429, upstreamCode: "insufficient_quota" } });
   });
 
   it("classifies Workers AI daily allocation exhaustion without logging its raw message", async () => {
