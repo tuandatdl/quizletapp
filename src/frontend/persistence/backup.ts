@@ -19,7 +19,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export function validateBackup(value: unknown): StaticBackup {
   if (!isRecord(value) || value.format !== "tu-trinh-language-backup") {
-    throw new Error("Tệp không phải bản sao lưu Tú Trinh Language.");
+    throw new Error("Tệp không phải bản sao lưu LEXIS.");
   }
   if (typeof value.schemaVersion !== "number" || value.schemaVersion < 1 || value.schemaVersion > INDEXED_DB_SCHEMA_VERSION) {
     throw new Error(`Phiên bản bản sao lưu ${String(value.schemaVersion)} chưa được hỗ trợ.`);

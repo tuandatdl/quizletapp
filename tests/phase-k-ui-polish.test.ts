@@ -116,5 +116,12 @@ describe("Phase K: Final UI/UX Polish & Production Readiness", () => {
       expect(indexHtmlSrc).toContain("<title>LEXIS — Language Workspace</title>");
       expect(indexHtmlSrc).toContain("LEXIS Language Workspace");
     });
+
+    it("displays LEXIS in backup validation error message", () => {
+      const backupPath = path.join(root, "src/frontend/persistence/backup.ts");
+      const backupSrc = fs.readFileSync(backupPath, "utf-8");
+      expect(backupSrc).toContain("Tệp không phải bản sao lưu LEXIS.");
+      expect(backupSrc).not.toContain("Tú Trinh Language");
+    });
   });
 });
