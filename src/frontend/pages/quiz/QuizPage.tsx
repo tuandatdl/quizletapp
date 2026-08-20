@@ -56,6 +56,10 @@ export const QuizPage: React.FC = () => {
   const [lastFeedback, setLastFeedback] = useState<{
     correct: boolean;
     expectedAnswer: string;
+    selectedAnswer: string;
+    term?: string;
+    meaningVi?: string;
+    completedSentence?: string;
   } | null>(null);
 
   const quizLanguage = session?.language ?? language;
@@ -84,16 +88,19 @@ export const QuizPage: React.FC = () => {
     }
   };
 
-  const handleAnswer = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!session || !answerInput.trim() || isSubmittingAnswer) return;
+  const submitAnswer = async (answer: string) => {
+    if (!session || !answer.trim() || isSubmittingAnswer) return;
 
     setIsSubmittingAnswer(true);
     try {
-      const res = await quizApi.answer(session.id, answerInput.trim());
+      const res = await quizApi.answer(session.id, answer.trim());
       setLastFeedback({
         correct: res.correct,
         expectedAnswer: res.expectedAnswer,
+        selectedAnswer: answer.trim(),
+        term: res.feedback?.term,
+        meaningVi: res.feedback?.meaningVi,
+        completedSentence: res.feedback?.completedSentence,
       });
       setSession(res.session);
       setAnswerInput("");
@@ -104,10 +111,28 @@ export const QuizPage: React.FC = () => {
     }
   };
 
+  const handleAnswer = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await submitAnswer(answerInput);
+  };
+
   const handleContinueNext = () => {
     setLastFeedback(null);
     setAnswerInput("");
   };
+
+  useEffect(() => {
+    const current = session?.currentQuestion;
+    if (!current?.options?.length || lastFeedback || isSubmittingAnswer) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      const index = Number(event.key) - 1;
+      if (index < 0 || index >= current.options!.length) return;
+      event.preventDefault();
+      void submitAnswer(current.options![index]!);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [session?.currentQuestion, lastFeedback, isSubmittingAnswer]);
 
   // 1. Quiz Setup Screen
   if (!session) {
@@ -274,6 +299,15 @@ export const QuizPage: React.FC = () => {
 
   // 3. Active Question Screen
   const currentQ = session.currentQuestion;
+  const contextTerm = currentQ?.type === "CONTEXT" ? currentQ.prompt.match(/'([^']+)'/u)?.[1] : undefined;
+  const renderContext = (context: string, term?: string) => {
+    if (!term) return context;
+    const match = new RegExp(`(${term.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")})`, "iu");
+    const parts = context.split(match);
+    return parts.map((part, index) => match.test(part)
+      ? <mark key={`${part}-${index}`} style={{ background: "var(--accent-en-subtle)", color: "var(--accent-en-text)", padding: "0 3px", borderRadius: "3px", fontWeight: 800 }}>{part}</mark>
+      : <React.Fragment key={`${part}-${index}`}>{part}</React.Fragment>);
+  };
 
   return (
     <div className="page-container flex-col gap-6 animate-fade-in" style={{ maxWidth: "680px" }}>
@@ -306,6 +340,21 @@ export const QuizPage: React.FC = () => {
             Câu hỏi:
           </span>
 
+          {currentQ?.contextText && (
+            <div style={{ margin: "0 auto var(--space-4)", maxWidth: "590px", padding: "14px 16px", borderRadius: "var(--radius-md)", backgroundColor: "var(--bg-muted)", fontSize: "var(--text-base)", lineHeight: 1.6, textAlign: "left" }}>
+              {renderContext(currentQ.contextText, contextTerm)}
+            </div>
+          )}
+
+          {currentQ?.answerMode === "AUDIO_MULTIPLE_CHOICE" && (
+            <div className="flex-col items-center gap-3" style={{ marginBottom: "var(--space-4)" }}>
+              <span style={{ fontSize: "var(--text-sm)", fontWeight: 700, color: "var(--text-secondary)" }}>Nghe và chọn nghĩa đúng</span>
+              <div style={{ width: "72px", height: "72px", display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "var(--radius-full)", background: "var(--accent-en-subtle)" }}>
+                <div style={{ transform: "scale(1.5)" }}><AudioButton text={currentQ.audioText} language={session.language} size="lg" label="Phát lại từ cần nghe" /></div>
+              </div>
+            </div>
+          )}
+
           <div
             className={isZh ? "hanzi" : ""}
             style={{
@@ -318,13 +367,25 @@ export const QuizPage: React.FC = () => {
             {currentQ?.prompt}
           </div>
 
-          <div className="flex-row justify-center">
-            <AudioButton text={currentQ?.audioText || currentQ?.prompt} language={session.language} size="md" />
-          </div>
+          {currentQ?.audioText && currentQ.answerMode !== "AUDIO_MULTIPLE_CHOICE" && (
+            <div className="flex-row justify-center"><AudioButton text={currentQ.audioText} language={session.language} size="md" /></div>
+          )}
         </div>
 
         {/* Answer Form or Feedback */}
-        {!lastFeedback ? (
+        {!lastFeedback && currentQ?.answerMode !== "TEXT" ? (
+          <div className="flex-col gap-3" role="group" aria-label={currentQ?.instruction || "Chọn đáp án"}>
+            {currentQ?.instruction && <p style={{ margin: 0, textAlign: "center", fontSize: "var(--text-sm)", color: "var(--text-secondary)", fontWeight: 700 }}>{currentQ.instruction}</p>}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "10px" }}>
+              {currentQ?.options?.map((option, index) => (
+                <button key={option} type="button" onClick={() => void submitAnswer(option)} disabled={isSubmittingAnswer} aria-label={`Đáp án ${index + 1}: ${option}`} style={{ minHeight: "54px", padding: "12px 14px", textAlign: "left", borderRadius: "var(--radius-md)", border: "1.5px solid var(--border-strong)", background: "var(--bg-surface)", color: "var(--text-primary)", fontSize: "var(--text-base)", fontWeight: 700, cursor: "pointer" }}>
+                  <span style={{ color: isZh ? "var(--accent-zh-primary)" : "var(--accent-en-primary)", marginRight: "10px" }}>{index + 1}.</span>{option}
+                </button>
+              ))}
+            </div>
+            <span style={{ textAlign: "center", fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>Nhấn phím 1–4 để chọn nhanh.</span>
+          </div>
+        ) : !lastFeedback ? (
           <form onSubmit={handleAnswer} className="flex-col gap-4">
             <input
               type="text"
@@ -379,9 +440,17 @@ export const QuizPage: React.FC = () => {
 
             {!lastFeedback.correct && (
               <div style={{ fontSize: "var(--text-sm)", color: "var(--color-error-text)" }}>
+                Bạn chọn: <strong>{lastFeedback.selectedAnswer}</strong><br />
                 Đáp án đúng là: <strong>{lastFeedback.expectedAnswer}</strong>
               </div>
             )}
+
+            {(lastFeedback.term || lastFeedback.meaningVi) && (
+              <div style={{ fontSize: "var(--text-sm)", color: lastFeedback.correct ? "var(--color-success-text)" : "var(--color-error-text)" }}>
+                Từ vựng: <strong>{lastFeedback.term}</strong> — {lastFeedback.meaningVi}
+              </div>
+            )}
+            {lastFeedback.completedSentence && <div style={{ fontSize: "var(--text-sm)", color: "var(--text-primary)" }}>{lastFeedback.completedSentence}</div>}
 
             <Button
               variant={lastFeedback.correct ? "primary" : "secondary"}

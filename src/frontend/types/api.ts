@@ -377,6 +377,9 @@ export interface QuizQuestion {
   options?: string[];
   type: string;
   vocabularyId?: string;
+  contextText?: string;
+  instruction?: string;
+  answerMode: "MULTIPLE_CHOICE" | "TEXT" | "AUDIO_MULTIPLE_CHOICE";
 }
 
 export interface QuizSession {
@@ -397,6 +400,11 @@ export interface QuizSession {
 export interface QuizAnswerResult {
   correct: boolean;
   expectedAnswer: string;
+  feedback?: {
+    term: string;
+    meaningVi: string;
+    completedSentence?: string;
+  };
   session: QuizSession;
 }
 
