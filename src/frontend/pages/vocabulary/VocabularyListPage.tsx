@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo } from "react";
+import React, { useCallback, useDeferredValue, useEffect, useState, useMemo } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   Search,
@@ -28,6 +28,118 @@ import type { Language, VocabularyCollection, VocabularyItem } from "../../types
 import { APP_ROUTES } from "../../runtime/routes";
 import { isLikelyIpa } from "../../static/localDomain";
 import { getVocabularyCefr, getVocabularyTopics } from "../../../shared/vocabularyIntelligence";
+
+export const countVocabularyCollections = (items: VocabularyItem[]): Map<string, number> => {
+  const counts = new Map<string, number>();
+  for (const item of items) {
+    for (const collectionId of item.collectionIds ?? []) {
+      counts.set(collectionId, (counts.get(collectionId) ?? 0) + 1);
+    }
+  }
+  return counts;
+};
+
+interface VocabularyCardProps {
+  item: VocabularyItem;
+  onFavorite: (item: VocabularyItem, event: React.MouseEvent) => void;
+  onEdit: (item: VocabularyItem, event: React.MouseEvent) => void;
+  onDelete: (item: VocabularyItem) => void;
+  onRender?: (id: string) => void;
+}
+
+export const VocabularyGridCard = React.memo(function VocabularyGridCard({
+  item,
+  onFavorite,
+  onEdit,
+  onDelete,
+  onRender,
+}: VocabularyCardProps): React.ReactElement {
+  onRender?.(item.id);
+  const isZh = item.language === "zh";
+  const pronunciationDisplay = isZh
+    ? (item.metadata?.pinyin || item.pronunciation)
+    : (item.metadata?.ipa || (isLikelyIpa(item.pronunciation) ? item.pronunciation : null));
+
+  return (
+    <Card hoverable className="flex-col justify-between" style={{ borderLeft: `4px solid ${isZh ? "var(--accent-zh-primary)" : "var(--accent-en-primary)"}` }}>
+      <div>
+        <div className="flex-row justify-between items-center" style={{ marginBottom: "var(--space-2)" }}>
+          <div className="flex-row items-center gap-1">
+            <Badge variant={isZh ? "zh" : "en"} size="sm">{isZh ? "🇨🇳 ZH" : "🇬🇧 EN"}</Badge>
+            <Badge status={item.progress.status} size="sm">{item.progress.status}</Badge>
+            {item.level && <Badge variant="default" size="sm">{item.level}</Badge>}
+          </div>
+          <button type="button" onClick={(event) => onFavorite(item, event)} style={{ padding: "4px", color: item.favorite ? "#F59E0B" : "var(--text-tertiary)" }} title={item.favorite ? "Bỏ yêu thích" : "Yêu thích"}>
+            <Star size={16} fill={item.favorite ? "#F59E0B" : "none"} />
+          </button>
+        </div>
+
+        <div style={{ margin: "var(--space-2) 0" }}>
+          <div className="flex-row items-center gap-2">
+            <span className={isZh ? "hanzi" : ""} style={{ fontSize: isZh ? "1.75rem" : "1.25rem", fontWeight: 700, color: "var(--text-primary)" }}>{item.term}</span>
+            <AudioButton text={item.term} audioUrl={item.audioUrl} language={item.language} size="sm" />
+          </div>
+          {pronunciationDisplay && (
+            <div className={isZh ? "pinyin" : ""} style={{ fontSize: "var(--text-sm)", color: "var(--text-tertiary)", marginTop: "2px", fontFamily: isZh ? "var(--font-body)" : "var(--font-mono)" }}>
+              {pronunciationDisplay}
+            </div>
+          )}
+        </div>
+
+        <div style={{ fontSize: "var(--text-base)", fontWeight: 600, color: "var(--text-primary)", marginBottom: "var(--space-2)" }}>{item.meaningVi}</div>
+        {item.example && (
+          <div style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)", backgroundColor: "var(--bg-muted)", padding: "var(--space-2) var(--space-3)", borderRadius: "var(--radius-sm)", fontStyle: "italic" }}>
+            "{item.example}"
+          </div>
+        )}
+      </div>
+
+      <div className="flex-row justify-between items-center" style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: "var(--space-2)", marginTop: "var(--space-3)" }}>
+        <div className="flex-row items-center gap-1">
+          {item.partOfSpeech && <span style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)", fontWeight: 500 }}>{item.partOfSpeech}</span>}
+          {getVocabularyTopics(item).map((topic) => <Badge key={topic} variant="default" size="sm">{topic}</Badge>)}
+        </div>
+        <div className="flex-row items-center gap-1">
+          <IconButton label="Sửa từ vựng" size="sm" onClick={(event) => onEdit(item, event)}><Edit2 size={14} /></IconButton>
+          <IconButton label="Xóa từ vựng" size="sm" variant="danger" onClick={(event) => { event.stopPropagation(); onDelete(item); }}><Trash2 size={14} /></IconButton>
+        </div>
+      </div>
+    </Card>
+  );
+});
+
+export const VocabularyTableRow = React.memo(function VocabularyTableRow({
+  item,
+  onEdit,
+  onDelete,
+  onRender,
+}: Omit<VocabularyCardProps, "onFavorite">): React.ReactElement {
+  onRender?.(item.id);
+  const isZh = item.language === "zh";
+  const pronunciationDisplay = isZh
+    ? (item.metadata?.pinyin || item.pronunciation)
+    : (item.metadata?.ipa || (isLikelyIpa(item.pronunciation) ? item.pronunciation : null));
+  return (
+    <tr style={{ borderBottom: "1px solid var(--border-subtle)", transition: "background-color var(--transition-fast)" }}>
+      <td style={{ padding: "12px 16px", fontWeight: 700 }}>
+        <div className="flex-row items-center gap-2">
+          <AudioButton text={item.term} audioUrl={item.audioUrl} language={item.language} size="sm" />
+          <span className={isZh ? "hanzi" : ""}>{item.term}</span>
+          {item.favorite && <Star size={12} fill="#F59E0B" color="#F59E0B" />}
+        </div>
+      </td>
+      <td style={{ padding: "12px 16px", color: "var(--text-tertiary)", fontFamily: isZh ? "var(--font-body)" : "var(--font-mono)" }}>{pronunciationDisplay || "—"}</td>
+      <td style={{ padding: "12px 16px", fontWeight: 500 }}>{item.meaningVi}</td>
+      <td style={{ padding: "12px 16px" }}><Badge status={item.progress.status} size="sm">{item.progress.status}</Badge></td>
+      <td style={{ padding: "12px 16px", textAlign: "right" }}>
+        <div className="flex-row justify-end items-center gap-1">
+          <IconButton label="Sửa" size="sm" onClick={(event) => onEdit(item, event)}><Edit2 size={14} /></IconButton>
+          <IconButton label="Xóa" size="sm" variant="danger" onClick={() => onDelete(item)}><Trash2 size={14} /></IconButton>
+        </div>
+      </td>
+    </tr>
+  );
+});
 
 export const VocabularyListPage: React.FC = () => {
   const navigate = useNavigate();
@@ -116,16 +228,20 @@ export const VocabularyListPage: React.FC = () => {
     return Array.from(set);
   }, [items]);
 
+  const collectionCounts = useMemo(() => countVocabularyCollections(items), [items]);
+
+  const deferredSearchTerm = useDeferredValue(searchTerm);
+
   // Filtered items
   const filteredItems = useMemo(() => {
+    const query = deferredSearchTerm.trim().toLocaleLowerCase();
     return items.filter((item) => {
       if (onlyFavorites && !item.favorite) return false;
       if (selectedStatus !== "ALL" && item.progress.status !== selectedStatus) return false;
       if (selectedTopic !== "ALL" && !getVocabularyTopics(item).some((topic) => topic.localeCompare(selectedTopic, undefined, { sensitivity: "accent" }) === 0)) return false;
       if (selectedCefr !== "ALL" && getVocabularyCefr(item) !== selectedCefr) return false;
       if (selectedCollection !== "ALL" && !item.collectionIds?.includes(selectedCollection)) return false;
-      if (searchTerm.trim()) {
-        const query = searchTerm.toLowerCase();
+      if (query) {
         const matchTerm = item.term.toLowerCase().includes(query);
         const matchMeaning = item.meaningVi.toLowerCase().includes(query);
         const matchPron = item.pronunciation?.toLowerCase().includes(query);
@@ -133,7 +249,7 @@ export const VocabularyListPage: React.FC = () => {
       }
       return true;
     });
-  }, [items, onlyFavorites, selectedStatus, selectedTopic, selectedCefr, selectedCollection, searchTerm]);
+  }, [items, onlyFavorites, selectedStatus, selectedTopic, selectedCefr, selectedCollection, deferredSearchTerm]);
 
   const handleCreateCollection = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -183,7 +299,7 @@ export const VocabularyListPage: React.FC = () => {
     }
   };
 
-  const handleToggleFavorite = async (item: VocabularyItem, e: React.MouseEvent) => {
+  const handleToggleFavorite = useCallback(async (item: VocabularyItem, e: React.MouseEvent) => {
     e.stopPropagation();
     try {
       const updated = await vocabularyApi.favorite(item.id, !item.favorite);
@@ -192,7 +308,7 @@ export const VocabularyListPage: React.FC = () => {
     } catch {
       error("Lỗi khi cập nhật yêu thích.");
     }
-  };
+  }, [error, success]);
 
   const handleConfirmDelete = async () => {
     if (!itemToDelete) return;
@@ -209,7 +325,7 @@ export const VocabularyListPage: React.FC = () => {
     }
   };
 
-  const handleOpenEdit = (item: VocabularyItem, e: React.MouseEvent) => {
+  const handleOpenEdit = useCallback((item: VocabularyItem, e: React.MouseEvent) => {
     e.stopPropagation();
     setItemToEdit(item);
     setEditForm({
@@ -224,7 +340,11 @@ export const VocabularyListPage: React.FC = () => {
       level: item.level || "",
       note: item.note || "",
     });
-  };
+  }, []);
+
+  const handleRequestDelete = useCallback((item: VocabularyItem) => {
+    setItemToDelete(item);
+  }, []);
 
   const handleSaveEdit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -297,7 +417,7 @@ export const VocabularyListPage: React.FC = () => {
                   style={{ flex: "1 1 180px", padding: "7px 10px", borderRadius: "var(--radius-md)", border: "1px solid var(--border-default)", backgroundColor: "var(--bg-surface)" }}
                 />
                 <Button type="button" variant="secondary" size="sm" onClick={() => setSelectedCollection(selectedCollection === collection.id ? "ALL" : collection.id)}>
-                  {selectedCollection === collection.id ? "Bỏ lọc" : "Lọc"} ({items.filter((item) => item.collectionIds?.includes(collection.id)).length})
+                  {selectedCollection === collection.id ? "Bỏ lọc" : "Lọc"} ({collectionCounts.get(collection.id) ?? 0})
                 </Button>
                 <Button type="button" variant="secondary" size="sm" onClick={() => handleRenameCollection(collection)}>Đổi tên</Button>
                 <Button type="button" variant="danger" size="sm" onClick={() => setCollectionToDelete(collection)}>Xóa</Button>
@@ -499,169 +619,15 @@ export const VocabularyListPage: React.FC = () => {
             gap: "16px",
           }}
         >
-          {filteredItems.map((item) => {
-            const isZh = item.language === "zh";
-            const pronunciationDisplay = isZh
-              ? (item.metadata?.pinyin || item.pronunciation)
-              : (item.metadata?.ipa || (isLikelyIpa(item.pronunciation) ? item.pronunciation : null));
-
-            return (
-              <Card
-                key={item.id}
-                hoverable
-                className="flex-col justify-between"
-                style={{
-                  borderLeft: `4px solid ${
-                    isZh ? "var(--accent-zh-primary)" : "var(--accent-en-primary)"
-                  }`,
-                }}
-              >
-                <div>
-                  {/* Top Bar: Language & Status & Favorite */}
-                  <div className="flex-row justify-between items-center" style={{ marginBottom: "var(--space-2)" }}>
-                    <div className="flex-row items-center gap-1">
-                      <Badge variant={isZh ? "zh" : "en"} size="sm">
-                        {isZh ? "🇨🇳 ZH" : "🇬🇧 EN"}
-                      </Badge>
-                      <Badge status={item.progress.status} size="sm">
-                        {item.progress.status}
-                      </Badge>
-                      {item.level && (
-                        <Badge variant="default" size="sm">
-                          {item.level}
-                        </Badge>
-                      )}
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={(e) => handleToggleFavorite(item, e)}
-                      style={{
-                        padding: "4px",
-                        color: item.favorite ? "#F59E0B" : "var(--text-tertiary)",
-                      }}
-                      title={item.favorite ? "Bỏ yêu thích" : "Yêu thích"}
-                    >
-                      <Star size={16} fill={item.favorite ? "#F59E0B" : "none"} />
-                    </button>
-                  </div>
-
-                  {/* Main Word / Hanzi & Pronunciation */}
-                  <div style={{ margin: "var(--space-2) 0" }}>
-                    <div className="flex-row items-center gap-2">
-                      <span
-                        className={isZh ? "hanzi" : ""}
-                        style={{
-                          fontSize: isZh ? "1.75rem" : "1.25rem",
-                          fontWeight: 700,
-                          color: "var(--text-primary)",
-                        }}
-                      >
-                        {item.term}
-                      </span>
-                      <AudioButton
-                        text={item.term}
-                        audioUrl={item.audioUrl}
-                        language={item.language}
-                        size="sm"
-                      />
-                    </div>
-
-                    {/* Pronunciation / Pinyin / IPA */}
-                    {pronunciationDisplay && (
-                      <div
-                        className={isZh ? "pinyin" : ""}
-                        style={{
-                          fontSize: "var(--text-sm)",
-                          color: "var(--text-tertiary)",
-                          marginTop: "2px",
-                          fontFamily: isZh ? "var(--font-body)" : "var(--font-mono)",
-                        }}
-                      >
-                        {pronunciationDisplay}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Vietnamese Meaning */}
-                  <div
-                    style={{
-                      fontSize: "var(--text-base)",
-                      fontWeight: 600,
-                      color: "var(--text-primary)",
-                      marginBottom: "var(--space-2)",
-                    }}
-                  >
-                    {item.meaningVi}
-                  </div>
-
-                  {/* Example */}
-                  {item.example && (
-                    <div
-                      style={{
-                        fontSize: "var(--text-xs)",
-                        color: "var(--text-secondary)",
-                        backgroundColor: "var(--bg-muted)",
-                        padding: "var(--space-2) var(--space-3)",
-                        borderRadius: "var(--radius-sm)",
-                        fontStyle: "italic",
-                      }}
-                    >
-                      "{item.example}"
-                    </div>
-                  )}
-                </div>
-
-                {/* Footer: Tags / Senses & Actions */}
-                <div
-                  className="flex-row justify-between items-center"
-                  style={{
-                    borderTop: "1px solid var(--border-subtle)",
-                    paddingTop: "var(--space-2)",
-                    marginTop: "var(--space-3)",
-                  }}
-                >
-                  <div className="flex-row items-center gap-1">
-                    {item.partOfSpeech && (
-                      <span
-                        style={{
-                          fontSize: "var(--text-xs)",
-                          color: "var(--text-tertiary)",
-                          fontWeight: 500,
-                        }}
-                      >
-                        {item.partOfSpeech}
-                      </span>
-                    )}
-                    {getVocabularyTopics(item).map((topic) => (
-                      <Badge key={topic} variant="default" size="sm">{topic}</Badge>
-                    ))}
-                  </div>
-
-                  <div className="flex-row items-center gap-1">
-                    <IconButton
-                      label="Sửa từ vựng"
-                      size="sm"
-                      onClick={(e) => handleOpenEdit(item, e)}
-                    >
-                      <Edit2 size={14} />
-                    </IconButton>
-                    <IconButton
-                      label="Xóa từ vựng"
-                      size="sm"
-                      variant="danger"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setItemToDelete(item);
-                      }}
-                    >
-                      <Trash2 size={14} />
-                    </IconButton>
-                  </div>
-                </div>
-              </Card>
-            );
-          })}
+          {filteredItems.map((item) => (
+            <VocabularyGridCard
+              key={item.id}
+              item={item}
+              onFavorite={handleToggleFavorite}
+              onEdit={handleOpenEdit}
+              onDelete={handleRequestDelete}
+            />
+          ))}
         </div>
       ) : (
         /* List View (Table Layout) */
@@ -678,48 +644,14 @@ export const VocabularyListPage: React.FC = () => {
                 </tr>
               </thead>
               <tbody>
-                {filteredItems.map((item) => {
-                  const isItemZh = item.language === "zh";
-                  const itemPronDisplay = isItemZh
-                    ? (item.metadata?.pinyin || item.pronunciation)
-                    : (item.metadata?.ipa || (isLikelyIpa(item.pronunciation) ? item.pronunciation : null));
-                  return (
-                  <tr
+                {filteredItems.map((item) => (
+                  <VocabularyTableRow
                     key={item.id}
-                    style={{
-                      borderBottom: "1px solid var(--border-subtle)",
-                      transition: "background-color var(--transition-fast)",
-                    }}
-                  >
-                    <td style={{ padding: "12px 16px", fontWeight: 700 }}>
-                      <div className="flex-row items-center gap-2">
-                        <AudioButton text={item.term} audioUrl={item.audioUrl} language={item.language} size="sm" />
-                        <span className={item.language === "zh" ? "hanzi" : ""}>{item.term}</span>
-                        {item.favorite && <Star size={12} fill="#F59E0B" color="#F59E0B" />}
-                      </div>
-                    </td>
-                    <td style={{ padding: "12px 16px", color: "var(--text-tertiary)", fontFamily: isItemZh ? "var(--font-body)" : "var(--font-mono)" }}>
-                      {itemPronDisplay || "—"}
-                    </td>
-                    <td style={{ padding: "12px 16px", fontWeight: 500 }}>{item.meaningVi}</td>
-                    <td style={{ padding: "12px 16px" }}>
-                      <Badge status={item.progress.status} size="sm">
-                        {item.progress.status}
-                      </Badge>
-                    </td>
-                    <td style={{ padding: "12px 16px", textAlign: "right" }}>
-                      <div className="flex-row justify-end items-center gap-1">
-                        <IconButton label="Sửa" size="sm" onClick={(e) => handleOpenEdit(item, e)}>
-                          <Edit2 size={14} />
-                        </IconButton>
-                        <IconButton label="Xóa" size="sm" variant="danger" onClick={() => setItemToDelete(item)}>
-                          <Trash2 size={14} />
-                        </IconButton>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
+                    item={item}
+                    onEdit={handleOpenEdit}
+                    onDelete={handleRequestDelete}
+                  />
+                ))}
               </tbody>
             </table>
           </div>

@@ -7,24 +7,32 @@ import { ToastProvider } from "./context/ToastContext";
 import { ProtectedRoute } from "./components/layout/ProtectedRoute";
 import { AppShell } from "./components/layout/AppShell";
 
-// Pages
-import { LoginPage } from "./pages/auth/LoginPage";
-import { RegisterPage } from "./pages/auth/RegisterPage";
-import { HomePage } from "./pages/home/HomePage";
-import { VocabularyListPage } from "./pages/vocabulary/VocabularyListPage";
-import { AddVocabularyPage } from "./pages/vocabulary/AddVocabularyPage";
-import { FlashcardPage } from "./pages/flashcards/FlashcardPage";
-import { ReadingListPage } from "./pages/reading/ReadingListPage";
-import { AddReadingPage } from "./pages/reading/AddReadingPage";
-import { ReadingDetailPage } from "./pages/reading/ReadingDetailPage";
-import { ShadowingPage } from "./pages/shadowing/ShadowingPage";
-import { PronunciationPage } from "./pages/pronunciation/PronunciationPage";
-import { QuizPage } from "./pages/quiz/QuizPage";
-import { GamesPage } from "./pages/games/GamesPage";
-import { ProgressPage } from "./pages/progress/ProgressPage";
-import { SettingsPage } from "./pages/settings/SettingsPage";
 import { isStaticRuntime } from "./runtime/runtime";
 import { handleAuthRedirect, isAuthCallbackUrl } from "./persistence/supabaseClient";
+
+const lazyNamed = <T extends React.ComponentType<any>>(
+  loader: () => Promise<Record<string, unknown>>,
+  exportName: string,
+) => React.lazy(async () => {
+  const module = await loader();
+  return { default: module[exportName] as T };
+});
+
+const LoginPage = lazyNamed(() => import("./pages/auth/LoginPage"), "LoginPage");
+const RegisterPage = lazyNamed(() => import("./pages/auth/RegisterPage"), "RegisterPage");
+const HomePage = lazyNamed(() => import("./pages/home/HomePage"), "HomePage");
+const VocabularyListPage = lazyNamed(() => import("./pages/vocabulary/VocabularyListPage"), "VocabularyListPage");
+const AddVocabularyPage = lazyNamed(() => import("./pages/vocabulary/AddVocabularyPage"), "AddVocabularyPage");
+const FlashcardPage = lazyNamed(() => import("./pages/flashcards/FlashcardPage"), "FlashcardPage");
+const ReadingListPage = lazyNamed(() => import("./pages/reading/ReadingListPage"), "ReadingListPage");
+const AddReadingPage = lazyNamed(() => import("./pages/reading/AddReadingPage"), "AddReadingPage");
+const ReadingDetailPage = lazyNamed(() => import("./pages/reading/ReadingDetailPage"), "ReadingDetailPage");
+const ShadowingPage = lazyNamed(() => import("./pages/shadowing/ShadowingPage"), "ShadowingPage");
+const PronunciationPage = lazyNamed(() => import("./pages/pronunciation/PronunciationPage"), "PronunciationPage");
+const QuizPage = lazyNamed(() => import("./pages/quiz/QuizPage"), "QuizPage");
+const GamesPage = lazyNamed(() => import("./pages/games/GamesPage"), "GamesPage");
+const ProgressPage = lazyNamed(() => import("./pages/progress/ProgressPage"), "ProgressPage");
+const SettingsPage = lazyNamed(() => import("./pages/settings/SettingsPage"), "SettingsPage");
 
 const NotFoundPage: React.FC = () => (
   <main style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: "var(--space-6)", textAlign: "center" }}>
@@ -46,6 +54,12 @@ const AuthRedirectingPage: React.FC = () => (
     </div>
     {/* inline keyframes for the spinner */}
     <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+  </main>
+);
+
+const RouteLoadingPage: React.FC = () => (
+  <main aria-busy="true" style={{ minHeight: "50vh", display: "grid", placeItems: "center", color: "var(--text-secondary)" }}>
+    Đang tải…
   </main>
 );
 
@@ -101,7 +115,8 @@ export const App: React.FC = () => {
         <LanguageProvider>
           <ToastProvider>
             <Router>
-              <Routes>
+              <React.Suspense fallback={<RouteLoadingPage />}>
+                <Routes>
                 {/* Public Auth Routes */}
                 <Route path="/login" element={staticMode ? <Navigate to="/" replace /> : <LoginPage />} />
                 <Route path="/register" element={staticMode ? <Navigate to="/" replace /> : <RegisterPage />} />
@@ -131,7 +146,8 @@ export const App: React.FC = () => {
 
                 {/* Catch-all fallback */}
                 <Route path="*" element={<NotFoundPage />} />
-              </Routes>
+                </Routes>
+              </React.Suspense>
             </Router>
           </ToastProvider>
         </LanguageProvider>

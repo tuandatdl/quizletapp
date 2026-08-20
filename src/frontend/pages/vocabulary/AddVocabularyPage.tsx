@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useCallback, useRef, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import {
   Plus,
@@ -12,9 +12,6 @@ import {
   HelpCircle,
   AlertCircle,
   CheckCircle2,
-  ChevronDown,
-  ChevronUp,
-  Loader2,
   Bookmark,
 } from "lucide-react";
 import { vocabularyApi } from "../../api/vocabulary.api";
@@ -33,10 +30,11 @@ import type {
   VocabularySenseSuggestion,
 } from "../../types/api";
 import { parseLocalQuickInput, isLikelyIpa } from "../../static/localDomain";
+import { QuickAddPreviewRows } from "./QuickAddPreviewRows";
 
 type TabMode = "quick" | "detailed";
 
-interface EditablePreviewItem {
+export interface EditablePreviewItem {
   id: string;
   existingId?: string;
   needsRepair?: boolean;
@@ -66,6 +64,15 @@ interface EditablePreviewItem {
   enrichmentState: "loading" | "ready" | "partial" | "invalid" | "failed" | "exists";
   enrichmentError?: string;
 }
+
+export const updatePreviewItemField = <K extends keyof EditablePreviewItem>(
+  items: EditablePreviewItem[],
+  id: string,
+  field: K,
+  value: EditablePreviewItem[K],
+): EditablePreviewItem[] => items.map((item) => (
+  item.id === id ? { ...item, [field]: value } : item
+));
 
 const toEditablePreview = (
   item: BulkVocabularyPreview["items"][number],
@@ -140,6 +147,8 @@ export const AddVocabularyPage: React.FC = () => {
   const [isRetryingEnrichment, setIsRetryingEnrichment] = useState(false);
   const [enrichmentConfigured, setEnrichmentConfigured] = useState<boolean>(true);
   const [previewItems, setPreviewItems] = useState<EditablePreviewItem[]>([]);
+  const previewItemsRef = useRef(previewItems);
+  previewItemsRef.current = previewItems;
   const [hasParsed, setHasParsed] = useState(false);
   const [isBulkSaving, setIsBulkSaving] = useState(false);
   const [bulkSaveResult, setBulkSaveResult] = useState<BulkVocabularyCreateResult | null>(null);
@@ -202,8 +211,8 @@ export const AddVocabularyPage: React.FC = () => {
     }
   };
 
-  const handleRetryEnrichment = async (terms?: string[]) => {
-    const targets = terms ?? previewItems.filter(needsEnrichmentRetry).map((item) => item.term);
+  const handleRetryEnrichment = useCallback(async (terms?: string[]) => {
+    const targets = terms ?? previewItemsRef.current.filter(needsEnrichmentRetry).map((item) => item.term);
     if (!targets.length) return;
     const normalizedTargets = new Set(targets.map((term) => term.normalize("NFKC").trim().toLocaleLowerCase()));
     setIsRetryingEnrichment(true);
@@ -221,9 +230,9 @@ export const AddVocabularyPage: React.FC = () => {
     } finally {
       setIsRetryingEnrichment(false);
     }
-  };
+  }, [error, formLang]);
 
-  const handleChooseSense = (id: string, senseIndex: number) => {
+  const handleChooseSense = useCallback((id: string, senseIndex: number) => {
     setPreviewItems((items) => items.map((item) => {
       if (item.id !== id) return item;
       const sense = item.senses[senseIndex];
@@ -243,7 +252,7 @@ export const AddVocabularyPage: React.FC = () => {
         exampleTranslation: sense.exampleTranslation !== undefined ? sense.exampleTranslation : item.exampleTranslation,
       };
     }));
-  };
+  }, [formLang]);
 
   const handleRemoveChip = (indexToRemove: number) => {
     setPreviewItems((prev) => prev.filter((_, idx) => idx !== indexToRemove));
@@ -256,31 +265,39 @@ export const AddVocabularyPage: React.FC = () => {
   };
 
   const handleToggleSelectAll = () => {
-    const allSelected = previewItems.every((i) => i.selected);
-    setPreviewItems((prev) => prev.map((i) => ({ ...i, selected: !allSelected })));
+    setPreviewItems((prev) => {
+      const allSelected = prev.every((item) => item.selected);
+      return prev.map((item) => ({ ...item, selected: !allSelected }));
+    });
   };
 
-  const handleToggleSelectItem = (id: string) => {
+  const handleToggleSelectItem = useCallback((id: string) => {
     setPreviewItems((prev) =>
       prev.map((i) => (i.id === id ? { ...i, selected: !i.selected } : i))
     );
-  };
+  }, []);
 
-  const handleUpdateItemField = (id: string, field: keyof EditablePreviewItem, value: any) => {
-    setPreviewItems((prev) =>
-      prev.map((i) => (i.id === id ? { ...i, [field]: value } : i))
-    );
-  };
+  const handleUpdateItemField = useCallback(<K extends keyof EditablePreviewItem>(
+    id: string,
+    field: K,
+    value: EditablePreviewItem[K],
+  ) => {
+    setPreviewItems((prev) => updatePreviewItemField(prev, id, field, value));
+  }, []);
 
-  const handleToggleExpandDetails = (id: string) => {
+  const handleToggleExpandDetails = useCallback((id: string) => {
     setPreviewItems((prev) =>
       prev.map((i) => (i.id === id ? { ...i, expandedDetails: !i.expandedDetails } : i))
     );
-  };
+  }, []);
 
-  const handleAcceptRepair = (id: string) => {
+  const handleAcceptRepair = useCallback((id: string) => {
     setPreviewItems((prev) => prev.map((item) => item.id === id ? { ...item, repairAccepted: true } : item));
-  };
+  }, []);
+
+  const handleRemovePreviewItem = useCallback((id: string) => {
+    setPreviewItems((prev) => prev.filter((item) => item.id !== id));
+  }, []);
 
   const handleBulkSave = async () => {
     const selectedItems = previewItems.filter((i) => i.selected);
@@ -703,308 +720,17 @@ export const AddVocabularyPage: React.FC = () => {
               )}
 
               {/* ================= EDITABLE ROWS TABLE ================= */}
-              <div className="flex-col gap-3">
-                {previewItems.map((item, idx) => (
-                  <div
-                    key={item.id}
-                    style={{
-                      border: "1px solid var(--border-default)",
-                      borderRadius: "var(--radius-lg)",
-                      padding: "12px 16px",
-                      backgroundColor: item.selected ? "var(--bg-surface)" : "var(--bg-muted)",
-                      transition: "all var(--transition-fast)",
-                    }}
-                  >
-                    {/* Main Row Editor (Desktop: flex row, Mobile: stacked) */}
-                    <div
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns: "auto 1.2fr 0.9fr 1fr 1.5fr auto auto",
-                        alignItems: "center",
-                        gap: "10px",
-                      }}
-                      className="quick-vocab-row"
-                    >
-                      {/* Checkbox */}
-                      <input
-                        type="checkbox"
-                        checked={item.selected}
-                        onChange={() => handleToggleSelectItem(item.id)}
-                        aria-label={`Chọn từ ${item.term}`}
-                        style={{ width: "18px", height: "18px", cursor: "pointer", accentColor: isZh ? "var(--accent-zh-primary)" : "var(--accent-en-primary)" }}
-                      />
-
-                      {/* Term Input */}
-                      <div>
-                        <label style={{ display: "block", fontSize: "0.7rem", color: "var(--text-tertiary)", fontWeight: 700 }}>TỪ VỰNG</label>
-                        <input
-                          type="text"
-                          value={item.term}
-                          onChange={(e) => handleUpdateItemField(item.id, "term", e.target.value)}
-                          className={isZh ? "hanzi" : ""}
-                          style={{
-                            width: "100%",
-                            padding: "6px 8px",
-                            borderRadius: "var(--radius-md)",
-                            border: "1px solid var(--border-default)",
-                            backgroundColor: "var(--bg-surface)",
-                            fontWeight: 700,
-                            fontSize: isZh ? "1.1rem" : "var(--text-sm)",
-                          }}
-                        />
-                        <div style={{ marginTop: "4px", fontSize: "0.7rem", color: item.enrichmentState === "failed" ? "var(--color-error)" : "var(--text-tertiary)" }}>
-                          {item.enrichmentState === "loading" && <><Loader2 size={11} className="animate-spin" style={{ display: "inline", marginRight: "4px" }} />Đang dịch...</>}
-                          {item.enrichmentState === "ready" && "✓ Tự động tạo"}
-                          {item.enrichmentState === "partial" && "✓ Đã dịch; metadata chưa tải được"}
-                          {item.enrichmentState === "invalid" && (
-                            <span style={{ color: "var(--color-warning, #d97706)", fontWeight: 600 }}>
-                              ⚠ Có thể đây không phải từ tiếng Anh chuẩn{item.lexicalReason ? `: ${item.lexicalReason}` : ""}. Không được chọn để lưu tự động.
-                            </span>
-                          )}
-                          {item.enrichmentState === "failed" && (
-                            <button type="button" onClick={() => handleRetryEnrichment([item.term])} style={{ color: "inherit", textDecoration: "underline" }}>Thử lại</button>
-                          )}
-                          {item.enrichmentState === "exists" && (
-                            item.hasUpdate ? (
-                              item.repairAccepted ? (
-                                <span style={{ color: "var(--color-success, #16a34a)", fontWeight: 500 }}>✓ Đã chọn cập nhật bằng AI khi lưu</span>
-                              ) : (
-                                <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
-                                  <span style={{ color: "var(--color-success, #16a34a)", fontWeight: 500 }}>Có bản cập nhật đề xuất</span>
-                                  <button type="button" onClick={() => handleAcceptRepair(item.id)} style={{ background: "none", border: "none", color: "var(--accent-en-primary, #2563eb)", textDecoration: "underline", cursor: "pointer", fontSize: "0.7rem", padding: 0, display: "inline-flex", alignItems: "center", gap: "2px", fontWeight: 600 }}>
-                                    <Sparkles size={11} /> Cập nhật bằng AI
-                                  </button>
-                                </span>
-                              )
-                            ) : item.needsRepair ? (
-                              <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
-                                <span style={{ color: "var(--color-warning, #d97706)", fontWeight: 500 }}>
-                                  Đã có trong kho · dữ liệu cũ
-                                </span>
-                                <button
-                                  type="button"
-                                  onClick={() => handleRetryEnrichment([item.term])}
-                                  style={{
-                                    background: "none",
-                                    border: "none",
-                                    color: "var(--accent-en-primary, #2563eb)",
-                                    textDecoration: "underline",
-                                    cursor: "pointer",
-                                    fontSize: "0.7rem",
-                                    padding: 0,
-                                    display: "inline-flex",
-                                    alignItems: "center",
-                                    gap: "2px",
-                                    fontWeight: 600,
-                                  }}
-                                >
-                                  <Sparkles size={11} /> Cập nhật bằng AI
-                                </button>
-                              </span>
-                            ) : !item.meaningVi.trim() ? (
-                              <span style={{ color: "var(--color-warning, #d97706)" }}>Từ này đã có trong kho nhưng thiếu thông tin</span>
-                            ) : (
-                              "Đã có trong kho"
-                            )
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Part of Speech */}
-                      <div>
-                        <label style={{ display: "block", fontSize: "0.7rem", color: "var(--text-tertiary)", fontWeight: 700 }}>TỪ LOẠI</label>
-                        <select
-                          value={item.partOfSpeech}
-                          onChange={(e) => handleUpdateItemField(item.id, "partOfSpeech", e.target.value)}
-                          style={{
-                            width: "100%",
-                            padding: "6px 8px",
-                            borderRadius: "var(--radius-md)",
-                            border: "1px solid var(--border-default)",
-                            backgroundColor: "var(--bg-surface)",
-                            fontSize: "var(--text-xs)",
-                          }}
-                        >
-                          <option value="">-- Chọn --</option>
-                          <option value="noun">Danh từ (noun)</option>
-                          <option value="verb">Động từ (verb)</option>
-                          <option value="adjective">Tính từ (adj)</option>
-                          <option value="adverb">Phó từ (adv)</option>
-                          <option value="phrasal verb">Cụm ĐT (phrasal verb)</option>
-                          <option value="phrase">Cụm từ (phrase)</option>
-                          <option value="idiom">Thành ngữ (idiom)</option>
-                          <option value="pronoun">Đại từ (pronoun)</option>
-                          <option value="preposition">Giới từ (prep)</option>
-                          <option value="conjunction">Liên từ (conj)</option>
-                          <option value="determiner">Từ hạn định (det)</option>
-                          <option value="interjection">Thán từ (interj)</option>
-                          {item.partOfSpeech && !["noun", "verb", "adjective", "adverb", "phrasal verb", "phrase", "idiom", "pronoun", "preposition", "conjunction", "determiner", "interjection"].includes(item.partOfSpeech) && (
-                            <option value={item.partOfSpeech}>{item.partOfSpeech}</option>
-                          )}
-                        </select>
-                      </div>
-
-                      {/* Pronunciation / IPA */}
-                      <div>
-                        <label style={{ display: "block", fontSize: "0.7rem", color: "var(--text-tertiary)", fontWeight: 700 }}>
-                          {isZh ? "PINYIN" : "PHIÊN ÂM (IPA)"}
-                        </label>
-                        <input
-                          type="text"
-                          value={item.pronunciation}
-                          onChange={(e) => handleUpdateItemField(item.id, "pronunciation", e.target.value)}
-                          placeholder={isZh ? "xuéxí" : "/ɡoʊ/"}
-                          style={{
-                            width: "100%",
-                            padding: "6px 8px",
-                            borderRadius: "var(--radius-md)",
-                            border: "1px solid var(--border-default)",
-                            backgroundColor: "var(--bg-surface)",
-                            fontSize: "var(--text-xs)",
-                          }}
-                        />
-                      </div>
-
-                      {/* Vietnamese Meaning (Required) */}
-                      <div>
-                        <label style={{ display: "block", fontSize: "0.7rem", color: item.meaningVi.trim() ? "var(--text-tertiary)" : "var(--color-error)", fontWeight: 700 }}>
-                          NGHĨA TIẾNG VIỆT *
-                        </label>
-                        <input
-                          type="text"
-                          required
-                          value={item.meaningVi}
-                          onChange={(e) => handleUpdateItemField(item.id, "meaningVi", e.target.value)}
-                          placeholder="Nhập nghĩa tiếng Việt..."
-                          style={{
-                            width: "100%",
-                            padding: "6px 8px",
-                            borderRadius: "var(--radius-md)",
-                            border: `1.5px solid ${item.meaningVi.trim() ? "var(--border-strong)" : "var(--color-error)"}`,
-                            backgroundColor: "var(--bg-surface)",
-                            fontSize: "var(--text-sm)",
-                          }}
-                        />
-                        {item.senses.length > 1 && (
-                          <div style={{ marginTop: "4px" }}>
-                            <select
-                              aria-label={`Chọn nghĩa cho ${item.term}`}
-                              defaultValue="0"
-                              onChange={(event) => handleChooseSense(item.id, Number(event.target.value))}
-                              style={{
-                                width: "100%",
-                                padding: "4px 6px",
-                                borderRadius: "var(--radius-sm)",
-                                border: "1px solid var(--border-default)",
-                                fontSize: "0.7rem",
-                                backgroundColor: "var(--bg-surface)",
-                              }}
-                            >
-                              {item.senses.map((sense, senseIndex) => (
-                                <option key={`${item.id}-sense-${senseIndex}`} value={senseIndex}>
-                                  {senseIndex + 1}. {sense.partOfSpeech ? `[${sense.partOfSpeech}] ` : ""}{sense.ipa || sense.pinyin ? `${sense.ipa || sense.pinyin} ` : ""}{sense.meaningVi}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Expand Details Button */}
-                      <button
-                        type="button"
-                        onClick={() => handleToggleExpandDetails(item.id)}
-                        style={{
-                          fontSize: "var(--text-xs)",
-                          fontWeight: 600,
-                          color: "var(--text-secondary)",
-                          display: "flex",
-                          alignItems: "center",
-                          gap: "4px",
-                          padding: "6px 8px",
-                        }}
-                      >
-                        <span>Chi tiết</span>
-                        {item.expandedDetails ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-                      </button>
-
-                      {/* Remove Button */}
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveChip(idx)}
-                        style={{ color: "var(--text-tertiary)", padding: "6px" }}
-                        aria-label={`Xóa ${item.term}`}
-                        title="Xóa khỏi danh sách"
-                      >
-                        <X size={16} />
-                      </button>
-                    </div>
-
-                    {/* Expandable Advanced Metadata */}
-                    {item.expandedDetails && (
-                      <div
-                        className="animate-fade-in"
-                        style={{
-                          marginTop: "12px",
-                          paddingTop: "12px",
-                          borderTop: "1px dashed var(--border-default)",
-                          display: "grid",
-                          gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-                          gap: "10px",
-                        }}
-                      >
-                        <div>
-                          <label style={{ display: "block", fontSize: "0.7rem", color: "var(--text-tertiary)", fontWeight: 700 }}>
-                            {isZh ? "PINYIN" : "IPA"}
-                          </label>
-                          <input
-                            type="text"
-                            value={item.pronunciation}
-                            onChange={(e) => handleUpdateItemField(item.id, "pronunciation", e.target.value)}
-                            placeholder={isZh ? "péngyou" : "/ˈpeɪʃəns/"}
-                            style={{ width: "100%", padding: "6px 8px", borderRadius: "var(--radius-md)", border: "1px solid var(--border-default)", fontSize: "var(--text-xs)" }}
-                          />
-                        </div>
-
-                        <div>
-                          <label style={{ display: "block", fontSize: "0.7rem", color: "var(--text-tertiary)", fontWeight: 700 }}>
-                            {isZh ? "CẤP ĐỘ HSK" : "TRÌNH ĐỘ (CEFR)"}
-                          </label>
-                          <input
-                            type="text"
-                            value={item.level}
-                            onChange={(e) => handleUpdateItemField(item.id, "level", e.target.value)}
-                            placeholder={isZh ? "HSK1" : "B1, B2"}
-                            style={{ width: "100%", padding: "6px 8px", borderRadius: "var(--radius-md)", border: "1px solid var(--border-default)", fontSize: "var(--text-xs)" }}
-                          />
-                        </div>
-
-                        <div>
-                          <label style={{ display: "block", fontSize: "0.7rem", color: "var(--text-tertiary)", fontWeight: 700 }}>CÂU VÍ DỤ</label>
-                          <input
-                            type="text"
-                            value={item.example}
-                            onChange={(e) => handleUpdateItemField(item.id, "example", e.target.value)}
-                            placeholder="Ví dụ minh họa..."
-                            style={{ width: "100%", padding: "6px 8px", borderRadius: "var(--radius-md)", border: "1px solid var(--border-default)", fontSize: "var(--text-xs)" }}
-                          />
-                        </div>
-
-                        <div>
-                          <label style={{ display: "block", fontSize: "0.7rem", color: "var(--text-tertiary)", fontWeight: 700 }}>DỊCH CÂU VÍ DỤ</label>
-                          <input
-                            type="text"
-                            value={item.exampleTranslation}
-                            onChange={(e) => handleUpdateItemField(item.id, "exampleTranslation", e.target.value)}
-                            placeholder="Dịch nghĩa câu ví dụ..."
-                            style={{ width: "100%", padding: "6px 8px", borderRadius: "var(--radius-md)", border: "1px solid var(--border-default)", fontSize: "var(--text-xs)" }}
-                          />
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
+              <QuickAddPreviewRows
+                items={previewItems}
+                isZh={isZh}
+                onToggleSelect={handleToggleSelectItem}
+                onUpdateField={handleUpdateItemField}
+                onToggleDetails={handleToggleExpandDetails}
+                onRemove={handleRemovePreviewItem}
+                onRetry={handleRetryEnrichment}
+                onAcceptRepair={handleAcceptRepair}
+                onChooseSense={handleChooseSense}
+              />
 
               {/* Sticky Bottom Save Action Bar */}
               <div
