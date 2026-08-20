@@ -47,6 +47,8 @@ import {
   buildHighVolumeImportPlan,
   progressForImport,
   runBoundedBatches,
+  logHighVolumeJobMetrics,
+  summarizeHighVolumeJob,
   windowHighVolumeItems,
 } from "./highVolumePipeline";
 
@@ -430,15 +432,19 @@ export const AddVocabularyPage: React.FC = () => {
       return;
     }
     const queued = plan.items.filter((entry) => entry.state === "QUEUED");
+    const highVolumeExecution = { enrichmentBatchCount: 0, failedBatchCount: 0, retriedBatchCount: 0 };
     await runBoundedBatches({
       items: queued,
       batchSize: HIGH_VOLUME_BATCH_SIZE,
       concurrency: HIGH_VOLUME_MAX_CONCURRENCY,
       isActive: isLatestRequest,
       process: async (batch) => vocabularyApi.bulkPreview(languageSnapshot, batch.map((entry) => entry.draft.term).join("\n")),
-      onStart: (batch) => setPreviewItems((items) => items.map((item) => batch.some((entry) => item.id === `loading-${entry.index}`)
+      onStart: (batch) => {
+        highVolumeExecution.enrichmentBatchCount += 1;
+        setPreviewItems((items) => items.map((item) => batch.some((entry) => item.id === `loading-${entry.index}`)
         ? { ...item, enrichmentState: "loading", pipelineFailurePhase: undefined, enrichmentError: undefined }
-        : item)),
+        : item));
+      },
       onSuccess: (batch, response) => {
         setEnrichmentConfigured(response.enrichment.configured);
         const byTerm = new Map(response.items.map((item) => [normalizeLocalTerm(item.term, languageSnapshot), item]));
@@ -450,11 +456,16 @@ export const AddVocabularyPage: React.FC = () => {
           return mergeRetryPreview(toEditablePreview(responseItem, entry.index, languageSnapshot, entry.draft), current);
         }));
       },
-      onFailure: (batch, caught) => setPreviewItems((items) => items.map((item) => batch.some((entry) => item.id === `loading-${entry.index}`)
+      onFailure: (batch, caught) => {
+        highVolumeExecution.failedBatchCount += 1;
+        setPreviewItems((items) => items.map((item) => batch.some((entry) => item.id === `loading-${entry.index}`)
         ? { ...item, enrichmentState: "failed", pipelineFailurePhase: "analysis", enrichmentError: getFriendlyErrorMessage(caught) }
-        : item)),
+        : item));
+      },
+      onRetry: () => { highVolumeExecution.retriedBatchCount += 1; },
     });
     if (isLatestRequest()) {
+      logHighVolumeJobMetrics(summarizeHighVolumeJob(plan, highVolumeExecution));
       setIsPreviewLoading(false);
       success(`Đã nhận diện ${plan.parsed} từ${plan.duplicates ? `, bỏ qua ${plan.duplicates} từ trùng` : ""}.`);
     }

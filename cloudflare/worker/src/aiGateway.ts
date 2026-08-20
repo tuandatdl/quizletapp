@@ -1,3 +1,5 @@
+import { parseGeminiUsageMetadata, safeAiLog, type AiUsage } from "./aiQuality.js";
+
 export type AiProviderName = "gemini" | "workers-ai";
 export type AiGatewaySource = AiProviderName | "cache";
 
@@ -52,6 +54,7 @@ export interface GatewayAttempt {
   latencyMs: number;
   httpStatus?: number;
   upstreamCode?: string;
+  usage?: AiUsage;
 }
 
 export interface AiProviderFailureDetails {
@@ -64,7 +67,30 @@ export interface AiGatewayResult<T> {
   provider: AiGatewaySource;
   fallbackCount: number;
   cacheHit: boolean;
+  cacheMiss: boolean;
+  cacheReadFailure: boolean;
+  cacheWriteFailure: boolean;
+  latencyMs: number;
+  usage?: AiUsage;
   attempts: GatewayAttempt[];
+}
+
+interface AiProviderCompletion {
+  readonly __aiGatewayCompletion: true;
+  readonly payload: unknown;
+  readonly usage?: AiUsage;
+}
+
+function providerCompletion(payload: unknown, usage?: AiUsage): AiProviderCompletion {
+  return { __aiGatewayCompletion: true, payload, usage };
+}
+
+function unpackProviderCompletion(value: unknown): { payload: unknown; usage?: AiUsage } {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const completion = value as Partial<AiProviderCompletion>;
+    if (completion.__aiGatewayCompletion === true && Object.hasOwn(completion, "payload")) return { payload: completion.payload, usage: completion.usage };
+  }
+  return { payload: value };
 }
 
 export class AiProviderError extends Error {
@@ -170,7 +196,9 @@ function classifyFailure(provider: AiProviderName, caught: unknown): AiProviderE
 }
 
 function canFallback(code: AiFailureCode): boolean {
-  return ["AUTH_ERROR", "BAD_REQUEST", "MODEL_NOT_AVAILABLE", "QUOTA_EXCEEDED", "RATE_LIMITED", "TIMEOUT", "NETWORK_ERROR", "UPSTREAM_5XX", "MALFORMED_RESPONSE", "IDENTITY_MISMATCH", "VALIDATION_ERROR"].includes(code);
+  // Request/schema errors are deterministic for this gateway request. Sending
+  // them to another provider only spends quota and cannot repair the request.
+  return ["AUTH_ERROR", "MODEL_NOT_AVAILABLE", "QUOTA_EXCEEDED", "RATE_LIMITED", "TIMEOUT", "NETWORK_ERROR", "UPSTREAM_5XX", "MALFORMED_RESPONSE", "IDENTITY_MISMATCH"].includes(code);
 }
 
 function canRetry(code: AiFailureCode): boolean {
@@ -266,7 +294,8 @@ export class GeminiProvider implements AiProvider {
         this.timeoutMs,
         this.name,
       );
-      return parseJson(textFromGemini(await responseJson(response, this.name)), this.name);
+      const envelope = await responseJson(response, this.name);
+      return providerCompletion(parseJson(textFromGemini(envelope), this.name), parseGeminiUsageMetadata(envelope.usageMetadata));
     } catch (caught) {
       throw classifyFailure(this.name, caught);
     }
@@ -307,28 +336,33 @@ export class WorkersAiProvider implements AiProvider {
 export class AiGateway {
   constructor(private readonly providers: AiProvider[], private readonly cache?: AiGatewayCache) {}
 
-  private async writeCache(key: string, value: unknown): Promise<void> {
-    if (!this.cache) return;
+  private async writeCache(key: string, value: unknown): Promise<boolean> {
+    if (!this.cache) return false;
     try {
       await this.cache.put(key, value);
+      return false;
     } catch {
-      console.warn(JSON.stringify({ event: "ai_gateway_cache_write_failed" }));
+      safeAiLog("ai_gateway_cache_write_failed", {}, console.warn);
+      return true;
     }
   }
 
   async run<T>(request: AiGatewayRequest, validate: (value: unknown) => T, validateCached: (value: unknown) => T = validate): Promise<AiGatewayResult<T>> {
+    const gatewayStartedAt = Date.now();
+    let cacheReadFailure = false;
     if (request.cacheKey && this.cache) {
       let cached: unknown | undefined;
       try {
         cached = await this.cache.get(request.cacheKey);
       } catch {
-        console.warn(JSON.stringify({ event: "ai_gateway_cache_read_failed" }));
+        cacheReadFailure = true;
+        safeAiLog("ai_gateway_cache_read_failed", {}, console.warn);
       }
       if (cached !== undefined) {
         try {
-          return { value: validateCached(cached), provider: "cache", fallbackCount: 0, cacheHit: true, attempts: [] };
+          return { value: validateCached(cached), provider: "cache", fallbackCount: 0, cacheHit: true, cacheMiss: false, cacheReadFailure, cacheWriteFailure: false, latencyMs: Date.now() - gatewayStartedAt, attempts: [] };
         } catch {
-          console.warn(JSON.stringify({ event: "ai_gateway_cache_value_invalid" }));
+          safeAiLog("ai_gateway_cache_value_invalid", {}, console.warn);
         }
       }
     }
@@ -339,20 +373,22 @@ export class AiGateway {
       if (!provider.isConfigured()) continue;
       const startedAt = Date.now();
       try {
-        const value = validate(await provider.complete(request));
-        attempts.push({ provider: provider.name, latencyMs: Date.now() - startedAt });
-        if (request.cacheKey) await this.writeCache(request.cacheKey, value);
-        return { value, provider: provider.name, fallbackCount, cacheHit: false, attempts };
+        const completion = unpackProviderCompletion(await provider.complete(request));
+        const value = validate(completion.payload);
+        attempts.push({ provider: provider.name, latencyMs: Date.now() - startedAt, usage: completion.usage });
+        const cacheWriteFailure = request.cacheKey ? await this.writeCache(request.cacheKey, value) : false;
+        return { value, provider: provider.name, fallbackCount, cacheHit: false, cacheMiss: Boolean(request.cacheKey), cacheReadFailure, cacheWriteFailure, latencyMs: Date.now() - gatewayStartedAt, usage: completion.usage, attempts };
       } catch (caught) {
         const failure = classifyFailure(provider.name, caught);
         attempts.push({ provider: provider.name, failure: failure.code, latencyMs: Date.now() - startedAt, ...failure.details });
         if (canRetry(failure.code) && provider.retryOnce) {
           const retryStartedAt = Date.now();
           try {
-            const value = validate(await provider.retryOnce(request));
-            attempts.push({ provider: provider.name, latencyMs: Date.now() - retryStartedAt });
-            if (request.cacheKey) await this.writeCache(request.cacheKey, value);
-            return { value, provider: provider.name, fallbackCount, cacheHit: false, attempts };
+            const completion = unpackProviderCompletion(await provider.retryOnce(request));
+            const value = validate(completion.payload);
+            attempts.push({ provider: provider.name, latencyMs: Date.now() - retryStartedAt, usage: completion.usage });
+            const cacheWriteFailure = request.cacheKey ? await this.writeCache(request.cacheKey, value) : false;
+            return { value, provider: provider.name, fallbackCount, cacheHit: false, cacheMiss: Boolean(request.cacheKey), cacheReadFailure, cacheWriteFailure, latencyMs: Date.now() - gatewayStartedAt, usage: completion.usage, attempts };
           } catch (retryCaught) {
             const retryFailure = classifyFailure(provider.name, retryCaught);
             attempts.push({ provider: provider.name, failure: retryFailure.code, latencyMs: Date.now() - retryStartedAt, ...retryFailure.details });
