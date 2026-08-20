@@ -691,3 +691,69 @@ button:disabled {
     padding-bottom: calc(var(--mobile-nav-height) + env(safe-area-inset-bottom, 0px) + var(--space-4));
   }
 }
+
+/* ==========================================================================
+   Floating Selection Toolbar & Popovers (Phase K Polish)
+   ========================================================================== */
+
+.floating-selection-toolbar {
+  max-width: min(360px, calc(100vw - 24px));
+  box-sizing: border-box;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  transition: opacity var(--transition-fast), transform var(--transition-fast);
+}
+
+.token-popover {
+  max-width: min(320px, calc(100vw - 24px));
+  box-sizing: border-box;
+  overflow-wrap: break-word;
+}
+
+/* Topic Badge Distinction */
+.topic-badge-assigned {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: var(--radius-full);
+  background: var(--bg-muted);
+  border: 1px solid var(--border-default);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.topic-badge-suggested {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: var(--radius-full);
+  background: var(--accent-en-subtle);
+  border: 1px dashed var(--accent-en-border);
+  color: var(--accent-en-text);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.topic-badge-suggested:hover {
+  background: var(--accent-en-border);
+  border-style: solid;
+}
+
+/* Responsive Table Container */
+.table-container-responsive {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border-radius: var(--radius-lg);
+}
+
+/* Word wrapping safety */
+.wrap-anywhere {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
