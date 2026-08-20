@@ -1,5 +1,5 @@
 import React from "react";
-import { ChevronDown, ChevronUp, Loader2, Sparkles, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Loader2, Plus, Sparkles, X } from "lucide-react";
 import type { EditablePreviewItem } from "./AddVocabularyPage";
 
 export interface QuickAddPreviewRowProps {
@@ -12,6 +12,8 @@ export interface QuickAddPreviewRowProps {
   onRetry: (terms: string[]) => void;
   onAcceptRepair: (id: string) => void;
   onChooseSense: (id: string, senseIndex: number) => void;
+  onOpenTopics: (id: string) => void;
+  onRemoveTopic: (id: string, topic: string) => void;
   onRender?: (id: string) => void;
 }
 
@@ -25,6 +27,8 @@ export const QuickAddPreviewRow = React.memo(function QuickAddPreviewRow({
   onRetry,
   onAcceptRepair,
   onChooseSense,
+  onOpenTopics,
+  onRemoveTopic,
   onRender,
 }: QuickAddPreviewRowProps): React.ReactElement {
   onRender?.(item.id);
@@ -187,6 +191,29 @@ export const QuickAddPreviewRow = React.memo(function QuickAddPreviewRow({
         </button>
       </div>
 
+      <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "6px", marginTop: "10px" }}>
+        <span style={{ fontSize: "0.7rem", color: "var(--text-tertiary)", fontWeight: 700 }}>CHỦ ĐỀ</span>
+        {item.topics.map((topic) => (
+          <span
+            key={topic.toLocaleLowerCase()}
+            style={{ display: "inline-flex", alignItems: "center", gap: "4px", padding: "3px 7px", borderRadius: "var(--radius-full)", background: "var(--bg-muted)", border: "1px solid var(--border-default)", fontSize: "var(--text-xs)" }}
+          >
+            {topic}
+            <button type="button" onClick={() => onRemoveTopic(item.id, topic)} aria-label={`Gỡ chủ đề ${topic} khỏi ${item.term}`} style={{ display: "flex", color: "var(--text-tertiary)" }}>
+              <X size={11} />
+            </button>
+          </span>
+        ))}
+        <button
+          type="button"
+          onClick={() => onOpenTopics(item.id)}
+          aria-label={`Thêm chủ đề cho ${item.term}`}
+          style={{ display: "inline-flex", alignItems: "center", gap: "3px", padding: "3px 7px", color: "var(--accent-en-primary)", fontSize: "var(--text-xs)", fontWeight: 600 }}
+        >
+          <Plus size={12} /> Thêm chủ đề
+        </button>
+      </div>
+
       {item.expandedDetails && (
         <div className="animate-fade-in" style={{ marginTop: "12px", paddingTop: "12px", borderTop: "1px dashed var(--border-default)", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "10px" }}>
           <div>
@@ -197,6 +224,12 @@ export const QuickAddPreviewRow = React.memo(function QuickAddPreviewRow({
             <label style={{ display: "block", fontSize: "0.7rem", color: "var(--text-tertiary)", fontWeight: 700 }}>{isZh ? "CẤP ĐỘ HSK" : "TRÌNH ĐỘ (CEFR)"}</label>
             <input type="text" value={item.level} onChange={(event) => onUpdateField(item.id, "level", event.target.value)} placeholder={isZh ? "HSK1" : "B1, B2"} style={{ width: "100%", padding: "6px 8px", borderRadius: "var(--radius-md)", border: "1px solid var(--border-default)", fontSize: "var(--text-xs)" }} />
           </div>
+          {!isZh && (
+            <div>
+              <label style={{ display: "block", fontSize: "0.7rem", color: "var(--text-tertiary)", fontWeight: 700 }}>TỪ ĐỒNG NGHĨA</label>
+              <input aria-label={`Từ đồng nghĩa cho ${item.term}`} type="text" value={item.synonyms} onChange={(event) => onUpdateField(item.id, "synonyms", event.target.value)} placeholder="plentifully, richly" style={{ width: "100%", padding: "6px 8px", borderRadius: "var(--radius-md)", border: "1px solid var(--border-default)", fontSize: "var(--text-xs)" }} />
+            </div>
+          )}
           <div>
             <label style={{ display: "block", fontSize: "0.7rem", color: "var(--text-tertiary)", fontWeight: 700 }}>CÂU VÍ DỤ</label>
             <input type="text" value={item.example} onChange={(event) => onUpdateField(item.id, "example", event.target.value)} placeholder="Ví dụ minh họa..." style={{ width: "100%", padding: "6px 8px", borderRadius: "var(--radius-md)", border: "1px solid var(--border-default)", fontSize: "var(--text-xs)" }} />

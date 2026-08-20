@@ -1,4 +1,4 @@
-import type { Language, ReadingSentence, ReviewAction, VocabularyItem } from "../types/api";
+import type { Language, ReadingSentence, ReviewAction, VocabularyItem } from "../types/api.js";
 
 export function createLocalId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -14,20 +14,131 @@ export function matchesLocalVocabularyIdentity(item: Pick<VocabularyItem, "langu
   return item.language === language && normalizeLocalTerm(item.term, language) === normalizeLocalTerm(term, language);
 }
 
-export function parseLocalQuickInput(input: string, language: Language): string[] {
-  if (!input.trim()) throw new Error("Vui lòng nhập ít nhất một từ vựng.");
-  if (input.length > 10_000) throw new Error("Nội dung Quick Add không được vượt quá 10.000 ký tự.");
-  const values = input.split(/[,;\r\n]+/u).map((term) => term.trim()).filter(Boolean);
+export interface ParsedQuickVocabularyDraft {
+  term: string;
+  meaningVi?: string;
+  partOfSpeech?: string;
+  synonyms?: string[];
+}
+
+const QUICK_PART_OF_SPEECH = new Map<string, string>([
+  ["n", "noun"], ["noun", "noun"],
+  ["v", "verb"], ["verb", "verb"],
+  ["adj", "adjective"], ["adjective", "adjective"],
+  ["adv", "adverb"], ["adverb", "adverb"],
+  ["prep", "preposition"], ["preposition", "preposition"],
+  ["conj", "conjunction"], ["conjunction", "conjunction"],
+  ["pron", "pronoun"], ["pronoun", "pronoun"],
+  ["det", "determiner"], ["determiner", "determiner"],
+  ["interj", "interjection"], ["interjection", "interjection"],
+  ["phr v", "phrasal verb"], ["phrasal verb", "phrasal verb"],
+]);
+
+export function normalizeQuickPartOfSpeech(value: string): string {
+  const display = value.normalize("NFKC").trim().replace(/\s+/gu, " ");
+  return QUICK_PART_OF_SPEECH.get(display.toLocaleLowerCase("en-US")) ?? display;
+}
+
+function validateQuickDrafts(drafts: ParsedQuickVocabularyDraft[], language: Language): ParsedQuickVocabularyDraft[] {
   const seen = new Set<string>();
-  const terms = values.filter((term) => {
-    const normalized = normalizeLocalTerm(term, language);
-    if (seen.has(normalized)) return false;
+  const unique = drafts.filter((draft) => {
+    const normalized = normalizeLocalTerm(draft.term, language);
+    if (!normalized || seen.has(normalized)) return false;
     seen.add(normalized);
     return true;
   });
-  if (terms.some((term) => term.length > 200)) throw new Error("Mỗi từ hoặc cụm từ không được vượt quá 200 ký tự.");
-  if (terms.length > 100) throw new Error("Mỗi lần Quick Add hỗ trợ tối đa 100 từ hoặc cụm từ.");
-  return terms;
+  if (unique.some((draft) => draft.term.length > 200)) throw new Error("Mỗi từ hoặc cụm từ không được vượt quá 200 ký tự.");
+  if (unique.length > 100) throw new Error("Mỗi lần Quick Add hỗ trợ tối đa 100 từ hoặc cụm từ.");
+  return unique;
+}
+
+function hasStructuredQuickSyntax(line: string): boolean {
+  return /[:=]/u.test(line) || /\([^()]+\)\s*$/u.test(line);
+}
+
+function looksLikeQuickLexicalHeader(line: string, language: Language): boolean {
+  const lexicalPart = line
+    .split(":", 1)[0]!
+    .split("=", 1)[0]!
+    .replace(/\([^()]+\)\s*$/u, "")
+    .trim();
+  if (!lexicalPart || /[.!?。！？;,]$/u.test(lexicalPart)) return false;
+  return language === "zh"
+    ? /\p{Script=Han}/u.test(lexicalPart)
+    : /^[A-Za-z][A-Za-z'’\- ]*$/u.test(lexicalPart);
+}
+
+function normalizeQuickSynonyms(values: string[]): string[] {
+  const seen = new Set<string>();
+  return values.flatMap((value) => {
+    const display = value.normalize("NFKC").trim().replace(/\s+/gu, " ");
+    const key = display.toLocaleLowerCase("en-US");
+    if (!display || seen.has(key)) return [];
+    seen.add(key);
+    return [display];
+  });
+}
+
+function parseStructuredHeader(line: string): ParsedQuickVocabularyDraft & { structured: boolean } {
+  const colonIndex = line.indexOf(":");
+  let header = (colonIndex >= 0 ? line.slice(0, colonIndex) : line).trim();
+  const meaningVi = colonIndex >= 0 ? line.slice(colonIndex + 1).trim() : "";
+  const posMatch = header.match(/\(([^()]+)\)\s*$/u);
+  const partOfSpeech = posMatch ? normalizeQuickPartOfSpeech(posMatch[1]!) : "";
+  if (posMatch) header = header.slice(0, posMatch.index).trim();
+  const equalsIndex = header.indexOf("=");
+  const term = (equalsIndex >= 0 ? header.slice(0, equalsIndex) : header).trim();
+  const synonyms = equalsIndex >= 0
+    ? normalizeQuickSynonyms(header.slice(equalsIndex + 1).split(","))
+    : [];
+  return {
+    term,
+    ...(meaningVi ? { meaningVi } : {}),
+    ...(partOfSpeech ? { partOfSpeech } : {}),
+    ...(synonyms.length ? { synonyms } : {}),
+    structured: colonIndex >= 0 || Boolean(posMatch) || equalsIndex >= 0,
+  };
+}
+
+export function parseStructuredQuickVocabularyInput(input: string, language: Language): ParsedQuickVocabularyDraft[] {
+  if (!input.trim()) throw new Error("Vui lòng nhập ít nhất một từ vựng.");
+  if (input.length > 10_000) throw new Error("Nội dung Quick Add không được vượt quá 10.000 ký tự.");
+  const normalizedInput = input.replace(/\r\n?/gu, "\n");
+  const nonEmptyLines = normalizedInput.split("\n").map((line) => line.trim()).filter(Boolean);
+  const structuredMode = nonEmptyLines.some(hasStructuredQuickSyntax);
+
+  if (!structuredMode) {
+    const drafts = normalizedInput
+      .split(/[,;\n]+/u)
+      .map((term) => term.trim())
+      .filter(Boolean)
+      .map((term) => ({ term }));
+    return validateQuickDrafts(drafts, language);
+  }
+
+  const lines = normalizedInput.split("\n");
+  const drafts: ParsedQuickVocabularyDraft[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!.trim();
+    if (!line) continue;
+    const parsed = parseStructuredHeader(line);
+    if (!parsed.term) continue;
+
+    if (parsed.structured && !parsed.meaningVi) {
+      const nextLine = lines[index + 1]?.trim() ?? "";
+      if (nextLine && !looksLikeQuickLexicalHeader(nextLine, language)) {
+        parsed.meaningVi = nextLine;
+        index += 1;
+      }
+    }
+    const { structured: _structured, ...draft } = parsed;
+    drafts.push(draft);
+  }
+  return validateQuickDrafts(drafts, language);
+}
+
+export function parseLocalQuickInput(input: string, language: Language): string[] {
+  return parseStructuredQuickVocabularyInput(input, language).map((draft) => draft.term);
 }
 
 export function splitLocalSentences(content: string, language: Language): string[] {

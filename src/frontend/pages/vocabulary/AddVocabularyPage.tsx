@@ -13,6 +13,7 @@ import {
   AlertCircle,
   CheckCircle2,
   Bookmark,
+  Tags,
 } from "lucide-react";
 import { vocabularyApi } from "../../api/vocabulary.api";
 import { useLanguage } from "../../context/LanguageContext";
@@ -29,10 +30,18 @@ import type {
   Language,
   VocabularySenseSuggestion,
 } from "../../types/api";
-import { parseLocalQuickInput, isLikelyIpa } from "../../static/localDomain";
+import {
+  parseStructuredQuickVocabularyInput,
+  isLikelyIpa,
+  normalizeLocalTerm,
+  type ParsedQuickVocabularyDraft,
+} from "../../static/localDomain";
+import { getVocabularyTopics, normalizeVocabularyTopics } from "../../../shared/vocabularyIntelligence";
 import { QuickAddPreviewRows } from "./QuickAddPreviewRows";
+import { QuickAddTopicPicker } from "./QuickAddTopicPicker";
 
 type TabMode = "quick" | "detailed";
+type TopicPickerTarget = { mode: "batch" } | { mode: "item"; itemId: string };
 
 export interface EditablePreviewItem {
   id: string;
@@ -52,6 +61,7 @@ export interface EditablePreviewItem {
   example: string;
   exampleTranslation: string;
   topic: string;
+  topics: string[];
   level: string;
   toeicLevel: string;
   tone: string;
@@ -63,6 +73,7 @@ export interface EditablePreviewItem {
   lexicalReason?: string;
   enrichmentState: "loading" | "ready" | "partial" | "invalid" | "failed" | "exists";
   enrichmentError?: string;
+  sourceDraft?: ParsedQuickVocabularyDraft;
 }
 
 export const updatePreviewItemField = <K extends keyof EditablePreviewItem>(
@@ -74,10 +85,26 @@ export const updatePreviewItemField = <K extends keyof EditablePreviewItem>(
   item.id === id ? { ...item, [field]: value } : item
 ));
 
+export function mergeQuickSynonyms(userSynonyms: string[] = [], aiSynonyms: string[] = []): string[] {
+  const seen = new Set<string>();
+  return [...userSynonyms, ...aiSynonyms].flatMap((value) => {
+    const display = value.normalize("NFKC").trim().replace(/\s+/gu, " ");
+    const key = display.toLocaleLowerCase("en-US");
+    if (!display || seen.has(key)) return [];
+    seen.add(key);
+    return [display];
+  });
+}
+
+export function mergeQuickTopics(existing: string[] = [], additions: string[] = []): string[] {
+  return normalizeVocabularyTopics([...existing, ...additions]);
+}
+
 const toEditablePreview = (
   item: BulkVocabularyPreview["items"][number],
   idx: number,
-  language: Language = "en"
+  language: Language = "en",
+  draft?: ParsedQuickVocabularyDraft,
 ): EditablePreviewItem => {
   const isChinese = language === "zh" || Boolean(item.suggestion.pinyin);
   const rawIpa = item.suggestion.ipa;
@@ -100,18 +127,19 @@ const toEditablePreview = (
     needsRepair: isNeedsRepair,
     hasUpdate,
     repairAccepted: false,
-    term: item.term,
+    term: draft?.term ?? item.term,
     normalizedTerm: item.normalizedTerm,
     duplicate: item.duplicate,
-    meaningVi: item.suggestion.meaningVi || "",
-    partOfSpeech: item.suggestion.partOfSpeech || "",
+    meaningVi: draft?.meaningVi ?? item.suggestion.meaningVi ?? "",
+    partOfSpeech: draft?.partOfSpeech ?? item.suggestion.partOfSpeech ?? "",
     pronunciation,
     ipa,
     pinyin,
-    synonyms: (item.suggestion.synonyms || []).join(", "),
+    synonyms: mergeQuickSynonyms(draft?.synonyms, item.suggestion.synonyms).join(", "),
     example: item.suggestion.example || "",
     exampleTranslation: item.suggestion.exampleTranslation || "",
     topic: item.suggestion.topic || "",
+    topics: normalizeVocabularyTopics([...(item.suggestion.suggestedTopics ?? []), item.suggestion.topic]),
     level: item.suggestion.cefr || (item.suggestion.hskLevel ? `HSK${item.suggestion.hskLevel}` : ""),
     toeicLevel: item.suggestion.toeicLevel || "",
     tone: item.suggestion.toneData?.[0] !== undefined ? String(item.suggestion.toneData[0]) : "",
@@ -123,8 +151,50 @@ const toEditablePreview = (
     lexicalReason: item.suggestion.lexicalReason,
     enrichmentState: item.duplicate ? "exists" : item.error ? "failed" : item.status === "INVALID" ? "invalid" : item.status === "READY" ? "ready" : "partial",
     enrichmentError: item.error?.message,
+    sourceDraft: draft,
   };
 };
+
+const loadingPreview = (draft: ParsedQuickVocabularyDraft, index: number, language: Language): EditablePreviewItem => ({
+  id: `loading-${index}`,
+  term: draft.term,
+  normalizedTerm: normalizeLocalTerm(draft.term, language),
+  duplicate: false,
+  meaningVi: draft.meaningVi ?? "",
+  partOfSpeech: draft.partOfSpeech ?? "",
+  pronunciation: "",
+  synonyms: (draft.synonyms ?? []).join(", "),
+  example: "",
+  exampleTranslation: "",
+  topic: "",
+  topics: [],
+  level: "",
+  toeicLevel: "",
+  tone: "",
+  traditional: "",
+  selected: true,
+  expandedDetails: false,
+  senses: [],
+  repairAccepted: false,
+  enrichmentState: "loading",
+  sourceDraft: draft,
+});
+
+const mergeRetryPreview = (replacement: EditablePreviewItem, current: EditablePreviewItem): EditablePreviewItem => ({
+  ...replacement,
+  id: current.id,
+  selected: current.selected,
+  expandedDetails: current.expandedDetails,
+  term: current.term,
+  meaningVi: current.meaningVi.trim() ? current.meaningVi : replacement.meaningVi,
+  partOfSpeech: current.partOfSpeech.trim() ? current.partOfSpeech : replacement.partOfSpeech,
+  synonyms: mergeQuickSynonyms(current.synonyms.split(","), replacement.synonyms.split(",")).join(", "),
+  example: current.example.trim() ? current.example : replacement.example,
+  exampleTranslation: current.exampleTranslation.trim() ? current.exampleTranslation : replacement.exampleTranslation,
+  topic: current.topic || replacement.topic,
+  topics: mergeQuickTopics(current.topics, replacement.topics),
+  sourceDraft: current.sourceDraft,
+});
 
 const needsEnrichmentRetry = (item: EditablePreviewItem): boolean =>
   !item.duplicate &&
@@ -153,6 +223,11 @@ export const AddVocabularyPage: React.FC = () => {
   const [hasParsed, setHasParsed] = useState(false);
   const [isBulkSaving, setIsBulkSaving] = useState(false);
   const [bulkSaveResult, setBulkSaveResult] = useState<BulkVocabularyCreateResult | null>(null);
+  const [topicPickerTarget, setTopicPickerTarget] = useState<TopicPickerTarget | null>(null);
+  const [topicPickerSelection, setTopicPickerSelection] = useState<string[]>([]);
+  const [availableTopics, setAvailableTopics] = useState<string[]>([]);
+  const [isLoadingTopics, setIsLoadingTopics] = useState(false);
+  const loadedTopicLanguagesRef = useRef(new Set<Language>());
 
   // Detailed Add State (Preserved Form)
   const [term, setTerm] = useState("");
@@ -180,6 +255,7 @@ export const AddVocabularyPage: React.FC = () => {
     setBulkSaveResult(null);
     setIsPreviewLoading(false);
     setIsRetryingEnrichment(false);
+    setTopicPickerTarget(null);
   }, []);
 
   const handleQuickInputChange = useCallback((event: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -209,14 +285,11 @@ export const AddVocabularyPage: React.FC = () => {
 
     setIsPreviewLoading(true);
     setBulkSaveResult(null);
+    let drafts: ParsedQuickVocabularyDraft[];
     try {
-      const terms = parseLocalQuickInput(inputSnapshot, languageSnapshot);
+      drafts = parseStructuredQuickVocabularyInput(inputSnapshot, languageSnapshot);
       if (!isLatestRequest()) return;
-      setPreviewItems(terms.map((term, idx) => ({
-        id: `loading-${idx}`, term, normalizedTerm: term.normalize("NFKC").trim().toLocaleLowerCase(), duplicate: false,
-        meaningVi: "", partOfSpeech: "", pronunciation: "", synonyms: "", example: "", exampleTranslation: "", topic: "", level: "", toeicLevel: "", tone: "", traditional: "",
-        selected: true, expandedDetails: false, senses: [], repairAccepted: false, enrichmentState: "loading",
-      })));
+      setPreviewItems(drafts.map((draft, idx) => loadingPreview(draft, idx, languageSnapshot)));
       setHasParsed(true);
     } catch (caught) {
       if (!isLatestRequest()) return;
@@ -225,10 +298,21 @@ export const AddVocabularyPage: React.FC = () => {
       return;
     }
     try {
-      const res = await vocabularyApi.bulkPreview(languageSnapshot, inputSnapshot);
+      const res = await vocabularyApi.bulkPreview(languageSnapshot, drafts.map((draft) => draft.term).join("\n"));
       if (!isLatestRequest()) return;
       setEnrichmentConfigured(res.enrichment.configured);
-      const items = res.items.map((item, idx) => toEditablePreview(item, idx, languageSnapshot));
+      const responseByTerm = new Map(res.items.map((item) => [normalizeLocalTerm(item.term, languageSnapshot), item]));
+      const items = drafts.map((draft, idx) => {
+        const responseItem = responseByTerm.get(normalizeLocalTerm(draft.term, languageSnapshot));
+        if (!responseItem) {
+          return {
+            ...loadingPreview(draft, idx, languageSnapshot),
+            enrichmentState: "failed" as const,
+            enrichmentError: "Không nhận được dữ liệu bổ sung cho từ này.",
+          };
+        }
+        return toEditablePreview(responseItem, idx, languageSnapshot, draft);
+      });
 
       setPreviewItems(items);
       setHasParsed(true);
@@ -250,16 +334,16 @@ export const AddVocabularyPage: React.FC = () => {
     const isCurrentAnalysis = () => analyzeGenerationRef.current === requestGeneration;
     const targets = terms ?? previewItemsRef.current.filter(needsEnrichmentRetry).map((item) => item.term);
     if (!targets.length) return;
-    const normalizedTargets = new Set(targets.map((term) => term.normalize("NFKC").trim().toLocaleLowerCase()));
+    const normalizedTargets = new Set(targets.map((term) => normalizeLocalTerm(term, languageSnapshot)));
     setIsRetryingEnrichment(true);
     setPreviewItems((items) => items.map((item) => normalizedTargets.has(item.normalizedTerm) ? { ...item, enrichmentState: "loading", enrichmentError: undefined } : item));
     try {
       const res = await vocabularyApi.bulkPreview(languageSnapshot, targets.join("\n"), true);
       if (!isCurrentAnalysis()) return;
-      const replacements = new Map(res.items.map((item, idx) => [item.normalizedTerm, toEditablePreview(item, idx, languageSnapshot)]));
+      const replacements = new Map(res.items.map((item, idx) => [normalizeLocalTerm(item.term, languageSnapshot), toEditablePreview(item, idx, languageSnapshot)]));
       setPreviewItems((items) => items.map((item) => {
         const replacement = replacements.get(item.normalizedTerm);
-        return replacement ? { ...replacement, id: item.id, selected: item.selected, expandedDetails: item.expandedDetails } : item;
+        return replacement ? mergeRetryPreview(replacement, item) : item;
       }));
     } catch (caught) {
       if (!isCurrentAnalysis()) return;
@@ -280,12 +364,12 @@ export const AddVocabularyPage: React.FC = () => {
         : (sense.ipa || sense.pronunciation || item.pronunciation);
       return {
         ...item,
-        meaningVi: sense.meaningVi || item.meaningVi,
-        partOfSpeech: sense.partOfSpeech || item.partOfSpeech,
+        meaningVi: item.sourceDraft?.meaningVi ?? sense.meaningVi ?? item.meaningVi,
+        partOfSpeech: item.sourceDraft?.partOfSpeech ?? sense.partOfSpeech ?? item.partOfSpeech,
         pronunciation: newPronunciation,
         ipa: sense.ipa || (formLang === "en" ? newPronunciation : item.ipa),
         pinyin: sense.pinyin || (formLang === "zh" ? newPronunciation : item.pinyin),
-        synonyms: sense.synonyms ? sense.synonyms.join(", ") : item.synonyms,
+        synonyms: mergeQuickSynonyms(item.sourceDraft?.synonyms, sense.synonyms ?? item.synonyms.split(",")).join(", "),
         example: sense.example !== undefined ? sense.example : item.example,
         exampleTranslation: sense.exampleTranslation !== undefined ? sense.exampleTranslation : item.exampleTranslation,
       };
@@ -337,6 +421,79 @@ export const AddVocabularyPage: React.FC = () => {
     setPreviewItems((prev) => prev.filter((item) => item.id !== id));
   }, []);
 
+  const loadAvailableTopics = useCallback(async () => {
+    if (loadedTopicLanguagesRef.current.has(formLang)) return;
+    loadedTopicLanguagesRef.current.add(formLang);
+    setIsLoadingTopics(true);
+    try {
+      const vocabulary = await vocabularyApi.list({ language: formLang, limit: 100 });
+      const savedTopics = vocabulary.flatMap((item) => getVocabularyTopics(item));
+      setAvailableTopics((current) => mergeQuickTopics(current, savedTopics));
+    } catch (caught) {
+      loadedTopicLanguagesRef.current.delete(formLang);
+      info(`Không thể tải danh sách chủ đề đã lưu: ${getFriendlyErrorMessage(caught)}`);
+    } finally {
+      setIsLoadingTopics(false);
+    }
+  }, [formLang, info]);
+
+  const handleOpenBatchTopics = useCallback(() => {
+    setAvailableTopics((current) => mergeQuickTopics(current, previewItemsRef.current.flatMap((item) => item.topics)));
+    setTopicPickerSelection([]);
+    setTopicPickerTarget({ mode: "batch" });
+    void loadAvailableTopics();
+  }, [loadAvailableTopics]);
+
+  const handleOpenItemTopics = useCallback((itemId: string) => {
+    const item = previewItemsRef.current.find((candidate) => candidate.id === itemId);
+    if (!item) return;
+    setAvailableTopics((current) => mergeQuickTopics(current, previewItemsRef.current.flatMap((candidate) => candidate.topics)));
+    setTopicPickerSelection(item.topics);
+    setTopicPickerTarget({ mode: "item", itemId });
+    void loadAvailableTopics();
+  }, [loadAvailableTopics]);
+
+  const handleToggleTopic = useCallback((topicToToggle: string) => {
+    setTopicPickerSelection((current) => {
+      const exists = current.some((topicValue) => topicValue.localeCompare(topicToToggle, undefined, { sensitivity: "accent" }) === 0);
+      return exists
+        ? current.filter((topicValue) => topicValue.localeCompare(topicToToggle, undefined, { sensitivity: "accent" }) !== 0)
+        : mergeQuickTopics(current, [topicToToggle]);
+    });
+  }, []);
+
+  const handleCreateTopic = useCallback((rawTopic: string) => {
+    const normalized = normalizeVocabularyTopics([rawTopic])[0];
+    if (!normalized) return;
+    const existing = availableTopics.find((topicValue) => topicValue.localeCompare(normalized, undefined, { sensitivity: "accent" }) === 0);
+    const display = existing ?? normalized;
+    setAvailableTopics((current) => mergeQuickTopics(current, [display]));
+    setTopicPickerSelection((selected) => mergeQuickTopics(selected, [display]));
+  }, [availableTopics]);
+
+  const handleApplyTopics = useCallback(() => {
+    if (!topicPickerTarget) return;
+    setPreviewItems((current) => current.map((item) => {
+      if (topicPickerTarget.mode === "batch" && !item.selected) return item;
+      if (topicPickerTarget.mode === "item" && item.id !== topicPickerTarget.itemId) return item;
+      const topics = topicPickerTarget.mode === "batch"
+        ? mergeQuickTopics(item.topics, topicPickerSelection)
+        : normalizeVocabularyTopics(topicPickerSelection);
+      return { ...item, topics, topic: topics[0] ?? (topicPickerTarget.mode === "item" ? "" : item.topic) };
+    }));
+    setTopicPickerTarget(null);
+  }, [topicPickerSelection, topicPickerTarget]);
+
+  const handleRemoveTopic = useCallback((itemId: string, topicToRemove: string) => {
+    setPreviewItems((current) => current.map((item) => {
+      if (item.id !== itemId) return item;
+      const topics = item.topics.filter((topicValue) => topicValue.localeCompare(topicToRemove, undefined, { sensitivity: "accent" }) !== 0);
+      return { ...item, topics, topic: topics[0] ?? "" };
+    }));
+  }, []);
+
+  const handleCloseTopicPicker = useCallback(() => setTopicPickerTarget(null), []);
+
   const handleBulkSave = async () => {
     const selectedItems = previewItems.filter((i) => i.selected);
     if (selectedItems.length === 0) {
@@ -353,6 +510,7 @@ export const AddVocabularyPage: React.FC = () => {
     setIsBulkSaving(true);
     try {
       const payload: BulkVocabularyInputItem[] = selectedItems.map((i) => {
+        const topics = normalizeVocabularyTopics([...i.topics, i.topic]);
         const itemPayload: BulkVocabularyInputItem = {
           term: i.term.trim(),
           meaningVi: i.meaningVi.trim(),
@@ -360,7 +518,8 @@ export const AddVocabularyPage: React.FC = () => {
           pronunciation: i.pronunciation.trim() || undefined,
           example: i.example.trim() || undefined,
           exampleTranslation: i.exampleTranslation.trim() || undefined,
-          topic: i.topic.trim() || undefined,
+          topic: topics[0] ?? (i.topic.trim() || undefined),
+          topics,
         };
         if (i.repairAccepted && i.needsRepair && i.hasUpdate && i.existingId) {
           itemPayload.existingId = i.existingId;
@@ -472,6 +631,9 @@ export const AddVocabularyPage: React.FC = () => {
   };
 
   const selectedCount = previewItems.filter((i) => i.selected).length;
+  const topicPickerTargetLabel = topicPickerTarget?.mode === "item"
+    ? `“${previewItems.find((item) => item.id === topicPickerTarget.itemId)?.term ?? "từ này"}”`
+    : `${selectedCount} từ đã chọn`;
 
   return (
     <div className="page-container flex-col gap-6 animate-fade-in" style={{ maxWidth: "860px" }}>
@@ -633,7 +795,7 @@ export const AddVocabularyPage: React.FC = () => {
                 }}
               />
               <div style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)", marginTop: "4px" }}>
-                Phân cách bằng dấu phẩy, dấu chấm phẩy hoặc xuống dòng. Cụm từ như <em>"give up"</em>, <em>"look forward to"</em> sẽ được giữ nguyên vẹn.
+                Hỗ trợ danh sách đơn giản và dữ liệu có cấu trúc như <em>"additionally (adv)"</em>, <em>"barely: vừa đủ."</em>. Cụm từ vẫn được giữ nguyên vẹn.
               </div>
             </div>
 
@@ -666,6 +828,15 @@ export const AddVocabularyPage: React.FC = () => {
                 </div>
 
                 <div className="flex-row items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={selectedCount === 0}
+                    onClick={handleOpenBatchTopics}
+                    leftIcon={<Tags size={14} />}
+                  >
+                    Thêm vào chủ đề
+                  </Button>
                   {previewItems.some(needsEnrichmentRetry) && (
                     <Button
                       variant="outline"
@@ -768,6 +939,8 @@ export const AddVocabularyPage: React.FC = () => {
                 onRetry={handleRetryEnrichment}
                 onAcceptRepair={handleAcceptRepair}
                 onChooseSense={handleChooseSense}
+                onOpenTopics={handleOpenItemTopics}
+                onRemoveTopic={handleRemoveTopic}
               />
 
               {/* Sticky Bottom Save Action Bar */}
@@ -791,7 +964,7 @@ export const AddVocabularyPage: React.FC = () => {
                   variant={isZh ? "zh" : "primary"}
                   size="lg"
                   isLoading={isBulkSaving}
-                  disabled={selectedCount === 0}
+                  disabled={selectedCount === 0 || isPreviewLoading}
                   onClick={handleBulkSave}
                   leftIcon={<Bookmark size={18} />}
                 >
@@ -1229,6 +1402,18 @@ export const AddVocabularyPage: React.FC = () => {
           </form>
         </Card>
       )}
+
+      <QuickAddTopicPicker
+        isOpen={topicPickerTarget !== null}
+        availableTopics={availableTopics}
+        selectedTopics={topicPickerSelection}
+        targetLabel={topicPickerTargetLabel}
+        isLoading={isLoadingTopics}
+        onToggle={handleToggleTopic}
+        onCreate={handleCreateTopic}
+        onApply={handleApplyTopics}
+        onClose={handleCloseTopicPicker}
+      />
     </div>
   );
 };
