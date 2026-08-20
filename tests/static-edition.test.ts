@@ -455,15 +455,16 @@ describe("Cloudflare Worker contract", () => {
     ] }, ["go", "car", "live", "total"], "en")).toThrow(/item count/u);
   });
 
-  it("rejects output items in the wrong order", () => {
-    expect(() => validateEnrichmentItems({ items: [
+  it("maps reordered output by normalized identity and restores request order", () => {
+    const items = validateEnrichmentItems({ items: [
       { term: "car", meaningVi: "xe hơi", partOfSpeech: "noun", ipa: "/kɑːr/" },
       { term: "go", meaningVi: "đi", partOfSpeech: "verb", ipa: "/ɡoʊ/" },
-    ] }, ["go", "car"], "en")).toThrow(/index 0/u);
+    ] }, ["go", "car"], "en");
+    expect(items.map((item) => item.term)).toEqual(["go", "car"]);
   });
 
   it("rejects a term that does not exactly match its input", () => {
-    expect(() => validateEnrichmentItems({ items: [{ term: "Go", meaningVi: "đi", partOfSpeech: "verb", ipa: "/ɡoʊ/" }] }, ["go"], "en")).toThrow(/index 0/u);
+    expect(() => validateEnrichmentItems({ items: [{ term: "Go", meaningVi: "đi", partOfSpeech: "verb", ipa: "/ɡoʊ/" }] }, ["go"], "en")).toThrow(/term identity/u);
   });
 
   it("rejects English items missing partOfSpeech or missing valid IPA", () => {
@@ -596,7 +597,15 @@ describe("Cloudflare Worker contract", () => {
   it("fails closed when AI returns malformed JSON", async () => {
     const response = await handleRequest(jsonRequest("/v1/translate", { text: "go", sourceLanguage: "en", targetLanguage: "vi" }), env(async () => ({ response: "not-json" })));
     expect(response.status).toBe(502);
-    expect((await response.json() as any).error.code).toBe("AI_RESPONSE_INVALID");
+    expect((await response.json() as any).error.code).toBe("AI_PROVIDER_EXHAUSTED");
+  });
+
+  it("returns a controlled provider-exhausted error when enrichment providers are unavailable", async () => {
+    const run = vi.fn(async () => { throw new Error("Workers AI unavailable"); });
+    const response = await handleRequest(jsonRequest("/v1/vocabulary/enrich", enrichBody(["go"])), env(run));
+    expect(response.status).toBe(502);
+    expect((await response.json() as any).error.code).toBe("AI_PROVIDER_EXHAUSTED");
+    expect(run).toHaveBeenCalledTimes(2);
   });
 
   it("updates meaning, POS, and IPA synchronously when switching senses for heteronyms", () => {
