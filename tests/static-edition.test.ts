@@ -559,6 +559,21 @@ describe("Cloudflare Worker contract", () => {
     expect(item).toEqual(expect.objectContaining({ pinyin: "qì chē", simplified: "汽车", traditional: "汽車", toneData: [4, 1], partOfSpeech: "noun" }));
   });
 
+  it("strips punctuation from Chinese orthography and rejects non-Hanzi noise", () => {
+    const [item] = validateEnrichmentItems({ items: [{
+      term: "学习", meaningVi: "học tập", partOfSpeech: "verb", pinyin: "xuéxí",
+      simplified: "学习。", traditional: "學習”,", toneData: [2, "2", 9],
+    }] }, ["学习"], "zh");
+    expect(item).toEqual(expect.objectContaining({ simplified: "学习", traditional: "學習", toneData: [2, 2] }));
+
+    const [noisy] = validateEnrichmentItems({ items: [{
+      term: "汽车", meaningVi: "xe hơi", partOfSpeech: "noun", pinyin: "qì chē",
+      simplified: "xe hơi", traditional: "traditional car",
+    }] }, ["汽车"], "zh");
+    expect(noisy.simplified).toBeUndefined();
+    expect(noisy.traditional).toBeUndefined();
+  });
+
   it("keeps the translation endpoint working", async () => {
     const run = vi.fn(async () => ({ response: { translation: "Tôi đi làm bằng ô tô." } }));
     const response = await handleRequest(jsonRequest("/v1/translate", { text: "I go to work by car.", sourceLanguage: "en", targetLanguage: "vi" }), env(run));
