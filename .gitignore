@@ -2,6 +2,9 @@ node_modules/
 dist/
 data/*.db
 data/*.db-*
+*.db
+*.sqlite
+*.sqlite3
 .env
 .env.*
 !.env.example
@@ -9,13 +12,26 @@ coverage/
 backups/
 release/
 *.log
+*.dump
 *.webm
 *.wav
 *.mp3
 .vite/
 .DS_Store
 
-# wrangler files
-.wrangler
+# Secrets, credentials & certificates
+credentials.json
+service-account*.json
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+
+# Wrangler & Cloudflare Worker local state
+.wrangler/
+**/.wrangler/
 .dev.vars*
+**/.dev.vars*
 !.dev.vars.example
