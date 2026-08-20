@@ -14,6 +14,8 @@ export interface QuickAddPreviewRowProps {
   onChooseSense: (id: string, senseIndex: number) => void;
   onOpenTopics: (id: string) => void;
   onRemoveTopic: (id: string, topic: string) => void;
+  onAcceptSuggestedTopic: (id: string, topic: string) => void;
+  onDismissSuggestedTopic: (id: string, topic: string) => void;
   onRender?: (id: string) => void;
 }
 
@@ -29,6 +31,8 @@ export const QuickAddPreviewRow = React.memo(function QuickAddPreviewRow({
   onChooseSense,
   onOpenTopics,
   onRemoveTopic,
+  onAcceptSuggestedTopic,
+  onDismissSuggestedTopic,
   onRender,
 }: QuickAddPreviewRowProps): React.ReactElement {
   onRender?.(item.id);
@@ -213,6 +217,37 @@ export const QuickAddPreviewRow = React.memo(function QuickAddPreviewRow({
           <Plus size={12} /> Thêm chủ đề
         </button>
       </div>
+
+      {item.suggestedTopics.length > 0 && (
+        <div
+          aria-label={`Gợi ý chủ đề cho ${item.term}`}
+          style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "6px", marginTop: "8px" }}
+        >
+          <span style={{ fontSize: "0.7rem", color: "var(--text-tertiary)", fontWeight: 700 }}>GỢI Ý CHỦ ĐỀ</span>
+          {item.suggestedTopics.map((topic) => (
+            <span key={topic.toLocaleLowerCase()} style={{ display: "inline-flex", alignItems: "center", gap: "2px" }}>
+              <button
+                type="button"
+                onClick={() => onAcceptSuggestedTopic(item.id, topic)}
+                aria-label={`Thêm gợi ý chủ đề ${topic} cho ${item.term}`}
+                title={`Thêm ${topic} vào chủ đề`}
+                style={{ display: "inline-flex", alignItems: "center", gap: "4px", padding: "3px 7px", borderRadius: "var(--radius-full)", background: "var(--accent-en-subtle)", border: "1px dashed var(--accent-en-border)", color: "var(--accent-en-text)", fontSize: "var(--text-xs)", fontWeight: 600, cursor: "pointer" }}
+              >
+                {topic} <Plus size={11} aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                onClick={() => onDismissSuggestedTopic(item.id, topic)}
+                aria-label={`Bỏ gợi ý chủ đề ${topic} cho ${item.term}`}
+                title={`Bỏ gợi ý ${topic}`}
+                style={{ display: "inline-flex", alignItems: "center", padding: "3px", color: "var(--text-tertiary)", cursor: "pointer" }}
+              >
+                <X size={11} aria-hidden="true" />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
 
       {item.expandedDetails && (
         <div className="animate-fade-in" style={{ marginTop: "12px", paddingTop: "12px", borderTop: "1px dashed var(--border-default)", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "10px" }}>

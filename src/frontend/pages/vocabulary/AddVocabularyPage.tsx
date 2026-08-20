@@ -62,6 +62,7 @@ export interface EditablePreviewItem {
   exampleTranslation: string;
   topic: string;
   topics: string[];
+  suggestedTopics: string[];
   level: string;
   toeicLevel: string;
   tone: string;
@@ -98,6 +99,12 @@ export function mergeQuickSynonyms(userSynonyms: string[] = [], aiSynonyms: stri
 
 export function mergeQuickTopics(existing: string[] = [], additions: string[] = []): string[] {
   return normalizeVocabularyTopics([...existing, ...additions]);
+}
+
+export function getSuggestedQuickTopics(suggestion: Pick<BulkVocabularyPreview["items"][number]["suggestion"], "suggestedTopics" | "topic">): string[] {
+  // `topic` is a legacy single-topic AI response. Treat it as a suggestion too:
+  // no AI-proposed label may become an assigned topic without a user action.
+  return mergeQuickTopics(suggestion.suggestedTopics ?? [], suggestion.topic ? [suggestion.topic] : []);
 }
 
 const toEditablePreview = (
@@ -138,8 +145,9 @@ const toEditablePreview = (
     synonyms: mergeQuickSynonyms(draft?.synonyms, item.suggestion.synonyms).join(", "),
     example: item.suggestion.example || "",
     exampleTranslation: item.suggestion.exampleTranslation || "",
-    topic: item.suggestion.topic || "",
-    topics: normalizeVocabularyTopics([...(item.suggestion.suggestedTopics ?? []), item.suggestion.topic]),
+    topic: "",
+    topics: [],
+    suggestedTopics: getSuggestedQuickTopics(item.suggestion),
     level: item.suggestion.cefr || (item.suggestion.hskLevel ? `HSK${item.suggestion.hskLevel}` : ""),
     toeicLevel: item.suggestion.toeicLevel || "",
     tone: item.suggestion.toneData?.[0] !== undefined ? String(item.suggestion.toneData[0]) : "",
@@ -168,6 +176,7 @@ const loadingPreview = (draft: ParsedQuickVocabularyDraft, index: number, langua
   exampleTranslation: "",
   topic: "",
   topics: [],
+  suggestedTopics: [],
   level: "",
   toeicLevel: "",
   tone: "",
@@ -191,8 +200,11 @@ const mergeRetryPreview = (replacement: EditablePreviewItem, current: EditablePr
   synonyms: mergeQuickSynonyms(current.synonyms.split(","), replacement.synonyms.split(",")).join(", "),
   example: current.example.trim() ? current.example : replacement.example,
   exampleTranslation: current.exampleTranslation.trim() ? current.exampleTranslation : replacement.exampleTranslation,
-  topic: current.topic || replacement.topic,
-  topics: mergeQuickTopics(current.topics, replacement.topics),
+  topic: current.topic,
+  topics: current.topics,
+  suggestedTopics: replacement.suggestedTopics.filter((suggestion) => !current.topics.some((topic) => (
+    topic.localeCompare(suggestion, undefined, { sensitivity: "accent" }) === 0
+  ))),
   sourceDraft: current.sourceDraft,
 });
 
@@ -479,7 +491,14 @@ export const AddVocabularyPage: React.FC = () => {
       const topics = topicPickerTarget.mode === "batch"
         ? mergeQuickTopics(item.topics, topicPickerSelection)
         : normalizeVocabularyTopics(topicPickerSelection);
-      return { ...item, topics, topic: topics[0] ?? (topicPickerTarget.mode === "item" ? "" : item.topic) };
+      return {
+        ...item,
+        topics,
+        topic: topics[0] ?? (topicPickerTarget.mode === "item" ? "" : item.topic),
+        suggestedTopics: item.suggestedTopics.filter((suggestion) => !topics.some((topic) => (
+          topic.localeCompare(suggestion, undefined, { sensitivity: "accent" }) === 0
+        ))),
+      };
     }));
     setTopicPickerTarget(null);
   }, [topicPickerSelection, topicPickerTarget]);
@@ -490,6 +509,34 @@ export const AddVocabularyPage: React.FC = () => {
       const topics = item.topics.filter((topicValue) => topicValue.localeCompare(topicToRemove, undefined, { sensitivity: "accent" }) !== 0);
       return { ...item, topics, topic: topics[0] ?? "" };
     }));
+  }, []);
+
+  const handleAcceptSuggestedTopic = useCallback((itemId: string, suggestedTopic: string) => {
+    setPreviewItems((current) => current.map((item) => {
+      if (item.id !== itemId) return item;
+      const topics = mergeQuickTopics(item.topics, [suggestedTopic]);
+      return {
+        ...item,
+        topics,
+        topic: topics[0] ?? "",
+        suggestedTopics: item.suggestedTopics.filter((topic) => (
+          topic.localeCompare(suggestedTopic, undefined, { sensitivity: "accent" }) !== 0
+        )),
+      };
+    }));
+  }, []);
+
+  const handleDismissSuggestedTopic = useCallback((itemId: string, suggestedTopic: string) => {
+    setPreviewItems((current) => current.map((item) => (
+      item.id === itemId
+        ? {
+          ...item,
+          suggestedTopics: item.suggestedTopics.filter((topic) => (
+            topic.localeCompare(suggestedTopic, undefined, { sensitivity: "accent" }) !== 0
+          )),
+        }
+        : item
+    )));
   }, []);
 
   const handleCloseTopicPicker = useCallback(() => setTopicPickerTarget(null), []);
@@ -941,6 +988,8 @@ export const AddVocabularyPage: React.FC = () => {
                 onChooseSense={handleChooseSense}
                 onOpenTopics={handleOpenItemTopics}
                 onRemoveTopic={handleRemoveTopic}
+                onAcceptSuggestedTopic={handleAcceptSuggestedTopic}
+                onDismissSuggestedTopic={handleDismissSuggestedTopic}
               />
 
               {/* Sticky Bottom Save Action Bar */}
