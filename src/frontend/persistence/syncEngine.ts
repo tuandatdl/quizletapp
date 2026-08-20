@@ -412,26 +412,34 @@ export class LocalFirstSyncCoordinator implements SyncCoordinator {
     let adapter: RemoteSyncAdapter | undefined = customAdapter;
     let userId: string | null = null;
 
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        const { data } = await supabase.auth.getSession();
+        userId = data.session?.user?.id ?? null;
+      } catch {
+        userId = null;
+      }
+    }
+
     if (!adapter) {
       if (!cloudSyncAvailable()) {
         this.setStatus("UNCONFIGURED");
         return { success: false, pulledCount: 0, pushedCount: 0, conflictsCount: 0, error: "Chưa cấu hình Supabase" };
       }
 
-      const supabase = getSupabaseClient();
       if (!supabase) {
         this.setStatus("UNCONFIGURED");
         return { success: false, pulledCount: 0, pushedCount: 0, conflictsCount: 0, error: "Supabase client không khả dụng" };
       }
 
-      const { data, error: sessionErr } = await supabase.auth.getSession();
-      if (sessionErr || !data.session?.user) {
+      if (!userId) {
         this.setStatus("SIGNED_OUT");
         return { success: false, pulledCount: 0, pushedCount: 0, conflictsCount: 0, error: "Chưa đăng nhập" };
       }
 
-      userId = data.session.user.id;
-      adapter = new SupabaseRemoteSyncAdapter(supabase, data.session.user);
+      const { data } = await supabase.auth.getSession();
+      adapter = new SupabaseRemoteSyncAdapter(supabase, data.session!.user);
     }
 
     this.isSyncing = true;

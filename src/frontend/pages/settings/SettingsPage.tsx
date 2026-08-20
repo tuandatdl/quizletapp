@@ -55,12 +55,13 @@ import {
   type LocalTtsProgress,
 } from "../../services/localTts";
 import { cloudFallbackMode, cloudVoiceFor, resolveAudioEngine } from "../../services/audioEnginePolicy";
-import { getCloudAuthService } from "../../services/cloudAuth";
 import { getSyncCoordinator } from "../../persistence/syncEngine";
 import { LanguageApiClient } from "../../services/languageApi";
 import { isLikelyIpa, matchesLocalVocabularyIdentity, needsExistingVocabularyRepair, normalizeLocalTerm } from "../../static/localDomain";
 import type { SyncConflict, SyncMeta, SyncStatus } from "../../persistence/sync";
 import type { User } from "@supabase/supabase-js";
+import { useCloudAccount } from "../../context/CloudAccountContext";
+import { GoogleIcon } from "../../components/ui/GoogleIcon";
 
 export const SettingsPage: React.FC = () => {
   const { settings, updateSettings, isLoadingSettings } = useLanguage();
@@ -88,65 +89,51 @@ export const SettingsPage: React.FC = () => {
   const [isScanningLegacy, setIsScanningLegacy] = useState(false);
   const [isRepairingLegacy, setIsRepairingLegacy] = useState(false);
 
-  // Cloud Sync state
-  const cloudAuth = getCloudAuthService();
-  const [cloudAvailable] = useState<boolean>(() => cloudAuth.isAvailable());
-  const [cloudUser, setCloudUser] = useState<User | null>(null);
-  const [syncStatus, setSyncStatus] = useState<SyncStatus>(() => cloudAuth.getSyncStatus());
-  const [syncMeta, setSyncMeta] = useState<SyncMeta | null>(null);
-  const [pendingCount, setPendingCount] = useState<number>(0);
-  const [emailInput, setEmailInput] = useState<string>("");
-  const [isSendingMagicLink, setIsSendingMagicLink] = useState<boolean>(false);
-  const [magicLinkSent, setMagicLinkSent] = useState<boolean>(false);
-  const [isSyncingManual, setIsSyncingManual] = useState<boolean>(false);
-  const [syncConflicts, setSyncConflicts] = useState<SyncConflict[]>([]);
+  // Cloud Account & Sync
+  const {
+    user: cloudUser,
+    cloudAvailable,
+    provider: cloudProvider,
+    displayName: cloudDisplayName,
+    email: cloudUserEmail,
+    avatarUrl: cloudAvatarUrl,
+    signInWithGoogle,
+    signInWithMagicLink,
+    signOut: signOutCloud,
+    syncNow: syncNowCloud,
+    syncStatus,
+    syncMeta,
+    pendingCount,
+    conflicts: syncConflicts,
+    resolveConflict: resolveSyncConflict,
+  } = useCloudAccount();
+
+  const [isSigningInGoogle, setIsSigningInGoogle] = useState(false);
+  const [emailInput, setEmailInput] = useState("");
+  const [isSendingMagicLink, setIsSendingMagicLink] = useState(false);
+  const [magicLinkSent, setMagicLinkSent] = useState(false);
+  const [isSyncingManual, setIsSyncingManual] = useState(false);
   const [resolvingConflictId, setResolvingConflictId] = useState<string | null>(null);
 
-  const refreshCloudState = async () => {
-    if (!cloudAuth.isAvailable()) return;
-    const user = await cloudAuth.getCurrentUser();
-    setCloudUser(user);
-    const meta = await cloudAuth.getSyncMeta();
-    setSyncMeta(meta);
-    const pending = await cloudAuth.getPendingCount();
-    setPendingCount(pending);
-    const conflicts = await cloudAuth.getConflicts();
-    setSyncConflicts(conflicts.filter((conflict) => !conflict.resolvedAt));
+  const handleGoogleSignIn = async () => {
+    setIsSigningInGoogle(true);
+    try {
+      const res = await signInWithGoogle({ returnTo: "/settings" });
+      if (!res.success) {
+        error(res.error || "Không thể kết nối với tài khoản Google.");
+      }
+    } catch (err: any) {
+      error(getFriendlyErrorMessage(err));
+    } finally {
+      setIsSigningInGoogle(false);
+    }
   };
-
-  useEffect(() => {
-    if (!cloudAuth.isAvailable()) return;
-
-    void refreshCloudState();
-
-    const unsubscribeStatus = cloudAuth.onSyncStatusChange((status) => {
-      setSyncStatus(status);
-      void refreshCloudState();
-    });
-
-    const unsubscribeAuth = cloudAuth.onAuthStateChange((_event, session) => {
-      setCloudUser(session?.user ?? null);
-      void refreshCloudState();
-    });
-
-    const handleSyncComplete = () => {
-      void refreshCloudState();
-    };
-
-    window.addEventListener("tutrinh:sync-complete", handleSyncComplete);
-
-    return () => {
-      unsubscribeStatus();
-      unsubscribeAuth?.();
-      window.removeEventListener("tutrinh:sync-complete", handleSyncComplete);
-    };
-  }, []);
 
   const handleSendMagicLink = async () => {
     if (!emailInput.trim()) return;
     setIsSendingMagicLink(true);
     try {
-      const res = await cloudAuth.signInWithEmail(emailInput);
+      const res = await signInWithMagicLink(emailInput.trim(), { returnTo: "/settings" });
       if (!res.success) {
         error(res.error || "Không thể gửi email đăng nhập.");
       } else {
@@ -162,11 +149,10 @@ export const SettingsPage: React.FC = () => {
 
   const handleSignOutCloud = async () => {
     try {
-      await cloudAuth.signOut();
-      setCloudUser(null);
+      await signOutCloud();
       setMagicLinkSent(false);
       setEmailInput("");
-      success("Đã đăng xuất khỏi đám mây. Dữ liệu trên thiết bị được giữ nguyên.");
+      success("Đã đăng xuất. Dữ liệu trên thiết bị vẫn được giữ nguyên.");
     } catch (err: any) {
       error(getFriendlyErrorMessage(err));
     }
@@ -175,13 +161,12 @@ export const SettingsPage: React.FC = () => {
   const handleManualSync = async () => {
     setIsSyncingManual(true);
     try {
-      const res = await cloudAuth.syncNow(true);
+      const res = await syncNowCloud(true);
       if (res.success) {
         success(`Đồng bộ thành công! (+${res.pulledCount} từ đám mây, +${res.pushedCount} tải lên)`);
       } else {
         error(res.error || "Đồng bộ thất bại.");
       }
-      await refreshCloudState();
     } catch (err: any) {
       error(getFriendlyErrorMessage(err));
     } finally {
@@ -192,8 +177,7 @@ export const SettingsPage: React.FC = () => {
   const handleResolveSyncConflict = async (conflict: SyncConflict, choice: "local" | "remote") => {
     setResolvingConflictId(conflict.id);
     try {
-      await cloudAuth.resolveConflict(conflict.id, choice);
-      await refreshCloudState();
+      await resolveSyncConflict(conflict.id, choice);
       if (choice === "local") {
         info("Đã giữ bản cục bộ. Thay đổi này sẽ được tải lên ở lần đồng bộ kế tiếp.");
       } else {
@@ -908,7 +892,7 @@ export const SettingsPage: React.FC = () => {
               <div className="flex-row items-center gap-2">
                 <Cloud size={20} color="var(--accent-en-primary)" />
                 <div>
-                  <h2 style={{ fontSize: "var(--text-base)", fontWeight: 700 }}>Đồng bộ đám mây (Cloud Sync)</h2>
+                  <h2 style={{ fontSize: "var(--text-base)", fontWeight: 700 }}>Tài khoản & Đồng bộ</h2>
                   <p style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)" }}>
                     Đồng bộ vốn từ vựng, tiến độ học tập và bài đọc đa thiết bị qua Supabase (Local-First)
                   </p>
@@ -958,15 +942,46 @@ export const SettingsPage: React.FC = () => {
                 </p>
               </div>
             ) : !cloudUser ? (
-              /* Signed Out State -> Email Magic Link Sign In */
-              <div style={{ padding: "16px", borderRadius: "var(--radius-md)", backgroundColor: "var(--bg-muted)", border: "1px solid var(--border-default)" }} className="flex-col gap-3">
+              /* Signed Out State -> Google + Email Magic Link Sign In */
+              <div style={{ padding: "16px", borderRadius: "var(--radius-md)", backgroundColor: "var(--bg-muted)", border: "1px solid var(--border-default)" }} className="flex-col gap-4">
                 <div style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)" }}>
-                  <strong style={{ color: "var(--text-primary)" }}>Đăng nhập để đồng bộ dữ liệu đa thiết bị</strong>
+                  <strong style={{ color: "var(--text-primary)" }}>Đăng nhập để sao lưu dữ liệu và sử dụng trên nhiều thiết bị</strong>
                   <p style={{ marginTop: "2px" }}>
-                    Nhập email của bạn để nhận liên kết đăng nhập nhanh (Magic Link). Bạn vẫn có thể sử dụng toàn bộ tính năng mà không cần đăng nhập.
+                    Dữ liệu học tập trên thiết bị luôn được giữ nguyên. Đăng nhập để tự động sao lưu và đồng bộ đa thiết bị.
                   </p>
                 </div>
 
+                <div className="flex-row gap-3" style={{ flexWrap: "wrap", alignItems: "center" }}>
+                  {/* Google OAuth Button */}
+                  <button
+                    id="settings-google-signin-btn"
+                    type="button"
+                    onClick={() => void handleGoogleSignIn()}
+                    disabled={isSigningInGoogle || isSendingMagicLink}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "10px",
+                      padding: "9px 16px",
+                      borderRadius: "var(--radius-sm)",
+                      border: "1px solid var(--border-strong)",
+                      backgroundColor: "var(--bg-surface)",
+                      color: "var(--text-primary)",
+                      fontSize: "var(--text-sm)",
+                      fontWeight: 600,
+                      cursor: isSigningInGoogle ? "not-allowed" : "pointer",
+                      boxShadow: "var(--shadow-xs)",
+                      transition: "all var(--transition-fast)",
+                    }}
+                  >
+                    <GoogleIcon size={18} />
+                    <span>{isSigningInGoogle ? "Đang kết nối Google…" : "Đăng nhập với Google"}</span>
+                  </button>
+
+                  <span style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)", textTransform: "uppercase" }}>hoặc</span>
+                </div>
+
+                {/* Magic Link option */}
                 {magicLinkSent ? (
                   <div style={{ padding: "12px", backgroundColor: "var(--accent-en-subtle)", borderRadius: "var(--radius-sm)", border: "1px solid var(--accent-en-border)", display: "flex", alignItems: "center", gap: "8px" }}>
                     <Check size={16} color="var(--accent-en-primary)" />
@@ -982,7 +997,7 @@ export const SettingsPage: React.FC = () => {
                     <input
                       id="cloud-sync-email-input"
                       type="email"
-                      placeholder="vidu@gmail.com"
+                      placeholder="name@example.com (Magic Link)"
                       value={emailInput}
                       onChange={(e) => setEmailInput(e.target.value)}
                       onKeyDown={(e) => {
@@ -1005,13 +1020,14 @@ export const SettingsPage: React.FC = () => {
                     <Button
                       id="cloud-sync-send-magic-link-btn"
                       type="button"
-                      variant="primary"
+                      variant="secondary"
                       size="sm"
                       isLoading={isSendingMagicLink}
+                      disabled={isSigningInGoogle}
                       leftIcon={<LogIn size={15} />}
                       onClick={() => void handleSendMagicLink()}
                     >
-                      Gửi liên kết đăng nhập
+                      Gửi liên kết
                     </Button>
                   </div>
                 )}
@@ -1019,11 +1035,47 @@ export const SettingsPage: React.FC = () => {
             ) : (
               /* Signed In State */
               <div style={{ padding: "16px", borderRadius: "var(--radius-md)", backgroundColor: "var(--bg-surface)", border: "1px solid var(--border-strong)" }} className="flex-col gap-3">
-                <div className="flex-row justify-between items-center" style={{ flexWrap: "wrap", gap: "8px" }}>
-                  <div>
-                    <span style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)" }}>Tài khoản đám mây:</span>
-                    <p style={{ fontSize: "var(--text-sm)", fontWeight: 700, color: "var(--text-primary)" }}>{cloudUser.email}</p>
+                <div className="flex-row justify-between items-center" style={{ flexWrap: "wrap", gap: "12px" }}>
+                  <div className="flex-row items-center gap-3">
+                    {cloudAvatarUrl ? (
+                      <img
+                        src={cloudAvatarUrl}
+                        alt={cloudDisplayName}
+                        style={{ width: "40px", height: "40px", borderRadius: "50%", border: "2px solid var(--border-strong)" }}
+                      />
+                    ) : (
+                      <div
+                        style={{
+                          width: "40px",
+                          height: "40px",
+                          borderRadius: "50%",
+                          backgroundColor: "var(--accent-en-subtle)",
+                          color: "var(--accent-en-primary)",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          fontWeight: 700,
+                          fontSize: "var(--text-base)",
+                        }}
+                      >
+                        {cloudDisplayName.charAt(0).toUpperCase()}
+                      </div>
+                    )}
+                    <div>
+                      <div className="flex-row items-center gap-2">
+                        <span style={{ fontSize: "var(--text-sm)", fontWeight: 700, color: "var(--text-primary)" }}>
+                          {cloudDisplayName}
+                        </span>
+                        <Badge variant={cloudProvider === "google" ? "en" : "default"} size="sm">
+                          {cloudProvider === "google" ? "Google" : "Email"}
+                        </Badge>
+                      </div>
+                      <p style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)", marginTop: "2px" }}>
+                        {cloudUserEmail}
+                      </p>
+                    </div>
                   </div>
+
                   <div style={{ textAlign: "right" }}>
                     <span style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)" }}>Đồng bộ lần cuối:</span>
                     <p style={{ fontSize: "var(--text-xs)", color: "var(--text-primary)", fontWeight: 600 }}>
@@ -1082,7 +1134,7 @@ export const SettingsPage: React.FC = () => {
                 <div className="flex-row gap-2" style={{ marginTop: "4px", flexWrap: "wrap" }}>
                   <Button
                     type="button"
-                    variant="secondary"
+                    variant="primary"
                     size="sm"
                     onClick={handleManualSync}
                     isLoading={isSyncingManual || syncStatus === "SYNCING"}

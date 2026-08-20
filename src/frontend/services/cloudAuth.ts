@@ -38,7 +38,64 @@ export class CloudAuthService {
     return session?.user ?? null;
   }
 
-  async signInWithEmail(email: string): Promise<{ success: boolean; error?: string }> {
+  async signInWithGoogle(options?: { returnTo?: string }): Promise<{ success: boolean; error?: string }> {
+    const supabase = getSupabaseClient();
+    if (!supabase) {
+      return { success: false, error: "Đồng bộ đám mây chưa được cấu hình cho ứng dụng này." };
+    }
+
+    try {
+      const allowedRoutes = [
+        "/",
+        "/settings",
+        "/vocabulary",
+        "/flashcards",
+        "/reading",
+        "/shadowing",
+        "/pronunciation",
+        "/quiz",
+        "/games",
+        "/progress",
+        "/add",
+      ];
+      const returnTo = options?.returnTo;
+      const safeReturnTo = returnTo && allowedRoutes.includes(returnTo) ? returnTo : "/settings";
+
+      if (typeof window !== "undefined" && window.sessionStorage) {
+        try {
+          window.sessionStorage.setItem("lexis_auth_return_to", safeReturnTo);
+        } catch {
+          // Ignore session storage write errors
+        }
+      }
+
+      const redirectUrl = typeof window !== "undefined"
+        ? `${window.location.origin}${window.location.pathname}`
+        : undefined;
+
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo: redirectUrl,
+          scopes: "openid email profile",
+          queryParams: {
+            access_type: "online",
+            prompt: "select_account",
+          },
+        },
+      });
+
+      if (error) {
+        return { success: false, error: error.message };
+      }
+
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || "Lỗi khi kết nối với Google." };
+    }
+  }
+
+  async signInWithMagicLink(email: string, options?: { returnTo?: string }): Promise<{ success: boolean; error?: string }> {
     const supabase = getSupabaseClient();
     if (!supabase) {
       return { success: false, error: "Đồng bộ đám mây chưa được cấu hình cho ứng dụng này." };
@@ -50,7 +107,30 @@ export class CloudAuthService {
         return { success: false, error: "Vui lòng nhập địa chỉ email hợp lệ." };
       }
 
-      // Compute redirect URL compatible with GitHub Pages HashRouter
+      const allowedRoutes = [
+        "/",
+        "/settings",
+        "/vocabulary",
+        "/flashcards",
+        "/reading",
+        "/shadowing",
+        "/pronunciation",
+        "/quiz",
+        "/games",
+        "/progress",
+        "/add",
+      ];
+      const returnTo = options?.returnTo;
+      const safeReturnTo = returnTo && allowedRoutes.includes(returnTo) ? returnTo : "/settings";
+
+      if (typeof window !== "undefined" && window.sessionStorage) {
+        try {
+          window.sessionStorage.setItem("lexis_auth_return_to", safeReturnTo);
+        } catch {
+          // Ignore session storage write errors
+        }
+      }
+
       const redirectUrl = typeof window !== "undefined"
         ? `${window.location.origin}${window.location.pathname}`
         : undefined;
@@ -72,6 +152,46 @@ export class CloudAuthService {
       return { success: false, error: err?.message || "Lỗi khi gửi email đăng nhập." };
     }
   }
+
+  async signInWithEmail(email: string): Promise<{ success: boolean; error?: string }> {
+    return this.signInWithMagicLink(email);
+  }
+
+  getUserDisplayName(user: User | null): string {
+    if (!user) return "Khách";
+    const meta = user.user_metadata;
+    if (meta?.full_name && typeof meta.full_name === "string" && meta.full_name.trim()) {
+      return meta.full_name.trim();
+    }
+    if (meta?.name && typeof meta.name === "string" && meta.name.trim()) {
+      return meta.name.trim();
+    }
+    if (user.email && typeof user.email === "string") {
+      return user.email.split("@")[0];
+    }
+    return "Tài khoản LEXIS";
+  }
+
+  getUserAvatarUrl(user: User | null): string | null {
+    if (!user) return null;
+    const meta = user.user_metadata;
+    if (meta?.avatar_url && typeof meta.avatar_url === "string") return meta.avatar_url;
+    if (meta?.picture && typeof meta.picture === "string") return meta.picture;
+    return null;
+  }
+
+  getUserProvider(user: User | null): string {
+    if (!user) return "none";
+    if (user.app_metadata?.provider && typeof user.app_metadata.provider === "string") {
+      return user.app_metadata.provider;
+    }
+    const identities = (user as any)?.identities;
+    if (Array.isArray(identities) && identities.length > 0 && identities[0]?.provider) {
+      return identities[0].provider;
+    }
+    return "email";
+  }
+
 
   async signOut(): Promise<void> {
     const supabase = getSupabaseClient();
