@@ -55,7 +55,7 @@ export const Sidebar: React.FC = () => {
       {/* Brand Header */}
       <div
         style={{
-          padding: "var(--space-6) var(--space-6)",
+          padding: "var(--space-5) var(--space-6)",
           borderBottom: "1px solid var(--border-subtle)",
           display: "flex",
           alignItems: "center",
@@ -64,24 +64,63 @@ export const Sidebar: React.FC = () => {
       >
         <div
           style={{
-            width: "38px",
-            height: "38px",
-            borderRadius: "var(--radius-md)",
+            width: "36px",
+            height: "36px",
+            borderRadius: "10px",
             backgroundColor: isEn ? "var(--accent-en-primary)" : "var(--accent-zh-primary)",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
             color: "#FFFFFF",
-            boxShadow: "var(--shadow-sm)",
+            boxShadow: isEn
+              ? "0 2px 8px -2px rgba(79, 70, 229, 0.3)"
+              : "0 2px 8px -2px rgba(225, 29, 72, 0.3)",
+            flexShrink: 0,
           }}
         >
-          <Sparkles size={20} />
+          <svg
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path
+              d="M12 2L14.5 9.5L22 12L14.5 14.5L12 22L9.5 14.5L2 12L9.5 9.5L12 2Z"
+              fill="currentColor"
+              fillOpacity="0.2"
+            />
+          </svg>
         </div>
-        <div>
-          <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "1.125rem", letterSpacing: "-0.02em" }}>
-            TÚ TRINH
+        <div style={{ display: "flex", flexDirection: "column", gap: "2px", minWidth: 0 }}>
+          <div
+            style={{
+              fontFamily: "var(--font-display)",
+              fontWeight: 800,
+              fontSize: "1.1875rem",
+              letterSpacing: "0.06em",
+              lineHeight: 1.1,
+              color: "var(--text-primary)",
+              whiteSpace: "nowrap",
+            }}
+          >
+            LEXIS
           </div>
-          <div style={{ fontSize: "0.6875rem", letterSpacing: "0.08em", fontWeight: 700, color: "var(--text-tertiary)", textTransform: "uppercase" }}>
+          <div
+            style={{
+              fontSize: "0.625rem",
+              letterSpacing: "0.12em",
+              fontWeight: 700,
+              color: "var(--text-tertiary)",
+              textTransform: "uppercase",
+              lineHeight: 1,
+              whiteSpace: "nowrap",
+            }}
+          >
             LANGUAGE WORKSPACE
           </div>
         </div>

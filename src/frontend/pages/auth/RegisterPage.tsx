@@ -71,15 +71,31 @@ export const RegisterPage: React.FC = () => {
               display: "inline-flex",
               alignItems: "center",
               justifyContent: "center",
-              boxShadow: "var(--shadow-md)",
+              boxShadow: "0 2px 10px -2px rgba(79, 70, 229, 0.35)",
               marginBottom: "var(--space-3)",
             }}
           >
-            <Sparkles size={24} />
+            <svg
+              width="24"
+              height="24"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path
+                d="M12 2L14.5 9.5L22 12L14.5 14.5L12 22L9.5 14.5L2 12L9.5 9.5L12 2Z"
+                fill="currentColor"
+                fillOpacity="0.2"
+              />
+            </svg>
           </div>
           <h1 style={{ fontSize: "var(--text-2xl)", fontWeight: 800 }}>Tạo tài khoản học tập</h1>
           <p style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)", marginTop: "4px" }}>
-            Bắt đầu hành trình chinh phục tiếng Anh và tiếng Trung
+            Bắt đầu hành trình chinh phục tiếng Anh và tiếng Trung cùng Lexis
           </p>
         </div>
 
@@ -116,7 +132,7 @@ export const RegisterPage: React.FC = () => {
                 required
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="Ví dụ: Tú Trinh"
+                placeholder="Ví dụ: Minh Anh"
                 style={{
                   width: "100%",
                   padding: "10px 12px 10px 38px",
@@ -144,7 +160,7 @@ export const RegisterPage: React.FC = () => {
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="tutrinh@example.com"
+                placeholder="learner@example.com"
                 style={{
                   width: "100%",
                   padding: "10px 12px 10px 38px",
