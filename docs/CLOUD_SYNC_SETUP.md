@@ -38,9 +38,11 @@ Tài liệu này hướng dẫn chi tiết từng bước cho Quản trị viên
 ### Bước 3: Chạy SQL Migration
 1. Vào mục **SQL Editor** trong bảng điều khiển Supabase.
 2. Nhấp **"New query"**.
-3. Mở file migration [`supabase/migrations/20260819000000_cloud_sync.sql`](../supabase/migrations/20260819000000_cloud_sync.sql), copy toàn bộ nội dung và dán vào SQL Editor.
-4. Bấm **"Run"** (hoặc `Ctrl + Enter` / `Cmd + Enter`).
-5. Kiểm tra kết quả: Đã tạo 2 bảng `user_sync_records`, `user_sync_state` cùng các chỉ mục (Indexes) và chính sách RLS.
+3. Chạy lần lượt, theo đúng thứ tự, cả hai migration sau trong SQL Editor:
+   - [`20260819000000_cloud_sync.sql`](../supabase/migrations/20260819000000_cloud_sync.sql)
+   - [`20260820000000_cloud_sync_server_cursor.sql`](../supabase/migrations/20260820000000_cloud_sync_server_cursor.sql)
+4. Bấm **"Run"** cho từng migration (hoặc `Ctrl + Enter` / `Cmd + Enter`).
+5. Kiểm tra kết quả: Có 2 bảng `user_sync_records`, `user_sync_state`, RLS policies cũ vẫn còn nguyên, và `user_sync_records` có cột `change_seq` cùng trigger `user_sync_records_server_metadata`.
 
 ---
 

@@ -9,26 +9,28 @@ export interface SupabaseSyncRecordRow {
   record_id: string;
   payload: Record<string, unknown> | null;
   revision: number;
+  change_seq: string | number;
   updated_at: string;
   deleted_at: string | null;
 }
 
 export class SupabaseRemoteSyncAdapter implements RemoteSyncAdapter {
+  static readonly PULL_PAGE_SIZE = 200;
   constructor(
     private readonly client: SupabaseClient,
     private readonly user: User,
   ) {}
 
-  async pull(cursor?: string): Promise<{ changes: SyncChange[]; cursor?: string }> {
+  async pull(cursor?: string): Promise<{ changes: SyncChange[]; cursor?: string; hasMore: boolean }> {
     let query = this.client
       .from("user_sync_records")
-      .select("store, record_id, payload, revision, updated_at, deleted_at")
+      .select("store, record_id, payload, revision, change_seq, updated_at, deleted_at")
       .eq("user_id", this.user.id)
-      .order("updated_at", { ascending: true })
-      .limit(200);
+      .order("change_seq", { ascending: true })
+      .limit(SupabaseRemoteSyncAdapter.PULL_PAGE_SIZE);
 
     if (cursor) {
-      query = query.gt("updated_at", cursor);
+      query = query.gt("change_seq", cursor);
     }
 
     const { data, error } = await query;
@@ -45,6 +47,7 @@ export class SupabaseRemoteSyncAdapter implements RemoteSyncAdapter {
       changes.push({
         store: row.store as SyncableStore,
         id: row.record_id,
+        changeSeq: String(row.change_seq),
         updatedAt: row.updated_at,
         deleted: Boolean(row.deleted_at),
         record: row.payload ? (row.payload as any) : undefined,
@@ -52,52 +55,56 @@ export class SupabaseRemoteSyncAdapter implements RemoteSyncAdapter {
       });
     }
 
-    const nextCursor = changes.length > 0 ? changes[changes.length - 1]!.updatedAt : cursor;
-    return { changes, cursor: nextCursor };
+    // Advance from the raw final row so an unknown future store cannot stall
+    // this client at the same cursor forever.
+    const finalRow = rows[rows.length - 1];
+    const nextCursor = finalRow ? String(finalRow.change_seq) : cursor;
+    return {
+      changes,
+      cursor: nextCursor,
+      hasMore: rows.length === SupabaseRemoteSyncAdapter.PULL_PAGE_SIZE,
+    };
   }
 
-  async push(changes: SyncChange[]): Promise<{ acknowledgedIds: string[]; cursor?: string }> {
+  async push(changes: SyncChange[]): Promise<{ acknowledgedKeys: string[] }> {
     if (changes.length === 0) {
-      return { acknowledgedIds: [] };
+      return { acknowledgedKeys: [] };
     }
 
-    const now = new Date().toISOString();
-    const rows: SupabaseSyncRecordRow[] = changes.map((change) => ({
+    // The database trigger owns revision, write timestamp, tombstone time and
+    // change sequence. Do not let device clocks order cloud writes.
+    const rows = changes.map((change) => ({
       user_id: this.user.id,
       store: change.store,
       record_id: change.id,
       payload: change.deleted ? null : (change.record as Record<string, unknown> ?? null),
-      revision: change.revision ?? 1,
-      updated_at: change.updatedAt || now,
-      deleted_at: change.deleted ? (change.updatedAt || now) : null,
     }));
 
     // Bounded chunking (e.g. 50 items per chunk to prevent payload size issues)
     const CHUNK_SIZE = 50;
-    const acknowledgedIds: string[] = [];
-    let latestUpdatedAt: string | undefined;
+    const acknowledgedKeys: string[] = [];
 
     for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
       const chunk = rows.slice(i, i + CHUNK_SIZE);
-      const { error } = await this.client
+      const { data, error } = await this.client
         .from("user_sync_records")
         .upsert(chunk, {
           onConflict: "user_id,store,record_id",
           ignoreDuplicates: false,
-        });
+        })
+        .select("store, record_id");
 
       if (error) {
         throw new Error(`Lỗi khi đồng bộ lên máy chủ đám mây: ${error.message}`);
       }
 
-      for (const row of chunk) {
-        acknowledgedIds.push(row.record_id);
-        if (!latestUpdatedAt || row.updated_at > latestUpdatedAt) {
-          latestUpdatedAt = row.updated_at;
+      for (const row of data ?? []) {
+        if (isSyncableStore(row.store) && typeof row.record_id === "string") {
+          acknowledgedKeys.push(`${row.store}:${row.record_id}`);
         }
       }
     }
 
-    return { acknowledgedIds, cursor: latestUpdatedAt };
+    return { acknowledgedKeys };
   }
 }

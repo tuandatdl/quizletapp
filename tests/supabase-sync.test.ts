@@ -10,6 +10,7 @@ import {
   type SyncQueueItem,
 } from "../src/frontend/persistence/sync.js";
 import { LocalFirstSyncCoordinator } from "../src/frontend/persistence/syncEngine.js";
+import { SupabaseRemoteSyncAdapter } from "../src/frontend/persistence/supabaseAdapter.js";
 import {
   cloudSyncAvailable,
   getSupabaseClient,
@@ -17,6 +18,36 @@ import {
   isAuthCallbackUrl,
   handleAuthRedirect,
 } from "../src/frontend/persistence/supabaseClient.js";
+
+const acknowledgedKeysFor = (changes: SyncChange[]) => changes.map((change) => `${change.store}:${change.id}`);
+
+function mockSignedInSupabase(remoteRows: Record<string, unknown>[], userId = "user-cloud") {
+  const query: Record<string, any> = {};
+  query.select = vi.fn(() => query);
+  query.eq = vi.fn(() => query);
+  query.order = vi.fn(() => query);
+  query.limit = vi.fn(() => query);
+  query.gt = vi.fn(() => query);
+  query.then = (resolve: (value: unknown) => unknown, reject?: (reason: unknown) => unknown) =>
+    Promise.resolve({ data: remoteRows, error: null }).then(resolve, reject);
+
+  const upsert = vi.fn((rows: Array<{ store: string; record_id: string }>) => ({
+    select: vi.fn(async () => ({
+      data: rows.map((row) => ({ store: row.store, record_id: row.record_id })),
+      error: null,
+    })),
+  }));
+  query.upsert = upsert;
+
+  return {
+    auth: {
+      getSession: vi.fn(async () => ({ data: { session: { user: { id: userId } } }, error: null })),
+      onAuthStateChange: vi.fn(() => ({ data: { subscription: { unsubscribe: vi.fn() } } })),
+    },
+    from: vi.fn(() => query),
+    upsert,
+  };
+}
 
 describe("Supabase Local-First Cloud Sync", () => {
   let dbName: string;
@@ -62,7 +93,7 @@ describe("Supabase Local-First Cloud Sync", () => {
       pull: vi.fn(async () => ({ changes: [], cursor: "cursor-1" })),
       push: vi.fn(async (changes: SyncChange[]) => {
         remoteRecords.push(...changes);
-        return { acknowledgedIds: changes.map((c: SyncChange) => c.id), cursor: "cursor-2" };
+        return { acknowledgedKeys: acknowledgedKeysFor(changes) };
       }),
     };
 
@@ -128,7 +159,7 @@ describe("Supabase Local-First Cloud Sync", () => {
 
     const mockAdapter: RemoteSyncAdapter = {
       pull: vi.fn(async () => ({ changes: remoteChanges, cursor: "2026-08-19T10:35:00.000Z" })),
-      push: vi.fn(async () => ({ acknowledgedIds: [] })),
+      push: vi.fn(async () => ({ acknowledgedKeys: [] })),
     };
 
     const coordinator = new LocalFirstSyncCoordinator(adapter);
@@ -166,7 +197,7 @@ describe("Supabase Local-First Cloud Sync", () => {
       pull: vi.fn(async () => ({ changes: [] })),
       push: vi.fn(async (changes: SyncChange[]) => {
         pushedChanges.push(...changes);
-        return { acknowledgedIds: changes.map((c: SyncChange) => c.id) };
+        return { acknowledgedKeys: acknowledgedKeysFor(changes) };
       }),
     };
 
@@ -179,7 +210,7 @@ describe("Supabase Local-First Cloud Sync", () => {
   it("5. idempotency: repeated sync calls with identical state produce no duplicates or errors", async () => {
     const mockAdapter: RemoteSyncAdapter = {
       pull: vi.fn(async () => ({ changes: [] })),
-      push: vi.fn(async () => ({ acknowledgedIds: [] })),
+      push: vi.fn(async () => ({ acknowledgedKeys: [] })),
     };
 
     const coordinator = new LocalFirstSyncCoordinator(adapter);
@@ -201,28 +232,29 @@ describe("Supabase Local-First Cloud Sync", () => {
     await adapter.put("vocabulary", localItem);
     await coordinator.queueLocalChange("vocabulary", "v-conflict", localItem);
 
-    // Remote edit at 11:05 (newer)
-    const remoteItem = { id: "v-conflict", term: "book", meaningVi: "quyển sách (đám mây)", updatedAt: "2026-08-19T11:05:00.000Z" };
+    // The local device clock is deliberately later. Conflict choice must still
+    // be deterministic from server order, not a browser timestamp.
+    const remoteItem = { id: "v-conflict", term: "book", meaningVi: "quyển sách (đám mây)", updatedAt: "2026-08-19T10:05:00.000Z" };
     const mockAdapter: RemoteSyncAdapter = {
       pull: vi.fn(async () => ({
         changes: [
           {
             store: "vocabulary" as const,
             id: "v-conflict",
-            updatedAt: "2026-08-19T11:05:00.000Z",
+            updatedAt: "2026-08-19T10:05:00.000Z",
             deleted: false,
             record: remoteItem,
           },
         ],
       })),
-      push: vi.fn(async () => ({ acknowledgedIds: [] })),
+      push: vi.fn(async () => ({ acknowledgedKeys: [] })),
     };
 
     const result = await coordinator.sync(mockAdapter);
     expect(result.success).toBe(true);
     expect(result.conflictsCount).toBe(1);
 
-    // Verify remote won because its timestamp was newer
+    // Verify remote wins deterministically despite the newer local clock.
     const merged = await adapter.get<any>("vocabulary", "v-conflict");
     expect(merged?.meaningVi).toBe("quyển sách (đám mây)");
 
@@ -244,7 +276,7 @@ describe("Supabase Local-First Cloud Sync", () => {
       pull: vi.fn(async () => ({ changes: [] })),
       push: vi.fn(async (changes: SyncChange[]) => {
         pushedChanges.push(...changes);
-        return { acknowledgedIds: changes.map((c: SyncChange) => c.id) };
+        return { acknowledgedKeys: acknowledgedKeysFor(changes) };
       }),
     };
 
@@ -264,7 +296,7 @@ describe("Supabase Local-First Cloud Sync", () => {
       pull: vi.fn(async () => ({
         changes: [{ store: "vocabulary" as const, id: "v-deleted", updatedAt: "2026-08-19T11:20:00.000Z", deleted: true }],
       })),
-      push: vi.fn(async () => ({ acknowledgedIds: [] })),
+      push: vi.fn(async () => ({ acknowledgedKeys: [] })),
     };
 
     await coordinatorB.sync(pullAdapterB);
@@ -285,10 +317,11 @@ describe("Supabase Local-First Cloud Sync", () => {
     const meta = await coordinator.getMeta();
     expect(meta.localDatasetOwnerUserId).toBe("user-A");
 
-    // Attempting to disconnect resets ownership safely without erasing local data
+    // Sign-out preserves ownership so a later different account cannot seed
+    // this local dataset as though the browser were a fresh device.
     await coordinator.disconnect();
     const metaAfter = await coordinator.getMeta();
-    expect(metaAfter.localDatasetOwnerUserId).toBeNull();
+    expect(metaAfter.localDatasetOwnerUserId).toBe("user-A");
     expect(metaAfter.lastSyncStatus).toBe("SIGNED_OUT");
   });
 
@@ -329,7 +362,7 @@ describe("Supabase Local-First Cloud Sync", () => {
       pull: vi.fn(async () => ({ changes: [] })),
       push: vi.fn(async (changes: SyncChange[]) => {
         pushedStores.push(...changes.map((c: SyncChange) => c.store));
-        return { acknowledgedIds: changes.map((c: SyncChange) => c.id) };
+        return { acknowledgedKeys: acknowledgedKeysFor(changes) };
       }),
     };
 
@@ -337,6 +370,182 @@ describe("Supabase Local-First Cloud Sync", () => {
     expect(result.success).toBe(true);
     expect(result.pushedCount).toBe(5);
     expect(pushedStores.sort()).toEqual([...SYNCABLE_STORES].sort());
+  });
+
+  it("11. drains 550 server-sequenced changes with the same timestamp without skips", async () => {
+    const allChanges: SyncChange[] = Array.from({ length: 550 }, (_, index) => ({
+      store: "vocabulary" as const,
+      id: `bulk-${index + 1}`,
+      changeSeq: String(index + 1),
+      updatedAt: "2026-08-20T00:00:00.000Z",
+      record: { id: `bulk-${index + 1}`, term: `term-${index + 1}` },
+    }));
+    const pull = vi.fn(async (cursor?: string) => {
+      const offset = cursor ? Number(cursor) : 0;
+      const changes = allChanges.slice(offset, offset + 200);
+      const next = offset + changes.length;
+      return { changes, cursor: changes.length ? String(next) : cursor, hasMore: next < allChanges.length };
+    });
+    const mockAdapter: RemoteSyncAdapter = {
+      pull,
+      push: vi.fn(async () => ({ acknowledgedKeys: [] })),
+    };
+    const coordinator = new LocalFirstSyncCoordinator(adapter);
+    await coordinator.saveMeta({ localDatasetOwnerUserId: "user-123" });
+
+    const result = await coordinator.sync(mockAdapter);
+
+    expect(result).toMatchObject({ success: true, pulledCount: 550 });
+    expect(pull.mock.calls.map(([cursor]) => cursor)).toEqual([undefined, "200", "400"]);
+    expect((await adapter.getAll("vocabulary"))).toHaveLength(550);
+    expect((await coordinator.getMeta()).lastCursor).toBe("550");
+  });
+
+  it("12. acknowledges queue items by store and record identity", async () => {
+    const coordinator = new LocalFirstSyncCoordinator(adapter);
+    await coordinator.saveMeta({ localDatasetOwnerUserId: "user-123" });
+    await coordinator.queueLocalChange("vocabulary", "shared", { id: "shared", term: "vocabulary" });
+    await coordinator.queueLocalChange("readings", "shared", { id: "shared", title: "reading" });
+
+    const mockAdapter: RemoteSyncAdapter = {
+      pull: vi.fn(async () => ({ changes: [] })),
+      push: vi.fn(async () => ({ acknowledgedKeys: ["vocabulary:shared"] })),
+    };
+
+    const result = await coordinator.sync(mockAdapter);
+    expect(result).toMatchObject({ success: true, pushedCount: 1 });
+    expect(await coordinator.getPendingCount()).toBe(1);
+    expect(await adapter.get("syncQueue", "readings:shared")).toBeDefined();
+  });
+
+  it("13. rejects a non-advancing paginated response without losing queued writes", async () => {
+    const coordinator = new LocalFirstSyncCoordinator(adapter);
+    await coordinator.saveMeta({ localDatasetOwnerUserId: "user-123", lastCursor: "15" });
+    await coordinator.queueLocalChange("vocabulary", "safe-retry", { id: "safe-retry", term: "retry" });
+    const mockAdapter: RemoteSyncAdapter = {
+      pull: vi.fn(async () => ({ changes: [], cursor: "15", hasMore: true })),
+      push: vi.fn(async () => ({ acknowledgedKeys: [] })),
+    };
+
+    const result = await coordinator.sync(mockAdapter);
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("không tiến được cursor");
+    expect(await coordinator.getPendingCount()).toBe(1);
+    expect((await coordinator.getMeta()).lastCursor).toBe("15");
+  });
+
+  it("14. drains 501 changes across a short final page", async () => {
+    const allChanges: SyncChange[] = Array.from({ length: 501 }, (_, index) => ({
+      store: "readings" as const,
+      id: `reading-${index + 1}`,
+      changeSeq: String(index + 1),
+      updatedAt: "2026-08-20T00:00:00.000Z",
+      record: { id: `reading-${index + 1}`, title: `Reading ${index + 1}` },
+    }));
+    const pull = vi.fn(async (cursor?: string) => {
+      const offset = cursor ? Number(cursor) : 0;
+      const changes = allChanges.slice(offset, offset + 200);
+      const next = offset + changes.length;
+      return { changes, cursor: String(next), hasMore: next < allChanges.length };
+    });
+    const coordinator = new LocalFirstSyncCoordinator(adapter);
+    await coordinator.saveMeta({ localDatasetOwnerUserId: "user-123" });
+
+    const result = await coordinator.sync({ pull, push: vi.fn(async () => ({ acknowledgedKeys: [] })) });
+
+    expect(result).toMatchObject({ success: true, pulledCount: 501 });
+    expect(pull).toHaveBeenCalledTimes(3);
+    expect((await adapter.getAll("readings"))).toHaveLength(501);
+  });
+
+  it("15. clean second device downloads nonempty cloud data before any seed upload", async () => {
+    vi.stubEnv("VITE_SUPABASE_URL", "https://example.supabase.co");
+    vi.stubEnv("VITE_SUPABASE_ANON_KEY", "sb_test_key");
+    const supabase = mockSignedInSupabase([
+      {
+        store: "vocabulary",
+        record_id: "cloud-only",
+        payload: { id: "cloud-only", term: "cloud" },
+        revision: 3,
+        change_seq: "25",
+        updated_at: "2026-08-20T00:00:00.000Z",
+        deleted_at: null,
+      },
+    ]);
+    resetSupabaseClientForTesting(supabase as any);
+    const coordinator = new LocalFirstSyncCoordinator(adapter);
+
+    const result = await coordinator.sync();
+
+    expect(result).toMatchObject({ success: true, pulledCount: 1, pushedCount: 0 });
+    expect(await adapter.get("vocabulary", "cloud-only")).toMatchObject({ term: "cloud" });
+    expect((await coordinator.getMeta()).localDatasetOwnerUserId).toBe("user-cloud");
+    expect(supabase.from).toHaveBeenCalledTimes(1);
+  });
+
+  it("16. blocks an unowned browser with local data from mixing with a nonempty cloud account", async () => {
+    vi.stubEnv("VITE_SUPABASE_URL", "https://example.supabase.co");
+    vi.stubEnv("VITE_SUPABASE_ANON_KEY", "sb_test_key");
+    await adapter.put("vocabulary", { id: "local-only", term: "local" });
+    const supabase = mockSignedInSupabase([
+      {
+        store: "vocabulary",
+        record_id: "cloud-only",
+        payload: { id: "cloud-only", term: "cloud" },
+        revision: 1,
+        change_seq: "1",
+        updated_at: "2026-08-20T00:00:00.000Z",
+        deleted_at: null,
+      },
+    ]);
+    resetSupabaseClientForTesting(supabase as any);
+    const coordinator = new LocalFirstSyncCoordinator(adapter);
+
+    const result = await coordinator.sync();
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("dữ liệu cục bộ");
+    expect(await adapter.get("vocabulary", "local-only")).toBeDefined();
+    expect(await adapter.get("vocabulary", "cloud-only")).toBeUndefined();
+    expect((await coordinator.getMeta()).localDatasetOwnerUserId).toBeNull();
+  });
+
+  it("17. lets the database own cloud write metadata and returns store-qualified acknowledgements", async () => {
+    const select = vi.fn(async () => ({ data: [{ store: "vocabulary", record_id: "same" }], error: null }));
+    const upsert = vi.fn(() => ({ select }));
+    const remote = new SupabaseRemoteSyncAdapter({ from: vi.fn(() => ({ upsert })) } as any, { id: "user-123" } as any);
+
+    const result = await remote.push([{
+      store: "vocabulary",
+      id: "same",
+      updatedAt: "2099-01-01T00:00:00.000Z",
+      record: { id: "same", term: "server owns timestamp" },
+    }]);
+
+    expect(upsert).toHaveBeenCalledOnce();
+    const submitted = (upsert.mock.calls as unknown as Array<[Array<Record<string, unknown>>]>)[0]![0][0]!;
+    expect(submitted).toEqual({
+      user_id: "user-123",
+      store: "vocabulary",
+      record_id: "same",
+      payload: { id: "same", term: "server owns timestamp" },
+    });
+    expect(result.acknowledgedKeys).toEqual(["vocabulary:same"]);
+  });
+
+  it("18. seeds a first device only after its complete cloud pull is empty", async () => {
+    vi.stubEnv("VITE_SUPABASE_URL", "https://example.supabase.co");
+    vi.stubEnv("VITE_SUPABASE_ANON_KEY", "sb_test_key");
+    await adapter.put("vocabulary", { id: "first-device", term: "only local" });
+    const supabase = mockSignedInSupabase([]);
+    resetSupabaseClientForTesting(supabase as any);
+    const coordinator = new LocalFirstSyncCoordinator(adapter);
+
+    const result = await coordinator.sync();
+
+    expect(result).toMatchObject({ success: true, pulledCount: 0, pushedCount: 1 });
+    expect(supabase.upsert).toHaveBeenCalledOnce();
+    expect((await coordinator.getMeta()).localDatasetOwnerUserId).toBe("user-cloud");
   });
 });
 

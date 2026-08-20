@@ -50,7 +50,7 @@ import { getCloudAuthService } from "../../services/cloudAuth";
 import { getSyncCoordinator } from "../../persistence/syncEngine";
 import { LanguageApiClient } from "../../services/languageApi";
 import { isLikelyIpa, matchesLocalVocabularyIdentity, needsExistingVocabularyRepair, normalizeLocalTerm } from "../../static/localDomain";
-import type { SyncMeta, SyncStatus } from "../../persistence/sync";
+import type { SyncConflict, SyncMeta, SyncStatus } from "../../persistence/sync";
 import type { User } from "@supabase/supabase-js";
 
 export const SettingsPage: React.FC = () => {
@@ -87,6 +87,8 @@ export const SettingsPage: React.FC = () => {
   const [isSendingMagicLink, setIsSendingMagicLink] = useState<boolean>(false);
   const [magicLinkSent, setMagicLinkSent] = useState<boolean>(false);
   const [isSyncingManual, setIsSyncingManual] = useState<boolean>(false);
+  const [syncConflicts, setSyncConflicts] = useState<SyncConflict[]>([]);
+  const [resolvingConflictId, setResolvingConflictId] = useState<string | null>(null);
 
   const refreshCloudState = async () => {
     if (!cloudAuth.isAvailable()) return;
@@ -96,6 +98,8 @@ export const SettingsPage: React.FC = () => {
     setSyncMeta(meta);
     const pending = await cloudAuth.getPendingCount();
     setPendingCount(pending);
+    const conflicts = await cloudAuth.getConflicts();
+    setSyncConflicts(conflicts.filter((conflict) => !conflict.resolvedAt));
   };
 
   useEffect(() => {
@@ -170,6 +174,23 @@ export const SettingsPage: React.FC = () => {
       error(getFriendlyErrorMessage(err));
     } finally {
       setIsSyncingManual(false);
+    }
+  };
+
+  const handleResolveSyncConflict = async (conflict: SyncConflict, choice: "local" | "remote") => {
+    setResolvingConflictId(conflict.id);
+    try {
+      await cloudAuth.resolveConflict(conflict.id, choice);
+      await refreshCloudState();
+      if (choice === "local") {
+        info("Đã giữ bản cục bộ. Thay đổi này sẽ được tải lên ở lần đồng bộ kế tiếp.");
+      } else {
+        info("Đã giữ bản đám mây.");
+      }
+    } catch (err: any) {
+      error(getFriendlyErrorMessage(err));
+    } finally {
+      setResolvingConflictId(null);
     }
   };
 
@@ -909,6 +930,47 @@ export const SettingsPage: React.FC = () => {
                 {syncMeta?.lastSyncError && (
                   <div style={{ padding: "8px 12px", borderRadius: "var(--radius-sm)", backgroundColor: "var(--accent-zh-subtle)", border: "1px solid var(--accent-zh-border)", fontSize: "var(--text-xs)", color: "var(--accent-zh-text)" }}>
                     ⚠️ {syncMeta.lastSyncError}
+                  </div>
+                )}
+
+                {syncStatus === "ACCOUNT_MISMATCH" && (
+                  <div style={{ padding: "8px 12px", borderRadius: "var(--radius-sm)", backgroundColor: "var(--accent-zh-subtle)", border: "1px solid var(--accent-zh-border)", fontSize: "var(--text-xs)", color: "var(--accent-zh-text)" }}>
+                    Để tránh trộn dữ liệu giữa hai tài khoản, ứng dụng đã chặn đồng bộ. Hãy dùng hồ sơ trình duyệt mới, hoặc xuất/làm sạch dữ liệu cục bộ một cách chủ động trước khi dùng tài khoản này.
+                  </div>
+                )}
+
+                {syncConflicts.length > 0 && (
+                  <div style={{ padding: "10px 12px", borderRadius: "var(--radius-sm)", backgroundColor: "var(--accent-zh-subtle)", border: "1px solid var(--accent-zh-border)" }} className="flex-col gap-2">
+                    <p style={{ fontSize: "var(--text-xs)", color: "var(--accent-zh-text)", margin: 0 }}>
+                      <strong>{syncConflicts.length} xung đột đồng bộ.</strong> Bản đám mây đã được áp dụng theo thứ tự máy chủ; bản cục bộ vẫn được lưu ở đây để bạn quyết định.
+                    </p>
+                    {syncConflicts.slice(0, 3).map((conflict) => (
+                      <div key={conflict.id} className="flex-row items-center justify-between gap-2" style={{ flexWrap: "wrap" }}>
+                        <span style={{ fontSize: "var(--text-xs)", color: "var(--text-primary)" }}>
+                          {conflict.store}: {conflict.recordId}
+                        </span>
+                        <div className="flex-row gap-2">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            isLoading={resolvingConflictId === conflict.id}
+                            onClick={() => void handleResolveSyncConflict(conflict, "remote")}
+                          >
+                            Giữ đám mây
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            size="sm"
+                            isLoading={resolvingConflictId === conflict.id}
+                            onClick={() => void handleResolveSyncConflict(conflict, "local")}
+                          >
+                            Giữ cục bộ
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 )}
 

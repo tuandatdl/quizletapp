@@ -27,6 +27,9 @@ export type SyncStatus =
 export interface SyncChange {
   store: SyncableStore;
   id: string;
+  /** Server-assigned sequence used as the incremental pull cursor. */
+  changeSeq?: string;
+  /** Server-assigned write time. Client timestamps are payload data only. */
   updatedAt: string;
   deleted?: boolean;
   record?: StoredRecord;
@@ -47,6 +50,8 @@ export interface SyncConflict extends StoredRecord {
   store: SyncableStore;
   recordId: string;
   localRecord?: StoredRecord;
+  /** A local tombstone is a meaningful version even though it has no payload. */
+  localDeleted?: boolean;
   remoteRecord?: StoredRecord;
   conflictAt: string;
   resolvedAt?: string;
@@ -71,8 +76,12 @@ export interface SyncResult {
 }
 
 export interface RemoteSyncAdapter {
-  pull(cursor?: string): Promise<{ changes: SyncChange[]; cursor?: string }>;
-  push(changes: SyncChange[]): Promise<{ acknowledgedIds: string[]; cursor?: string }>;
+  pull(cursor?: string): Promise<{ changes: SyncChange[]; cursor?: string; hasMore?: boolean }>;
+  /**
+   * Acknowledgements are `${store}:${id}`, never bare record IDs. Record IDs
+   * are only unique within a local store.
+   */
+  push(changes: SyncChange[]): Promise<{ acknowledgedKeys: string[] }>;
 }
 
 export interface SyncCoordinator {
