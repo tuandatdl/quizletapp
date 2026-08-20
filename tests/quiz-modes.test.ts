@@ -121,4 +121,12 @@ describe("distinct English quiz modes", () => {
       expect(q.answer).toBeTruthy();
     }
   });
+
+  it("QUIZ_CONTINUE_BUTTON_NO_DUPLICATE_ARROW", async () => {
+    const fs = await import("fs");
+    const path = await import("path");
+    const quizPageSrc = fs.readFileSync(path.resolve(__dirname, "../src/frontend/pages/quiz/QuizPage.tsx"), "utf-8");
+    expect(quizPageSrc).not.toContain("Tiếp tục ➔");
+    expect(quizPageSrc).toContain("Tiếp tục\n            </Button>");
+  });
 });

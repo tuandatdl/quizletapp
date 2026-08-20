@@ -681,13 +681,14 @@ export const QuizPage: React.FC = () => {
             )}
 
             <Button
+              type="button"
               variant={lastFeedback.correct ? "primary" : "secondary"}
               size="md"
               onClick={handleContinueNext}
               rightIcon={<ArrowRight size={16} />}
               style={{ width: "100%" }}
             >
-              Tiếp tục ➔
+              Tiếp tục
             </Button>
             <span style={{ textAlign: "center", fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>
               (Nhấn phím Enter hoặc Space để tiếp tục)
