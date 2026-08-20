@@ -2,6 +2,7 @@ export type AiProviderName = "gemini" | "openai" | "workers-ai";
 export type AiGatewaySource = AiProviderName | "cache";
 
 export type AiFailureCode =
+  | "BAD_REQUEST"
   | "QUOTA_EXCEEDED"
   | "RATE_LIMITED"
   | "TIMEOUT"
@@ -11,7 +12,8 @@ export type AiFailureCode =
   | "IDENTITY_MISMATCH"
   | "NOT_CONFIGURED"
   | "AUTH_ERROR"
-  | "VALIDATION_ERROR";
+  | "VALIDATION_ERROR"
+  | "MODEL_NOT_AVAILABLE";
 
 export interface AiBinding {
   run(model: string, input: Record<string, unknown>): Promise<unknown>;
@@ -43,6 +45,13 @@ export interface GatewayAttempt {
   provider: AiProviderName;
   failure?: AiFailureCode;
   latencyMs: number;
+  httpStatus?: number;
+  upstreamCode?: string;
+}
+
+export interface AiProviderFailureDetails {
+  httpStatus?: number;
+  upstreamCode?: string;
 }
 
 export interface AiGatewayResult<T> {
@@ -58,6 +67,7 @@ export class AiProviderError extends Error {
     public readonly provider: AiProviderName,
     public readonly code: AiFailureCode,
     message: string,
+    public readonly details: AiProviderFailureDetails = {},
   ) {
     super(message);
     this.name = "AiProviderError";
@@ -104,14 +114,37 @@ export function structuredPayload(value: unknown, provider: AiProviderName): unk
   return value;
 }
 
+function safeMachineCode(provider: AiProviderName, message: string): string | undefined {
+  try {
+    const value = JSON.parse(message);
+    if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+    const error = (value as Record<string, unknown>).error;
+    if (!error || typeof error !== "object" || Array.isArray(error)) return undefined;
+    const details = error as Record<string, unknown>;
+    const candidate = provider === "gemini" ? details.status ?? details.code : details.code ?? details.type;
+    const code = typeof candidate === "string" || typeof candidate === "number" ? String(candidate) : undefined;
+    return code && /^[A-Za-z0-9_.:-]{1,80}$/u.test(code) ? code : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function classifyHttpFailure(provider: AiProviderName, status: number, message: string): AiProviderError {
   const normalized = message.toLowerCase();
-  if (status === 401 || status === 403) return new AiProviderError(provider, "AUTH_ERROR", "AI provider authentication failed.");
+  const details = { httpStatus: status, upstreamCode: safeMachineCode(provider, message) };
+  if (status === 401 || status === 403) return new AiProviderError(provider, "AUTH_ERROR", "AI provider authentication failed.", details);
   if (status === 429) {
-    return new AiProviderError(provider, /quota|resource exhausted|billing/u.test(normalized) ? "QUOTA_EXCEEDED" : "RATE_LIMITED", "AI provider rate limit reached.");
+    return new AiProviderError(provider, /quota|resource exhausted|billing/u.test(normalized) ? "QUOTA_EXCEEDED" : "RATE_LIMITED", "AI provider rate limit reached.", details);
   }
-  if (status >= 500) return new AiProviderError(provider, "UPSTREAM_5XX", "AI provider is temporarily unavailable.");
-  return new AiProviderError(provider, "MALFORMED_RESPONSE", "AI provider rejected the request.");
+  if (status === 404 || /model.*(?:not found|unavailable)|model_not_found|unsupported.*model/iu.test(normalized)) {
+    return new AiProviderError(provider, "MODEL_NOT_AVAILABLE", "AI provider model is unavailable.", details);
+  }
+  if (status === 400 || status === 422) {
+    const code = /schema|validation|invalid[_ -]?(?:argument|parameter|request)/iu.test(normalized) ? "VALIDATION_ERROR" : "BAD_REQUEST";
+    return new AiProviderError(provider, code, "AI provider rejected the request format.", details);
+  }
+  if (status >= 500) return new AiProviderError(provider, "UPSTREAM_5XX", "AI provider is temporarily unavailable.", details);
+  return new AiProviderError(provider, "BAD_REQUEST", "AI provider rejected the request.", details);
 }
 
 function classifyFailure(provider: AiProviderName, caught: unknown): AiProviderError {
@@ -125,7 +158,7 @@ function classifyFailure(provider: AiProviderName, caught: unknown): AiProviderE
 }
 
 function canFallback(code: AiFailureCode): boolean {
-  return ["QUOTA_EXCEEDED", "RATE_LIMITED", "TIMEOUT", "NETWORK_ERROR", "UPSTREAM_5XX", "MALFORMED_RESPONSE", "IDENTITY_MISMATCH", "VALIDATION_ERROR"].includes(code);
+  return ["AUTH_ERROR", "BAD_REQUEST", "MODEL_NOT_AVAILABLE", "QUOTA_EXCEEDED", "RATE_LIMITED", "TIMEOUT", "NETWORK_ERROR", "UPSTREAM_5XX", "MALFORMED_RESPONSE", "IDENTITY_MISMATCH", "VALIDATION_ERROR"].includes(code);
 }
 
 function canRetry(code: AiFailureCode): boolean {
@@ -152,6 +185,25 @@ async function responseJson(response: Response, provider: AiProviderName): Promi
     throw new AiProviderError(provider, "MALFORMED_RESPONSE", "AI provider returned an invalid response envelope.");
   }
   return value as Record<string, unknown>;
+}
+
+export function toGeminiCompatibleSchema(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(toGeminiCompatibleSchema);
+  if (!value || typeof value !== "object") return value;
+  const source = value as Record<string, unknown>;
+  const result: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(source)) {
+    if (key !== "const") result[key] = toGeminiCompatibleSchema(child);
+  }
+  if (Object.hasOwn(source, "const")) {
+    const constant = toGeminiCompatibleSchema(source.const);
+    if (Array.isArray(result.enum)) {
+      result.enum = result.enum.filter((candidate) => JSON.stringify(candidate) === JSON.stringify(constant));
+    } else {
+      result.enum = [constant];
+    }
+  }
+  return result;
 }
 
 function textFromGemini(value: Record<string, unknown>): string {
@@ -204,7 +256,7 @@ export class GeminiProvider implements AiProvider {
               temperature: 0.1,
               maxOutputTokens: request.maxTokens,
               responseMimeType: "application/json",
-              responseJsonSchema: request.schema,
+              responseJsonSchema: toGeminiCompatibleSchema(request.schema),
             },
           }),
         },
@@ -247,7 +299,6 @@ export class OpenAiProvider implements AiProvider {
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.config.apiKey!}` },
           body: JSON.stringify({
             model: this.config.model,
-            temperature: 0,
             max_completion_tokens: request.maxTokens,
             messages: [
               { role: "system", content: request.systemPrompt },
@@ -324,7 +375,7 @@ export class AiGateway {
         return { value, provider: provider.name, fallbackCount, cacheHit: false, attempts };
       } catch (caught) {
         const failure = classifyFailure(provider.name, caught);
-        attempts.push({ provider: provider.name, failure: failure.code, latencyMs: Date.now() - startedAt });
+        attempts.push({ provider: provider.name, failure: failure.code, latencyMs: Date.now() - startedAt, ...failure.details });
         if (canRetry(failure.code) && provider.retryOnce) {
           const retryStartedAt = Date.now();
           try {
@@ -334,7 +385,7 @@ export class AiGateway {
             return { value, provider: provider.name, fallbackCount, cacheHit: false, attempts };
           } catch (retryCaught) {
             const retryFailure = classifyFailure(provider.name, retryCaught);
-            attempts.push({ provider: provider.name, failure: retryFailure.code, latencyMs: Date.now() - retryStartedAt });
+            attempts.push({ provider: provider.name, failure: retryFailure.code, latencyMs: Date.now() - retryStartedAt, ...retryFailure.details });
             if (!canFallback(retryFailure.code)) throw new AiGatewayExhaustedError(attempts);
           }
         } else if (!canFallback(failure.code)) {

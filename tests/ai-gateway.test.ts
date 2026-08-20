@@ -3,6 +3,9 @@ import {
   AiGateway,
   AiGatewayExhaustedError,
   AiProviderError,
+  GeminiProvider,
+  OpenAiProvider,
+  toGeminiCompatibleSchema,
   type AiGatewayCache,
   type AiGatewayRequest,
   type AiProvider,
@@ -35,6 +38,10 @@ function memoryCache(initial = new Map<string, unknown>()): AiGatewayCache {
     get: async (key) => initial.get(key),
     put: async (key, value) => { initial.set(key, value); },
   };
+}
+
+function jsonResponse(value: unknown, status = 200): Response {
+  return new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
 }
 
 describe("Multi-provider AI gateway fallback matrix", () => {
@@ -149,5 +156,57 @@ describe("Multi-provider AI gateway fallback matrix", () => {
 
     expect(result).toMatchObject({ provider: "cache", cacheHit: true, value: { term: "customer" } });
     expect(gemini).not.toHaveBeenCalled();
+  });
+});
+
+describe("Provider compatibility payloads", () => {
+  it("OPENAI_GPT5_MINI_NO_TEMPERATURE and OPENAI_STRUCTURED_OUTPUT_PRESERVED", async () => {
+    const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse({ choices: [{ message: { content: '{"term":"customer","meaningVi":"khách hàng"}' } }] }));
+    const schema = { type: "object", properties: { term: { type: "string" } }, required: ["term"], additionalProperties: false };
+    await new OpenAiProvider({ apiKey: "test-key", model: "gpt-5-mini", fetcher: fetcher as unknown as typeof fetch }).complete({ ...request, schema });
+
+    const init = fetcher.mock.calls[0]![1]!;
+    const body = JSON.parse(init.body as string) as Record<string, unknown>;
+    expect(body).not.toHaveProperty("temperature");
+    expect(body).not.toHaveProperty("top_p");
+    expect(body.response_format).toEqual({ type: "json_schema", json_schema: { name: "tutrinh_enrichment", strict: true, schema } });
+  });
+
+  it("GEMINI_CONST_TO_ENUM and GEMINI_SCHEMA_RECURSIVE_TRANSFORM", () => {
+    const source = {
+      type: "object",
+      properties: {
+        language: { type: "string", const: "en" },
+        nested: { type: "array", items: { type: "object", properties: { language: { type: "string", const: "zh" } } } },
+      },
+    };
+    expect(toGeminiCompatibleSchema(source)).toEqual({
+      type: "object",
+      properties: {
+        language: { type: "string", enum: ["en"] },
+        nested: { type: "array", items: { type: "object", properties: { language: { type: "string", enum: ["zh"] } } } },
+      },
+    });
+  });
+
+  it("GEMINI_SCHEMA_DOES_NOT_MUTATE_SOURCE and sends the compatible copy", async () => {
+    const schema = { type: "object", properties: { language: { type: "string", const: "zh" } } };
+    const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse({ candidates: [{ content: { parts: [{ text: '{"term":"customer","meaningVi":"khách hàng"}' }] } }] }));
+    await new GeminiProvider({ apiKey: "test-key", model: "gemini-2.5-flash-lite", fetcher: fetcher as unknown as typeof fetch }).complete({ ...request, schema });
+
+    expect(schema.properties.language).toEqual({ type: "string", const: "zh" });
+    const init = fetcher.mock.calls[0]![1]!;
+    const body = JSON.parse(init.body as string) as { generationConfig: { responseJsonSchema: unknown } };
+    expect(body.generationConfig.responseJsonSchema).toEqual({ type: "object", properties: { language: { type: "string", enum: ["zh"] } } });
+  });
+
+  it("records only safe HTTP status and machine code for provider failures", async () => {
+    const geminiFetcher = vi.fn(async () => jsonResponse({ error: { status: "INVALID_ARGUMENT", message: "Invalid request schema" } }, 400)) as unknown as typeof fetch;
+    const openAiFetcher = vi.fn(async () => jsonResponse({ error: { type: "insufficient_quota", code: "insufficient_quota", message: "billing unavailable" } }, 429)) as unknown as typeof fetch;
+
+    await expect(new GeminiProvider({ apiKey: "test-key", model: "gemini-2.5-flash-lite", fetcher: geminiFetcher }).complete(request))
+      .rejects.toMatchObject({ code: "VALIDATION_ERROR", details: { httpStatus: 400, upstreamCode: "INVALID_ARGUMENT" } });
+    await expect(new OpenAiProvider({ apiKey: "test-key", model: "gpt-5-mini", fetcher: openAiFetcher }).complete(request))
+      .rejects.toMatchObject({ code: "QUOTA_EXCEEDED", details: { httpStatus: 429, upstreamCode: "insufficient_quota" } });
   });
 });
