@@ -130,7 +130,7 @@ const queryBooleanSchema = z.preprocess((value) => {
 }, z.boolean());
 export const vocabularyQuerySchema = z.object({
   language: languageSchema.optional(), topic: z.string().optional(), status: vocabularyStatusSchema.optional(),
-  due: queryBooleanSchema.optional(), random: queryBooleanSchema.optional(), limit: z.coerce.number().int().min(1).max(100).default(50)
+  due: queryBooleanSchema.optional(), random: queryBooleanSchema.optional(), limit: z.coerce.number().int().min(1).max(3_000).default(50)
 });
 
 export const readingInputSchema = z.object({

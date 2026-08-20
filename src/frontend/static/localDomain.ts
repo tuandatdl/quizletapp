@@ -21,6 +21,14 @@ export interface ParsedQuickVocabularyDraft {
   synonyms?: string[];
 }
 
+export interface ParsedHighVolumeQuickVocabularyInput {
+  drafts: ParsedQuickVocabularyDraft[];
+  duplicateCount: number;
+}
+
+export const HIGH_VOLUME_MAX_QUICK_INPUT_LENGTH = 300_000;
+export const HIGH_VOLUME_MAX_QUICK_TERMS = 3_000;
+
 const QUICK_PART_OF_SPEECH = new Map<string, string>([
   ["n", "noun"], ["noun", "noun"],
   ["v", "verb"], ["verb", "verb"],
@@ -39,17 +47,34 @@ export function normalizeQuickPartOfSpeech(value: string): string {
   return QUICK_PART_OF_SPEECH.get(display.toLocaleLowerCase("en-US")) ?? display;
 }
 
-function validateQuickDrafts(drafts: ParsedQuickVocabularyDraft[], language: Language): ParsedQuickVocabularyDraft[] {
+function importIdentity(term: string, language: Language): string {
+  // English identity is case-insensitive. Chinese deliberately preserves
+  // internal spacing so import dedupe never collapses a potentially distinct
+  // lexical form; persistence-level identity still protects actual saves.
+  return language === "en"
+    ? normalizeLocalTerm(term, language)
+    : term.normalize("NFKC").trim();
+}
+
+function validateQuickDrafts(
+  drafts: ParsedQuickVocabularyDraft[],
+  language: Language,
+  maxTerms: number,
+): ParsedHighVolumeQuickVocabularyInput {
   const seen = new Set<string>();
-  const unique = drafts.filter((draft) => {
-    const normalized = normalizeLocalTerm(draft.term, language);
-    if (!normalized || seen.has(normalized)) return false;
+  let duplicateCount = 0;
+  const unique = drafts.flatMap((draft) => {
+    const normalized = importIdentity(draft.term, language);
+    if (!normalized || seen.has(normalized)) {
+      duplicateCount += 1;
+      return [];
+    }
     seen.add(normalized);
-    return true;
+    return [draft];
   });
   if (unique.some((draft) => draft.term.length > 200)) throw new Error("Mỗi từ hoặc cụm từ không được vượt quá 200 ký tự.");
-  if (unique.length > 100) throw new Error("Mỗi lần Quick Add hỗ trợ tối đa 100 từ hoặc cụm từ.");
-  return unique;
+  if (unique.length > maxTerms) throw new Error(`Mỗi lần Quick Add hỗ trợ tối đa ${maxTerms.toLocaleString("vi-VN")} từ hoặc cụm từ.`);
+  return { drafts: unique, duplicateCount };
 }
 
 function hasStructuredQuickSyntax(line: string): boolean {
@@ -100,9 +125,14 @@ function parseStructuredHeader(line: string): ParsedQuickVocabularyDraft & { str
   };
 }
 
-export function parseStructuredQuickVocabularyInput(input: string, language: Language): ParsedQuickVocabularyDraft[] {
+function parseQuickVocabularyInput(
+  input: string,
+  language: Language,
+  maxInputLength: number,
+  maxTerms: number,
+): ParsedHighVolumeQuickVocabularyInput {
   if (!input.trim()) throw new Error("Vui lòng nhập ít nhất một từ vựng.");
-  if (input.length > 10_000) throw new Error("Nội dung Quick Add không được vượt quá 10.000 ký tự.");
+  if (input.length > maxInputLength) throw new Error(`Nội dung Quick Add không được vượt quá ${maxInputLength.toLocaleString("vi-VN")} ký tự.`);
   const normalizedInput = input.replace(/\r\n?/gu, "\n");
   const nonEmptyLines = normalizedInput.split("\n").map((line) => line.trim()).filter(Boolean);
   const structuredMode = nonEmptyLines.some(hasStructuredQuickSyntax);
@@ -113,7 +143,7 @@ export function parseStructuredQuickVocabularyInput(input: string, language: Lan
       .map((term) => term.trim())
       .filter(Boolean)
       .map((term) => ({ term }));
-    return validateQuickDrafts(drafts, language);
+    return validateQuickDrafts(drafts, language, maxTerms);
   }
 
   const lines = normalizedInput.split("\n");
@@ -134,7 +164,15 @@ export function parseStructuredQuickVocabularyInput(input: string, language: Lan
     const { structured: _structured, ...draft } = parsed;
     drafts.push(draft);
   }
-  return validateQuickDrafts(drafts, language);
+  return validateQuickDrafts(drafts, language, maxTerms);
+}
+
+export function parseStructuredQuickVocabularyInput(input: string, language: Language): ParsedQuickVocabularyDraft[] {
+  return parseQuickVocabularyInput(input, language, 10_000, 100).drafts;
+}
+
+export function parseHighVolumeQuickVocabularyInput(input: string, language: Language): ParsedHighVolumeQuickVocabularyInput {
+  return parseQuickVocabularyInput(input, language, HIGH_VOLUME_MAX_QUICK_INPUT_LENGTH, HIGH_VOLUME_MAX_QUICK_TERMS);
 }
 
 export function parseLocalQuickInput(input: string, language: Language): string[] {
