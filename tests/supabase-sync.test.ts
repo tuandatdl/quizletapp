@@ -10,6 +10,7 @@ import {
   type SyncQueueItem,
 } from "../src/frontend/persistence/sync.js";
 import { LocalFirstSyncCoordinator } from "../src/frontend/persistence/syncEngine.js";
+import { DEFAULT_LOCAL_SETTINGS, isDefaultLocalSettingsRecord, LOCAL_SETTINGS_RECORD_ID } from "../src/frontend/persistence/settingsDefaults.js";
 import { isChangeSeqCursor, SupabaseRemoteSyncAdapter } from "../src/frontend/persistence/supabaseAdapter.js";
 import {
   cloudSyncAvailable,
@@ -20,6 +21,16 @@ import {
 } from "../src/frontend/persistence/supabaseClient.js";
 
 const acknowledgedKeysFor = (changes: SyncChange[]) => changes.map((change) => `${change.store}:${change.id}`);
+
+const remoteRow = (store: string, recordId: string, payload: Record<string, unknown>, changeSeq = "1") => ({
+  store,
+  record_id: recordId,
+  payload,
+  revision: 1,
+  change_seq: changeSeq,
+  updated_at: "2026-08-20T00:00:00.000Z",
+  deleted_at: null,
+});
 
 function mockSignedInSupabase(remoteRows: Record<string, unknown>[], userId = "user-cloud") {
   const query: Record<string, any> = {};
@@ -508,6 +519,147 @@ describe("Supabase Local-First Cloud Sync", () => {
     expect(await adapter.get("vocabulary", "local-only")).toBeDefined();
     expect(await adapter.get("vocabulary", "cloud-only")).toBeUndefined();
     expect((await coordinator.getMeta()).localDatasetOwnerUserId).toBeNull();
+  });
+
+  it("16a. treats generated default settings as app state and pulls remote settings on first login", async () => {
+    vi.stubEnv("VITE_SUPABASE_URL", "https://example.supabase.co");
+    vi.stubEnv("VITE_SUPABASE_ANON_KEY", "sb_test_key");
+    const localDefaults = { id: LOCAL_SETTINGS_RECORD_ID, ...DEFAULT_LOCAL_SETTINGS };
+    await adapter.put("settings", localDefaults);
+    expect(isDefaultLocalSettingsRecord(localDefaults)).toBe(true);
+    expect(isDefaultLocalSettingsRecord({ ...localDefaults, updatedAt: "2026-08-20T00:00:00.000Z" })).toBe(true);
+    expect(isDefaultLocalSettingsRecord({ ...localDefaults, theme: "dark" })).toBe(false);
+    const remoteSettings = { id: LOCAL_SETTINGS_RECORD_ID, ...DEFAULT_LOCAL_SETTINGS, themePreference: "dark" };
+    const supabase = mockSignedInSupabase([remoteRow("settings", LOCAL_SETTINGS_RECORD_ID, remoteSettings, "12")]);
+    resetSupabaseClientForTesting(supabase as any);
+    const coordinator = new LocalFirstSyncCoordinator(adapter);
+
+    const result = await coordinator.sync();
+
+    expect(result).toMatchObject({ success: true, pulledCount: 1, pushedCount: 0, conflictsCount: 0 });
+    expect(coordinator.getStatus()).toBe("IDLE");
+    expect(await adapter.get("settings", LOCAL_SETTINGS_RECORD_ID)).toEqual(remoteSettings);
+    expect((await coordinator.getMeta()).localDatasetOwnerUserId).toBe("user-cloud");
+  });
+
+  it("16b. allows default settings only to pull remote vocabulary without mixing a local dataset", async () => {
+    vi.stubEnv("VITE_SUPABASE_URL", "https://example.supabase.co");
+    vi.stubEnv("VITE_SUPABASE_ANON_KEY", "sb_test_key");
+    await adapter.put("settings", { id: LOCAL_SETTINGS_RECORD_ID, ...DEFAULT_LOCAL_SETTINGS });
+    const cloudVocabulary = { id: "cloud-first-login", term: "cloud", meaningVi: "đám mây" };
+    const supabase = mockSignedInSupabase([remoteRow("vocabulary", cloudVocabulary.id, cloudVocabulary, "13")]);
+    resetSupabaseClientForTesting(supabase as any);
+    const coordinator = new LocalFirstSyncCoordinator(adapter);
+
+    const result = await coordinator.sync();
+
+    expect(result).toMatchObject({ success: true, pulledCount: 1, pushedCount: 0 });
+    expect(await adapter.get("vocabulary", cloudVocabulary.id)).toEqual(cloudVocabulary);
+    expect((await coordinator.getMeta()).localDatasetOwnerUserId).toBe("user-cloud");
+  });
+
+  it.each([
+    ["readings", { id: "local-reading", title: "Local reading" }],
+    ["collections", { id: "local-collection", name: "Local collection" }],
+    ["activities", { id: "local-activity", studySeconds: 60 }],
+    ["quizHistory", { id: "local-quiz-history", score: 1 }],
+  ] as const)("16c. blocks unknown local %s from mixing with remote account data", async (store, localRecord) => {
+    vi.stubEnv("VITE_SUPABASE_URL", "https://example.supabase.co");
+    vi.stubEnv("VITE_SUPABASE_ANON_KEY", "sb_test_key");
+    await adapter.put(store, localRecord);
+    const cloudVocabulary = { id: "cloud-protected", term: "cloud" };
+    const supabase = mockSignedInSupabase([remoteRow("vocabulary", cloudVocabulary.id, cloudVocabulary)]);
+    resetSupabaseClientForTesting(supabase as any);
+    const coordinator = new LocalFirstSyncCoordinator(adapter);
+
+    const result = await coordinator.sync();
+
+    expect(result.success).toBe(false);
+    expect(coordinator.getStatus()).toBe("ACCOUNT_MISMATCH");
+    expect(await adapter.get(store, localRecord.id)).toEqual(localRecord);
+    expect(await adapter.get("vocabulary", cloudVocabulary.id)).toBeUndefined();
+    expect((await coordinator.getMeta()).localDatasetOwnerUserId).toBeNull();
+  });
+
+  it("16d. treats a pending learning-content tombstone as meaningful local ownership evidence", async () => {
+    vi.stubEnv("VITE_SUPABASE_URL", "https://example.supabase.co");
+    vi.stubEnv("VITE_SUPABASE_ANON_KEY", "sb_test_key");
+    await adapter.put("syncQueue", {
+      id: "vocabulary:deleted-local",
+      store: "vocabulary",
+      recordId: "deleted-local",
+      updatedAt: "2026-08-20T00:00:00.000Z",
+      deleted: true,
+    });
+    const cloudVocabulary = { id: "cloud-protected", term: "cloud" };
+    const supabase = mockSignedInSupabase([remoteRow("vocabulary", cloudVocabulary.id, cloudVocabulary)]);
+    resetSupabaseClientForTesting(supabase as any);
+    const coordinator = new LocalFirstSyncCoordinator(adapter);
+
+    const result = await coordinator.sync();
+
+    expect(result.success).toBe(false);
+    expect(coordinator.getStatus()).toBe("ACCOUNT_MISMATCH");
+    expect(await adapter.get("syncQueue", "vocabulary:deleted-local")).toBeDefined();
+    expect(await adapter.get("vocabulary", cloudVocabulary.id)).toBeUndefined();
+  });
+
+  it("16e. preserves unqueued customized settings separately while allowing the first account pull", async () => {
+    vi.stubEnv("VITE_SUPABASE_URL", "https://example.supabase.co");
+    vi.stubEnv("VITE_SUPABASE_ANON_KEY", "sb_test_key");
+    const customSettings = { id: LOCAL_SETTINGS_RECORD_ID, ...DEFAULT_LOCAL_SETTINGS, themePreference: "dark" };
+    await adapter.put("settings", customSettings);
+    expect(isDefaultLocalSettingsRecord(customSettings)).toBe(false);
+    const cloudVocabulary = { id: "cloud-with-custom-settings", term: "cloud" };
+    const supabase = mockSignedInSupabase([remoteRow("vocabulary", cloudVocabulary.id, cloudVocabulary)]);
+    resetSupabaseClientForTesting(supabase as any);
+    const coordinator = new LocalFirstSyncCoordinator(adapter);
+
+    const result = await coordinator.sync();
+
+    expect(result).toMatchObject({ success: true, pulledCount: 1, pushedCount: 1, conflictsCount: 0 });
+    expect(await adapter.get("settings", LOCAL_SETTINGS_RECORD_ID)).toEqual(customSettings);
+    expect(await adapter.get("vocabulary", cloudVocabulary.id)).toEqual(cloudVocabulary);
+    expect(supabase.upsert).toHaveBeenCalledOnce();
+    expect((await coordinator.getMeta()).localDatasetOwnerUserId).toBe("user-cloud");
+  });
+
+  it("16f. records a conflict instead of silently deleting imported custom settings", async () => {
+    vi.stubEnv("VITE_SUPABASE_URL", "https://example.supabase.co");
+    vi.stubEnv("VITE_SUPABASE_ANON_KEY", "sb_test_key");
+    const customSettings = { id: LOCAL_SETTINGS_RECORD_ID, ...DEFAULT_LOCAL_SETTINGS, dailyGoal: 50 };
+    const remoteSettings = { id: LOCAL_SETTINGS_RECORD_ID, ...DEFAULT_LOCAL_SETTINGS, dailyGoal: 30 };
+    await adapter.put("settings", customSettings);
+    const supabase = mockSignedInSupabase([remoteRow("settings", LOCAL_SETTINGS_RECORD_ID, remoteSettings)]);
+    resetSupabaseClientForTesting(supabase as any);
+    const coordinator = new LocalFirstSyncCoordinator(adapter);
+
+    const result = await coordinator.sync();
+
+    expect(result).toMatchObject({ success: true, pulledCount: 1, pushedCount: 0, conflictsCount: 1 });
+    expect(await adapter.get("settings", LOCAL_SETTINGS_RECORD_ID)).toEqual(remoteSettings);
+    expect(await coordinator.getConflicts()).toEqual([
+      expect.objectContaining({ store: "settings", recordId: LOCAL_SETTINGS_RECORD_ID, localRecord: customSettings, remoteRecord: remoteSettings }),
+    ]);
+    expect((await coordinator.getMeta()).localDatasetOwnerUserId).toBe("user-cloud");
+  });
+
+  it("16g. existing USER_A ownership blocks USER_B even when every visible content store is empty", async () => {
+    vi.stubEnv("VITE_SUPABASE_URL", "https://example.supabase.co");
+    vi.stubEnv("VITE_SUPABASE_ANON_KEY", "sb_test_key");
+    const supabase = mockSignedInSupabase([remoteRow("vocabulary", "user-b-cloud", { id: "user-b-cloud", term: "private" })], "user-B");
+    resetSupabaseClientForTesting(supabase as any);
+    const coordinator = new LocalFirstSyncCoordinator(adapter);
+    await adapter.put("settings", { id: LOCAL_SETTINGS_RECORD_ID, ...DEFAULT_LOCAL_SETTINGS });
+    await coordinator.saveMeta({ localDatasetOwnerUserId: "user-A" });
+
+    const result = await coordinator.sync();
+
+    expect(result.success).toBe(false);
+    expect(coordinator.getStatus()).toBe("ACCOUNT_MISMATCH");
+    expect(supabase.from).not.toHaveBeenCalled();
+    expect(await adapter.get("vocabulary", "user-b-cloud")).toBeUndefined();
+    expect((await coordinator.getMeta()).localDatasetOwnerUserId).toBe("user-A");
   });
 
   it("17. lets the database own cloud write metadata and returns store-qualified acknowledgements", async () => {

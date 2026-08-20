@@ -21,6 +21,7 @@ import type {
 } from "../types/api";
 import { getIndexedDbAdapter } from "../persistence/indexedDb";
 import type { PersistenceAdapter, StoredRecord } from "../persistence/types";
+import { DEFAULT_LOCAL_SETTINGS, LOCAL_SETTINGS_RECORD_ID } from "../persistence/settingsDefaults.js";
 import { LocalFirstSyncCoordinator } from "../persistence/syncEngine";
 import { STATIC_LOCAL_USER } from "../runtime/runtime";
 import { LanguageApiClient, type VocabularyEnrichment, type VocabularyContext } from "../services/languageApi";
@@ -40,28 +41,6 @@ import {
   splitLocalSentences,
   tokenizeLocal,
 } from "./localDomain";
-
-const DEFAULT_SETTINGS: UserSettings = {
-  nativeLanguage: "vi",
-  currentLearningLanguage: "en",
-  englishEnabled: true,
-  chineseEnabled: true,
-  dailyGoal: 20,
-  audioSpeed: 1,
-  autoPlayAudio: false,
-  audioEngine: "AUTO",
-  preferredCloudVoiceEn: "aura-asteria-en",
-  showTranslation: true,
-  showPinyin: true,
-  showHanzi: true,
-  showVietnamese: true,
-  themePreference: "system",
-  englishNewWordsTarget: 5,
-  chineseNewWordsTarget: 5,
-  reviewTarget: 20,
-  quizTarget: 10,
-  shadowingTarget: 10,
-};
 
 interface ActivityRecord extends StoredRecord {
   date: string;
@@ -183,8 +162,8 @@ export class StaticApiRouter {
       const current = await this.getSettings();
       if (method === "PATCH") {
         const updated = { ...current, ...body, nativeLanguage: "vi" } as UserSettings;
-        await this.persistence.put("settings", { id: "local-settings", ...updated });
-        void this.syncCoordinator.queueLocalChange("settings", "local-settings", { id: "local-settings", ...updated }, false);
+        await this.persistence.put("settings", { id: LOCAL_SETTINGS_RECORD_ID, ...updated });
+        void this.syncCoordinator.queueLocalChange("settings", LOCAL_SETTINGS_RECORD_ID, { id: LOCAL_SETTINGS_RECORD_ID, ...updated }, false);
         return updated as T;
       }
       return current as T;
@@ -238,13 +217,13 @@ export class StaticApiRouter {
   }
 
   private async getSettings(): Promise<UserSettings> {
-    const saved = await this.persistence.get<Record<string, unknown>>("settings", "local-settings");
+    const saved = await this.persistence.get<Record<string, unknown>>("settings", LOCAL_SETTINGS_RECORD_ID);
     if (!saved) {
-      await this.persistence.put("settings", { id: "local-settings", ...DEFAULT_SETTINGS });
-      return { ...DEFAULT_SETTINGS };
+      await this.persistence.put("settings", { id: LOCAL_SETTINGS_RECORD_ID, ...DEFAULT_LOCAL_SETTINGS });
+      return { ...DEFAULT_LOCAL_SETTINGS };
     }
     const { id: _, ...settings } = saved;
-    return { ...DEFAULT_SETTINGS, ...settings } as UserSettings;
+    return { ...DEFAULT_LOCAL_SETTINGS, ...settings } as UserSettings;
   }
 
   private async listVocabulary(params: URLSearchParams): Promise<VocabularyItem[]> {
