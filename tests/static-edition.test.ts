@@ -9,6 +9,8 @@ import { StaticApiRouter } from "../src/frontend/static/staticApiRouter.js";
 import { request as frontendRequest } from "../src/frontend/api/client.js";
 import { toStaticHashRoute } from "../src/frontend/runtime/routes.js";
 import { configureSpeechUtterance, getAvailableVoicesForLanguage, selectBestSpeechVoice } from "../src/frontend/services/speech.js";
+import { saveLocalPronunciationHistory } from "../src/frontend/services/localPronunciationHistory.js";
+import { scoreLocalEnglishPronunciation } from "../src/frontend/services/localPronunciationScoring.js";
 import { createEnrichmentSchema, handleRequest, validateEnrichmentItems, type Env } from "../cloudflare/worker/src/index.js";
 import type { VocabularyItem } from "../src/frontend/types/api.js";
 
@@ -49,6 +51,19 @@ describe("IndexedDB static persistence", () => {
     opened.close();
     await db.delete("meta", "schema");
     expect(await db.get("meta", "schema")).toBeUndefined();
+  });
+
+  it("LOCAL_PRONUNCIATION_STATIC_CONTRACT returns local availability, recent history and weakest expected words", async () => {
+    const db = adapter();
+    const router = new StaticApiRouter(db);
+    await saveLocalPronunciationHistory(scoreLocalEnglishPronunciation({
+      id: "pronunciation-local", createdAt: "2026-08-20T12:00:00.000Z",
+      expectedText: "Learning time", recognizedText: "Learning", durationSeconds: 2,
+    }), db);
+    await expect(router.request("/api/pronunciation/availability")).resolves.toMatchObject({ configured: true, provider: "local-whisper", assessmentAvailable: true, mode: "LOCAL" });
+    await expect(router.request("/api/pronunciation/availability?language=zh")).resolves.toMatchObject({ assessmentAvailable: false });
+    await expect(router.request<any[]>("/api/pronunciation/recent")).resolves.toMatchObject([{ id: "pronunciation-local", text: "Learning time" }]);
+    await expect(router.request<any[]>("/api/pronunciation/weakest")).resolves.toContainEqual({ word: "time", averageScore: 0, attempts: 1 });
   });
 
   it("persists vocabulary reviews, readings, settings and progress across router instances", async () => {

@@ -26,6 +26,10 @@ import { AudioButton } from "../../components/ui/AudioButton";
 import { ProgressBar } from "../../components/ui/ProgressBar";
 import { CardSkeleton } from "../../components/ui/Skeleton";
 import { getFriendlyErrorMessage } from "../../api/client";
+import { isStaticRuntime } from "../../runtime/runtime";
+import { analyzeLocalEnglishRecording, type LocalPronunciationProgress } from "../../services/localPronunciation";
+import { saveLocalPronunciationHistory } from "../../services/localPronunciationHistory";
+import type { LocalPronunciationAnalysis } from "../../services/localPronunciationScoring";
 import type {
   PronunciationAvailability,
   PronunciationResult,
@@ -55,11 +59,13 @@ export const PronunciationPage: React.FC = () => {
   const [isRecording, setIsRecording] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [recordedAudioBase64, setRecordedAudioBase64] = useState<string | null>(null);
+  const [recordedAudioBlob, setRecordedAudioBlob] = useState<Blob | null>(null);
   const [recordedAudioUrl, setRecordedAudioUrl] = useState<string | null>(null);
   const [recordedAudioMimeType, setRecordedAudioMimeType] = useState<string | undefined>(undefined);
   const [isPlayingLocalAudio, setIsPlayingLocalAudio] = useState(false);
   const [isEvaluating, setIsEvaluating] = useState(false);
   const [lastResult, setLastResult] = useState<PronunciationResult | null>(null);
+  const [analysisProgress, setAnalysisProgress] = useState<LocalPronunciationProgress | null>(null);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -68,10 +74,22 @@ export const PronunciationPage: React.FC = () => {
   const localAudioElementRef = useRef<HTMLAudioElement | null>(null);
   const discardRecordingRef = useRef(false);
   const mountedRef = useRef(true);
+  const analysisGenerationRef = useRef(0);
+  const analysisAbortRef = useRef<AbortController | null>(null);
 
   const isZh = language === "zh";
+  const isLocalEnglish = isStaticRuntime() && language === "en";
+
+  const invalidateAnalysis = () => {
+    analysisGenerationRef.current += 1;
+    analysisAbortRef.current?.abort();
+    analysisAbortRef.current = null;
+    setAnalysisProgress(null);
+  };
 
   useEffect(() => {
+    invalidateAnalysis();
+    setLastResult(null);
     setPracticeText(
       language === "zh" ? "我们每天一起学习汉语。" : "Learning a language takes time and patience."
     );
@@ -81,6 +99,8 @@ export const PronunciationPage: React.FC = () => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      analysisGenerationRef.current += 1;
+      analysisAbortRef.current?.abort();
       discardRecordingRef.current = true;
       if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
       if (mediaRecorderRef.current?.state !== "inactive") mediaRecorderRef.current?.stop();
@@ -95,7 +115,7 @@ export const PronunciationPage: React.FC = () => {
   useEffect(() => {
     setIsLoadingMeta(true);
     Promise.all([
-      pronunciationApi.checkAvailability().catch(() => ({
+      pronunciationApi.checkAvailability(language).catch(() => ({
         status: "NOT_CONFIGURED" as const,
         configured: false,
         provider: null,
@@ -113,8 +133,10 @@ export const PronunciationPage: React.FC = () => {
 
   // Audio Recording Handlers
   const startRecording = async () => {
+    invalidateAnalysis();
     setLastResult(null);
     setRecordedAudioBase64(null);
+    setRecordedAudioBlob(null);
     if (recordedAudioUrl) {
       URL.revokeObjectURL(recordedAudioUrl);
       setRecordedAudioUrl(null);
@@ -150,6 +172,11 @@ export const PronunciationPage: React.FC = () => {
         // Create local playable URL
         const localUrl = URL.createObjectURL(audioBlob);
         setRecordedAudioUrl(localUrl);
+        setRecordedAudioBlob(audioBlob);
+
+        // Server mode keeps the existing compatible payload. Static LOCAL mode
+        // intentionally never creates an upload payload and only passes Blob to ASR.
+        if (isStaticRuntime()) return;
 
         const reader = new FileReader();
         reader.readAsDataURL(audioBlob);
@@ -183,6 +210,7 @@ export const PronunciationPage: React.FC = () => {
   };
 
   const deleteRecording = () => {
+    invalidateAnalysis();
     if (localAudioElementRef.current) {
       localAudioElementRef.current.pause();
     }
@@ -192,6 +220,7 @@ export const PronunciationPage: React.FC = () => {
     }
     setRecordedAudioUrl(null);
     setRecordedAudioBase64(null);
+    setRecordedAudioBlob(null);
     setRecordedAudioMimeType(undefined);
     setLastResult(null);
   };
@@ -222,32 +251,47 @@ export const PronunciationPage: React.FC = () => {
     });
   };
 
-  // Submit Pronunciation Assessment (Only when assessmentAvailable === true)
   const handleSubmitAssessment = async () => {
     if (!availability.assessmentAvailable) return;
-    if (!recordedAudioBase64 || !practiceText.trim()) {
+    if ((!isLocalEnglish && !recordedAudioBase64) || (isLocalEnglish && !recordedAudioBlob) || !practiceText.trim()) {
       error("Vui lòng ghi âm giọng đọc trước khi chấm điểm.");
       return;
     }
 
+    const generation = ++analysisGenerationRef.current;
+    const controller = new AbortController();
+    analysisAbortRef.current?.abort();
+    analysisAbortRef.current = controller;
     setIsEvaluating(true);
     try {
-      const res = await pronunciationApi.assess({
-        expectedText: practiceText.trim(),
-        language,
-        audioBase64: recordedAudioBase64,
-        audioMimeType: recordedAudioMimeType,
-      });
+      const res = isLocalEnglish
+        ? await analyzeLocalEnglishRecording({
+          blob: recordedAudioBlob!,
+          expectedText: practiceText.trim(),
+          signal: controller.signal,
+          onProgress: setAnalysisProgress,
+        })
+        : await pronunciationApi.assess({
+          expectedText: practiceText.trim(),
+          language,
+          audioBase64: recordedAudioBase64!,
+          audioMimeType: recordedAudioMimeType,
+        });
+      if (!mountedRef.current || controller.signal.aborted || generation !== analysisGenerationRef.current) return;
+      if (isLocalEnglish && typeof res.recognizedText === "string") await saveLocalPronunciationHistory(res as LocalPronunciationAnalysis);
+      if (!mountedRef.current || controller.signal.aborted || generation !== analysisGenerationRef.current) return;
       setLastResult(res);
-      success("Đã hoàn thành đánh giá phát âm!");
+      success(isLocalEnglish ? "Đã hoàn thành phân tích luyện đọc trên thiết bị!" : "Đã hoàn thành đánh giá phát âm!");
 
-      // Refresh recent attempts
       pronunciationApi.getRecent(10).then(setRecentAttempts).catch(() => {});
       pronunciationApi.getWeakest(10).then(setWeakestWords).catch(() => {});
     } catch (err: any) {
-      error(getFriendlyErrorMessage(err));
+      if (err?.name !== "AbortError") error(getFriendlyErrorMessage(err));
     } finally {
-      setIsEvaluating(false);
+      if (mountedRef.current && generation === analysisGenerationRef.current) {
+        setIsEvaluating(false);
+        setAnalysisProgress(null);
+      }
     }
   };
 
@@ -261,8 +305,16 @@ export const PronunciationPage: React.FC = () => {
         </p>
       </div>
 
-      {/* Provider Unconfigured Inline Status */}
-      {!availability.assessmentAvailable && (
+      {isLocalEnglish ? (
+        <div
+          style={{ padding: "14px 18px", borderRadius: "var(--radius-lg)", backgroundColor: "var(--color-info-bg)", border: "1px solid var(--color-info-border)", display: "flex", alignItems: "flex-start", gap: "12px" }}
+        >
+          <CheckCircle2 size={20} color="var(--color-info)" style={{ flexShrink: 0, marginTop: "2px" }} />
+          <div style={{ fontSize: "var(--text-sm)", color: "var(--color-info-text)", lineHeight: "1.5" }}>
+            <strong>Chấm luyện đọc miễn phí trên thiết bị.</strong> Âm thanh được phân tích trên thiết bị và không được gửi lên máy chủ.
+          </div>
+        </div>
+      ) : !availability.assessmentAvailable && (
         <div
           style={{
             padding: "14px 18px",
@@ -276,7 +328,7 @@ export const PronunciationPage: React.FC = () => {
         >
           <HelpCircle size={20} color="var(--color-info)" style={{ flexShrink: 0, marginTop: "2px" }} />
           <div style={{ fontSize: "var(--text-sm)", color: "var(--color-info-text)", lineHeight: "1.5" }}>
-            <strong>Chấm phát âm chưa khả dụng:</strong> Tính năng chấm điểm AI hiện chưa được cấu hình khóa máy chủ. Bạn vẫn có thể ghi âm, nghe lại trực tiếp giọng nói của mình và tra cứu phát âm mẫu bất cứ lúc nào.
+            <strong>{isZh ? "Chấm thanh điệu chưa khả dụng:" : "Chấm phát âm chưa khả dụng:"}</strong> {isZh ? "Chấm phát âm/thanh điệu tiếng Trung cục bộ chưa được bật. Bạn vẫn có thể ghi âm, nghe lại và dùng âm thanh mẫu." : "Tính năng chấm điểm chưa được cấu hình. Bạn vẫn có thể ghi âm, nghe lại trực tiếp giọng nói của mình và tra cứu phát âm mẫu."}
           </div>
         </div>
       )}
@@ -291,7 +343,7 @@ export const PronunciationPage: React.FC = () => {
             <input
               type="text"
               value={practiceText}
-              onChange={(e) => setPracticeText(e.target.value)}
+              onChange={(e) => { invalidateAnalysis(); setLastResult(null); setPracticeText(e.target.value); }}
               className={isZh ? "hanzi" : ""}
               style={{
                 flex: 1,
@@ -394,7 +446,7 @@ export const PronunciationPage: React.FC = () => {
                   onClick={handleSubmitAssessment}
                   leftIcon={<Sparkles size={16} />}
                 >
-                  Chấm điểm phát âm
+                  {analysisProgress?.phase === "download" ? `Đang tải mô hình nhận dạng giọng nói...${analysisProgress.total ? ` ${Math.round((analysisProgress.loaded ?? 0) / analysisProgress.total * 100)}%` : ""}` : analysisProgress?.phase === "analyze" ? "Đang phân tích giọng đọc..." : isLocalEnglish ? "Phân tích bản ghi" : "Chấm điểm phát âm"}
                 </Button>
               ) : (
                 <Button
@@ -425,7 +477,7 @@ export const PronunciationPage: React.FC = () => {
             <div className="flex-row justify-between items-center" style={{ marginBottom: "var(--space-4)" }}>
               <div className="flex-row items-center gap-2">
                 <Award size={24} color="var(--accent-en-primary)" />
-                <h3 style={{ fontSize: "var(--text-lg)", fontWeight: 700 }}>Kết quả đánh giá</h3>
+                <h3 style={{ fontSize: "var(--text-lg)", fontWeight: 700 }}>{isLocalEnglish ? "Kết quả luyện đọc" : "Kết quả đánh giá"}</h3>
               </div>
               <div style={{ fontSize: "var(--text-2xl)", fontWeight: 800, color: "var(--accent-en-primary)" }}>
                 {lastResult.overallScore} / 100
@@ -436,7 +488,7 @@ export const PronunciationPage: React.FC = () => {
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "16px", marginBottom: "var(--space-6)" }}>
               <div className="flex-col gap-1">
                 <div className="flex-row justify-between" style={{ fontSize: "var(--text-xs)" }}>
-                  <span>Phát âm (Pronunciation)</span>
+                  <span>{isLocalEnglish ? "Độ khớp lời đọc" : "Phát âm (Pronunciation)"}</span>
                   <strong>{lastResult.pronunciationScore}%</strong>
                 </div>
                 <ProgressBar value={lastResult.pronunciationScore} />
@@ -444,11 +496,21 @@ export const PronunciationPage: React.FC = () => {
 
               <div className="flex-col gap-1">
                 <div className="flex-row justify-between" style={{ fontSize: "var(--text-xs)" }}>
-                  <span>Độ trôi chảy (Fluency)</span>
+                  <span>Độ trôi chảy</span>
                   <strong>{lastResult.fluencyScore}%</strong>
                 </div>
                 <ProgressBar value={lastResult.fluencyScore} color="var(--color-success)" />
               </div>
+
+              {isLocalEnglish && lastResult.wordsPerMinute !== undefined && (
+                <div className="flex-col gap-1">
+                  <div className="flex-row justify-between" style={{ fontSize: "var(--text-xs)" }}>
+                    <span>Tốc độ đọc</span>
+                    <strong>{lastResult.wordsPerMinute} từ/phút</strong>
+                  </div>
+                  <div style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>Dựa trên thời lượng bản ghi; không suy luận giọng hay âm sắc.</div>
+                </div>
+              )}
 
               {lastResult.toneAccuracy !== undefined && (
                 <div className="flex-col gap-1">
@@ -461,11 +523,21 @@ export const PronunciationPage: React.FC = () => {
               )}
             </div>
 
-            {/* Word by word feedback */}
+            {isLocalEnglish && (
+              <div style={{ marginBottom: "var(--space-5)", fontSize: "var(--text-sm)", lineHeight: 1.6 }}>
+                <div><strong>Văn bản mẫu:</strong> {lastResult.expectedText}</div>
+                <div><strong>Nhận dạng từ bản ghi:</strong> {lastResult.recognizedText || "(Không nhận dạng được lời đọc)"}</div>
+                {lastResult.wordsPerMinute !== undefined && <div><strong>Tốc độ đọc:</strong> {lastResult.wordsPerMinute} từ/phút</div>}
+                {lastResult.coaching?.map((message) => <div key={message} style={{ color: "var(--text-secondary)" }}>{message}</div>)}
+                <div style={{ marginTop: "6px", color: "var(--text-tertiary)", fontSize: "var(--text-xs)" }}>Âm thanh được phân tích trên thiết bị và không được gửi lên máy chủ.</div>
+              </div>
+            )}
+
+            {/* Word-by-word transcript alignment, not a phoneme claim. */}
             {lastResult.words.length > 0 && (
               <div>
                 <h4 style={{ fontSize: "var(--text-sm)", fontWeight: 700, marginBottom: "8px" }}>
-                  Phân tích từng từ:
+                  {isLocalEnglish ? "So khớp từng từ:" : "Phân tích từng từ:"}
                 </h4>
                 <div className="flex-row gap-2" style={{ flexWrap: "wrap" }}>
                   {lastResult.words.map((w, idx) => (

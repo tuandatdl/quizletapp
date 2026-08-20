@@ -17,8 +17,8 @@ export interface PronunciationRequest {
 }
 
 export const pronunciationApi = {
-  checkAvailability: () =>
-    api.get<PronunciationAvailability>("/api/pronunciation/availability"),
+  checkAvailability: (language?: Language) =>
+    api.get<PronunciationAvailability>(`/api/pronunciation/availability${language ? `?language=${language}` : ""}`),
 
   assess: (data: PronunciationRequest) =>
     api.post<PronunciationResult>("/api/pronunciation/assess", data),

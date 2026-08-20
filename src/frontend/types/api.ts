@@ -25,6 +25,7 @@ export interface ProviderStatus {
 export interface PronunciationAvailability extends ProviderStatus {
   status: ProviderAvailability;
   assessmentAvailable: boolean;
+  mode?: "LOCAL" | "SERVER";
 }
 
 export interface ApiErrorPayload {
@@ -326,6 +327,13 @@ export interface PronunciationResult {
   fluencyScore: number;
   rhythmScore?: number;
   toneAccuracy?: number;
+  /** LOCAL mode only: ASR transcript and deterministic coaching metadata. */
+  expectedText?: string;
+  recognizedText?: string;
+  contentMatchScore?: number;
+  durationSeconds?: number;
+  wordsPerMinute?: number;
+  coaching?: string[];
   words: PronunciationWord[];
 }
 
