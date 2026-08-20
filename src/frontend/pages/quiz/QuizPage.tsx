@@ -122,13 +122,29 @@ export const QuizPage: React.FC = () => {
   };
 
   useEffect(() => {
-    const current = session?.currentQuestion;
-    if (!current?.options?.length || lastFeedback || isSubmittingAnswer) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      const index = Number(event.key) - 1;
-      if (index < 0 || index >= current.options!.length) return;
-      event.preventDefault();
-      void submitAnswer(current.options![index]!);
+      if (document.activeElement?.tagName === "INPUT" || document.activeElement?.tagName === "TEXTAREA") {
+        return;
+      }
+
+      if (lastFeedback) {
+        if (event.key === "Enter" || event.code === "Space") {
+          event.preventDefault();
+          handleContinueNext();
+        }
+        return;
+      }
+
+      const current = session?.currentQuestion;
+      if (!current || isSubmittingAnswer) return;
+
+      if (current.options?.length) {
+        const index = Number(event.key) - 1;
+        if (index >= 0 && index < current.options.length) {
+          event.preventDefault();
+          void submitAnswer(current.options[index]!);
+        }
+      }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -300,13 +316,78 @@ export const QuizPage: React.FC = () => {
   // 3. Active Question Screen
   const currentQ = session.currentQuestion;
   const contextTerm = currentQ?.type === "CONTEXT" ? currentQ.prompt.match(/'([^']+)'/u)?.[1] : undefined;
+
   const renderContext = (context: string, term?: string) => {
     if (!term) return context;
     const match = new RegExp(`(${term.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")})`, "iu");
     const parts = context.split(match);
-    return parts.map((part, index) => match.test(part)
-      ? <mark key={`${part}-${index}`} style={{ background: "var(--accent-en-subtle)", color: "var(--accent-en-text)", padding: "0 3px", borderRadius: "3px", fontWeight: 800 }}>{part}</mark>
-      : <React.Fragment key={`${part}-${index}`}>{part}</React.Fragment>);
+    return parts.map((part, index) =>
+      match.test(part) ? (
+        <mark
+          key={`${part}-${index}`}
+          style={{
+            background: "var(--accent-en-subtle)",
+            color: "var(--accent-en-text)",
+            padding: "2px 6px",
+            borderRadius: "var(--radius-sm)",
+            fontWeight: 800,
+            border: "1px solid var(--accent-en-border)",
+          }}
+        >
+          {part}
+        </mark>
+      ) : (
+        <React.Fragment key={`${part}-${index}`}>{part}</React.Fragment>
+      )
+    );
+  };
+
+  const renderFillBlank = (promptText: string) => {
+    const parts = promptText.split(/(______)/gu);
+    return parts.map((part, idx) =>
+      part === "______" ? (
+        <span
+          key={idx}
+          style={{
+            display: "inline-block",
+            minWidth: "72px",
+            borderBottom: "2.5px solid var(--accent-en-primary)",
+            backgroundColor: "var(--accent-en-subtle)",
+            color: "var(--accent-en-text)",
+            borderRadius: "var(--radius-sm)",
+            padding: "0 8px",
+            margin: "0 4px",
+            fontWeight: 800,
+          }}
+        >
+          ______
+        </span>
+      ) : (
+        <React.Fragment key={idx}>{part}</React.Fragment>
+      )
+    );
+  };
+
+  const getQuestionTypeBadge = () => {
+    if (isZh) {
+      const zhLabels: Record<string, string> = {
+        HANZI_TO_MEANING: "Chữ Hán ➔ Ý nghĩa",
+        MEANING_TO_HANZI: "Ý nghĩa ➔ Chữ Hán",
+        HANZI_TO_PINYIN: "Chữ Hán ➔ Pinyin",
+        PINYIN_TO_HANZI: "Pinyin ➔ Chữ Hán",
+        TONE_SELECTION: "Kiểm tra thanh điệu",
+        LISTENING: "Nghe âm thanh",
+      };
+      return zhLabels[currentQ?.type || ""] || "Kiểm tra tiếng Trung";
+    }
+    const enLabels: Record<string, string> = {
+      TERM_TO_MEANING: "Thuật ngữ ➔ Ý nghĩa",
+      MEANING_TO_TERM: "Ý nghĩa ➔ Thuật ngữ",
+      FILL_BLANK: "Điền vào chỗ trống",
+      LISTENING: "Nghe hiểu từ vựng",
+      CONTEXT: "Ngữ cảnh sử dụng",
+    };
+    return enLabels[currentQ?.type || ""] || "Kiểm tra tiếng Anh";
   };
 
   return (
@@ -335,55 +416,168 @@ export const QuizPage: React.FC = () => {
 
       {/* Question Card */}
       <Card elevated className="flex-col gap-6" style={{ padding: "var(--space-8)" }}>
-        <div style={{ textAlign: "center", padding: "var(--space-4) 0" }}>
-          <span style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700 }}>
-            Câu hỏi:
-          </span>
-
-          {currentQ?.contextText && (
-            <div style={{ margin: "0 auto var(--space-4)", maxWidth: "590px", padding: "14px 16px", borderRadius: "var(--radius-md)", backgroundColor: "var(--bg-muted)", fontSize: "var(--text-base)", lineHeight: 1.6, textAlign: "left" }}>
-              {renderContext(currentQ.contextText, contextTerm)}
-            </div>
-          )}
-
-          {currentQ?.answerMode === "AUDIO_MULTIPLE_CHOICE" && (
-            <div className="flex-col items-center gap-3" style={{ marginBottom: "var(--space-4)" }}>
-              <span style={{ fontSize: "var(--text-sm)", fontWeight: 700, color: "var(--text-secondary)" }}>Nghe và chọn nghĩa đúng</span>
-              <div style={{ width: "72px", height: "72px", display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "var(--radius-full)", background: "var(--accent-en-subtle)" }}>
-                <div style={{ transform: "scale(1.5)" }}><AudioButton text={currentQ.audioText} language={session.language} size="lg" label="Phát lại từ cần nghe" /></div>
-              </div>
-            </div>
-          )}
-
-          <div
-            className={isZh ? "hanzi" : ""}
-            style={{
-              fontSize: isZh ? "2.5rem" : "2rem",
-              fontWeight: 800,
-              color: "var(--text-primary)",
-              margin: "var(--space-3) 0",
-            }}
-          >
-            {currentQ?.prompt}
+        <div style={{ textAlign: "center", padding: "var(--space-2) 0" }}>
+          {/* Question Mode Badge */}
+          <div style={{ display: "flex", justifyContent: "center", marginBottom: "var(--space-3)" }}>
+            <Badge variant={isZh ? "zh" : "en"} size="md">
+              {getQuestionTypeBadge()}
+            </Badge>
           </div>
 
-          {currentQ?.audioText && currentQ.answerMode !== "AUDIO_MULTIPLE_CHOICE" && (
-            <div className="flex-row justify-center"><AudioButton text={currentQ.audioText} language={session.language} size="md" /></div>
+          {/* LISTENING Mode: Audio Player Only (Term is 100% hidden) */}
+          {currentQ?.answerMode === "AUDIO_MULTIPLE_CHOICE" ? (
+            <div className="flex-col items-center gap-3" style={{ padding: "var(--space-4) 0" }}>
+              <div
+                style={{
+                  width: "84px",
+                  height: "84px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  borderRadius: "var(--radius-full)",
+                  background: isZh ? "var(--accent-zh-subtle)" : "var(--accent-en-subtle)",
+                  border: `2px solid ${isZh ? "var(--accent-zh-border)" : "var(--accent-en-border)"}`,
+                  boxShadow: "var(--shadow-md)",
+                }}
+              >
+                <div style={{ transform: "scale(1.5)" }}>
+                  <AudioButton text={currentQ.audioText} language={session.language} size="lg" label="Phát lại từ cần nghe" />
+                </div>
+              </div>
+              <div style={{ fontSize: "var(--text-sm)", fontWeight: 700, color: "var(--text-secondary)" }}>
+                Bấm nút loa để nghe phát âm
+              </div>
+            </div>
+          ) : currentQ?.type === "CONTEXT" && currentQ.contextText ? (
+            /* CONTEXT Mode: Context Sentence with Highlighted Target + Prompt */
+            <div className="flex-col gap-3" style={{ width: "100%" }}>
+              <div
+                style={{
+                  margin: "0 auto",
+                  width: "100%",
+                  maxWidth: "580px",
+                  padding: "16px 18px",
+                  borderRadius: "var(--radius-lg)",
+                  backgroundColor: "var(--bg-muted)",
+                  border: "1px solid var(--border-default)",
+                  fontSize: "var(--text-base)",
+                  lineHeight: 1.7,
+                  textAlign: "left",
+                }}
+              >
+                <div style={{ fontSize: "var(--text-xs)", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--text-tertiary)", marginBottom: "6px" }}>
+                  📖 Ngữ cảnh câu văn:
+                </div>
+                <div style={{ fontStyle: "italic", color: "var(--text-primary)" }}>
+                  {renderContext(currentQ.contextText, contextTerm)}
+                </div>
+              </div>
+              <div style={{ fontSize: "var(--text-base)", fontWeight: 700, color: "var(--text-primary)", marginTop: "4px" }}>
+                {currentQ.prompt}
+              </div>
+            </div>
+          ) : currentQ?.type === "FILL_BLANK" ? (
+            /* FILL_BLANK Mode: Sentence with Blank Placeholder */
+            <div
+              style={{
+                margin: "0 auto",
+                width: "100%",
+                maxWidth: "580px",
+                padding: "18px 20px",
+                borderRadius: "var(--radius-lg)",
+                backgroundColor: "var(--bg-muted)",
+                border: "1px dashed var(--accent-en-border)",
+                fontSize: "var(--text-lg)",
+                fontWeight: 700,
+                color: "var(--text-primary)",
+                lineHeight: 1.7,
+                textAlign: "center",
+              }}
+            >
+              {renderFillBlank(currentQ.prompt)}
+            </div>
+          ) : (
+            /* Standard Modes (TERM_TO_MEANING, MEANING_TO_TERM, Chinese Modes) */
+            <div className="flex-col items-center gap-2">
+              <div
+                className={isZh ? "hanzi" : ""}
+                style={{
+                  fontSize: isZh ? "2.5rem" : currentQ?.type === "MEANING_TO_TERM" ? "1.75rem" : "2.25rem",
+                  fontWeight: 800,
+                  color: "var(--text-primary)",
+                  margin: "var(--space-2) 0",
+                  lineHeight: 1.3,
+                }}
+              >
+                {currentQ?.prompt}
+              </div>
+
+              {currentQ?.audioText && (
+                <div className="flex-row justify-center">
+                  <AudioButton text={currentQ.audioText} language={session.language} size="md" />
+                </div>
+              )}
+            </div>
           )}
         </div>
 
         {/* Answer Form or Feedback */}
         {!lastFeedback && currentQ?.answerMode !== "TEXT" ? (
           <div className="flex-col gap-3" role="group" aria-label={currentQ?.instruction || "Chọn đáp án"}>
-            {currentQ?.instruction && <p style={{ margin: 0, textAlign: "center", fontSize: "var(--text-sm)", color: "var(--text-secondary)", fontWeight: 700 }}>{currentQ.instruction}</p>}
+            {currentQ?.instruction && (
+              <p style={{ margin: 0, textAlign: "center", fontSize: "var(--text-sm)", color: "var(--text-secondary)", fontWeight: 700 }}>
+                {currentQ.instruction}
+              </p>
+            )}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "10px" }}>
               {currentQ?.options?.map((option, index) => (
-                <button key={option} type="button" onClick={() => void submitAnswer(option)} disabled={isSubmittingAnswer} aria-label={`Đáp án ${index + 1}: ${option}`} style={{ minHeight: "54px", padding: "12px 14px", textAlign: "left", borderRadius: "var(--radius-md)", border: "1.5px solid var(--border-strong)", background: "var(--bg-surface)", color: "var(--text-primary)", fontSize: "var(--text-base)", fontWeight: 700, cursor: "pointer" }}>
-                  <span style={{ color: isZh ? "var(--accent-zh-primary)" : "var(--accent-en-primary)", marginRight: "10px" }}>{index + 1}.</span>{option}
+                <button
+                  key={option}
+                  type="button"
+                  onClick={() => void submitAnswer(option)}
+                  disabled={isSubmittingAnswer}
+                  aria-label={`Đáp án ${index + 1}: ${option}`}
+                  style={{
+                    minHeight: "54px",
+                    padding: "12px 14px",
+                    textAlign: "left",
+                    borderRadius: "var(--radius-md)",
+                    border: "1.5px solid var(--border-strong)",
+                    background: "var(--bg-surface)",
+                    color: "var(--text-primary)",
+                    fontSize: "var(--text-base)",
+                    fontWeight: 700,
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "10px",
+                    transition: "all var(--transition-fast)",
+                  }}
+                >
+                  <span
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      width: "24px",
+                      height: "24px",
+                      borderRadius: "var(--radius-sm)",
+                      backgroundColor: isZh ? "var(--accent-zh-subtle)" : "var(--accent-en-subtle)",
+                      color: isZh ? "var(--accent-zh-text)" : "var(--accent-en-text)",
+                      fontSize: "var(--text-xs)",
+                      fontWeight: 800,
+                      flexShrink: 0,
+                    }}
+                  >
+                    {index + 1}
+                  </span>
+                  <span>{option}</span>
                 </button>
               ))}
             </div>
-            <span style={{ textAlign: "center", fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>Nhấn phím 1–4 để chọn nhanh.</span>
+            <span style={{ textAlign: "center", fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>
+              Nhấn phím 1–4 trên bàn phím để chọn nhanh.
+            </span>
           </div>
         ) : !lastFeedback ? (
           <form onSubmit={handleAnswer} className="flex-col gap-4">
@@ -446,11 +640,45 @@ export const QuizPage: React.FC = () => {
             )}
 
             {(lastFeedback.term || lastFeedback.meaningVi) && (
-              <div style={{ fontSize: "var(--text-sm)", color: lastFeedback.correct ? "var(--color-success-text)" : "var(--color-error-text)" }}>
-                Từ vựng: <strong>{lastFeedback.term}</strong> — {lastFeedback.meaningVi}
+              <div
+                style={{
+                  padding: "10px 14px",
+                  borderRadius: "var(--radius-md)",
+                  backgroundColor: "var(--bg-surface)",
+                  border: "1px solid var(--border-default)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: "10px",
+                }}
+              >
+                <div style={{ fontSize: "var(--text-sm)" }}>
+                  Từ vựng: <strong style={{ color: "var(--text-primary)" }}>{lastFeedback.term}</strong>
+                  {lastFeedback.meaningVi && (
+                    <span style={{ color: "var(--text-secondary)", marginLeft: "6px" }}>— {lastFeedback.meaningVi}</span>
+                  )}
+                </div>
+                {lastFeedback.term && (
+                  <AudioButton text={lastFeedback.term} language={session.language} size="sm" />
+                )}
               </div>
             )}
-            {lastFeedback.completedSentence && <div style={{ fontSize: "var(--text-sm)", color: "var(--text-primary)" }}>{lastFeedback.completedSentence}</div>}
+
+            {lastFeedback.completedSentence && (
+              <div
+                style={{
+                  padding: "10px 14px",
+                  borderRadius: "var(--radius-md)",
+                  backgroundColor: "var(--bg-surface)",
+                  border: "1px solid var(--border-default)",
+                  fontSize: "var(--text-sm)",
+                  color: "var(--text-primary)",
+                  lineHeight: 1.5,
+                }}
+              >
+                <strong>Câu hoàn chỉnh:</strong> {lastFeedback.completedSentence}
+              </div>
+            )}
 
             <Button
               variant={lastFeedback.correct ? "primary" : "secondary"}
@@ -461,6 +689,9 @@ export const QuizPage: React.FC = () => {
             >
               Tiếp tục ➔
             </Button>
+            <span style={{ textAlign: "center", fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>
+              (Nhấn phím Enter hoặc Space để tiếp tục)
+            </span>
           </div>
         )}
       </Card>
