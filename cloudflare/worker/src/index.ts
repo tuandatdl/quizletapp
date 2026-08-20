@@ -90,6 +90,72 @@ function errorSummary(value: unknown): string {
   return "AI_REQUEST_FAILED";
 }
 
+type TtsFailureClass =
+  | "QUOTA_EXCEEDED"
+  | "OUT_OF_CAPACITY"
+  | "PAID_PLAN_REQUIRED"
+  | "MODEL_UNAVAILABLE"
+  | "INVALID_INPUT"
+  | "ACCOUNT_ACCESS"
+  | "WORKER_OUTPUT_HANDLING"
+  | "UPSTREAM_ERROR";
+
+interface TtsFailureDetails {
+  failureClass: TtsFailureClass;
+  upstreamStatus?: number;
+  upstreamCode?: string;
+}
+
+const TTS_UPSTREAM_FAILURE_CLASSES: Record<string, TtsFailureClass> = {
+  "3036": "QUOTA_EXCEEDED",
+  "3040": "OUT_OF_CAPACITY",
+  "5035": "PAID_PLAN_REQUIRED",
+  "5007": "MODEL_UNAVAILABLE",
+  "3042": "MODEL_UNAVAILABLE",
+  "5004": "INVALID_INPUT",
+  "5018": "ACCOUNT_ACCESS",
+  "3041": "ACCOUNT_ACCESS",
+  "3023": "ACCOUNT_ACCESS",
+};
+
+function errorRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" ? value as Record<string, unknown> : null;
+}
+
+function safeUpstreamNumber(value: unknown, minimum: number, maximum: number): number | undefined {
+  if (typeof value === "number" && Number.isInteger(value) && value >= minimum && value <= maximum) return value;
+  if (typeof value === "string" && /^\d+$/.test(value)) {
+    const parsed = Number(value);
+    if (Number.isInteger(parsed) && parsed >= minimum && parsed <= maximum) return parsed;
+  }
+  return undefined;
+}
+
+function ttsFailureDetails(caught: unknown): TtsFailureDetails {
+  const candidates: unknown[] = [caught];
+  for (let index = 0; index < candidates.length && index < 3; index++) {
+    const cause = errorRecord(candidates[index])?.cause;
+    if (cause && !candidates.includes(cause)) candidates.push(cause);
+  }
+
+  let upstreamStatus: number | undefined;
+  let upstreamCode: string | undefined;
+  for (const candidate of candidates) {
+    const record = errorRecord(candidate);
+    if (!record) continue;
+    upstreamStatus ??= safeUpstreamNumber(record.status ?? record.statusCode, 100, 599);
+    const code = safeUpstreamNumber(record.code, 1000, 9999);
+    if (code !== undefined) upstreamCode ??= String(code);
+  }
+
+  const failureClass = upstreamCode
+    ? (TTS_UPSTREAM_FAILURE_CLASSES[upstreamCode] ?? "UPSTREAM_ERROR")
+    : caught instanceof TypeError
+      ? "WORKER_OUTPUT_HANDLING"
+      : "UPSTREAM_ERROR";
+  return { failureClass, ...(upstreamStatus === undefined ? {} : { upstreamStatus }), ...(upstreamCode ? { upstreamCode } : {}) };
+}
+
 function pricingConfiguration(env: Env): AiPricingConfiguration {
   const numberFromEnv = (value: string | undefined) => {
     const parsed = value === undefined ? undefined : Number(value);
@@ -897,7 +963,7 @@ async function tts(body: Record<string, unknown>, env: Env, origin: string): Pro
       },
     });
   } catch (caught) {
-    console.error(JSON.stringify({ event: "tts_failed", model, voice, reason: errorSummary(caught) }));
+    console.error(JSON.stringify({ event: "tts_failed", model, voice, ...ttsFailureDetails(caught) }));
     throw new AiOutputError("AI TTS generation failed.", { cause: caught });
   }
 }
