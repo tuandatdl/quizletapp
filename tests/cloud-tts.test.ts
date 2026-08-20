@@ -180,7 +180,7 @@ describe("Cloud TTS Service & Cache Architecture", () => {
       },
     };
 
-    it("accepts valid English TTS request with allowed origin and returns audio/mpeg", async () => {
+    it("TTS_AURA2_ASTERIA_INPUT uses the documented Aura 2 model and Asteria speaker", async () => {
       const req = new Request("https://worker.dev/v1/tts", {
         method: "POST",
         headers: {
@@ -206,6 +206,62 @@ describe("Cloud TTS Service & Cache Architecture", () => {
           speaker: "asteria",
         })
       );
+    });
+
+    it("TTS_READABLE_STREAM_OUTPUT returns Workers AI audio streams without rewriting them", async () => {
+      const audio = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array([1, 2, 3, 4]));
+          controller.close();
+        },
+      });
+      const env = { ...mockEnv, AI: { run: vi.fn().mockResolvedValue(audio) } };
+      const req = new Request("https://worker.dev/v1/tts", {
+        method: "POST",
+        headers: { Origin: "https://tuandatdl.github.io", "Content-Type": "application/json" },
+        body: JSON.stringify({ text: "Hello.", language: "en", voice: "aura-asteria-en" }),
+      });
+
+      const res = await handleRequest(req, env);
+      expect(res.status).toBe(200);
+      expect((await res.arrayBuffer()).byteLength).toBe(4);
+    });
+
+    it("TTS_ASTERIA_HEADER identifies the selected Asteria cloud voice", async () => {
+      const env = { ...mockEnv, AI: { run: vi.fn().mockResolvedValue(new Uint8Array([1])) } };
+      const req = new Request("https://worker.dev/v1/tts", {
+        method: "POST",
+        headers: { Origin: "https://tuandatdl.github.io", "Content-Type": "application/json" },
+        body: JSON.stringify({ text: "Hello.", language: "en", voice: "aura-asteria-en" }),
+      });
+
+      const res = await handleRequest(req, env);
+      expect(res.headers.get("X-TTS-Voice")).toBe("aura-asteria-en");
+    });
+
+    it("TTS_UPSTREAM_FAILURE_SAFE_CLASSIFICATION and TTS_NO_RAW_TEXT_LOGGING log only safe upstream fields", async () => {
+      const upstreamError = Object.assign(new Error("provider failure for private source text"), { code: 3036, status: 429 });
+      const env = { ...mockEnv, AI: { run: vi.fn().mockRejectedValue(upstreamError) } };
+      const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const req = new Request("https://worker.dev/v1/tts", {
+        method: "POST",
+        headers: { Origin: "https://tuandatdl.github.io", "Content-Type": "application/json" },
+        body: JSON.stringify({ text: "private source text", language: "en", voice: "aura-asteria-en" }),
+      });
+
+      const res = await handleRequest(req, env);
+      expect(res.status).toBe(502);
+      const logged = JSON.parse(String(errorLog.mock.calls[0]?.[0]));
+      expect(logged).toEqual({
+        event: "tts_failed",
+        model: "@cf/deepgram/aura-2-en",
+        voice: "aura-asteria-en",
+        failureClass: "QUOTA_EXCEEDED",
+        upstreamStatus: 429,
+        upstreamCode: "3036",
+      });
+      expect(JSON.stringify(logged)).not.toContain("private source text");
+      expect(JSON.stringify(logged)).not.toContain("provider failure");
     });
 
     it("rejects unauthorized origin with 403", async () => {
