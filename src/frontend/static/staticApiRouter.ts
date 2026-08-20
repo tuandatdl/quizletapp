@@ -23,6 +23,7 @@ import { getIndexedDbAdapter } from "../persistence/indexedDb";
 import type { PersistenceAdapter, StoredRecord } from "../persistence/types";
 import { DEFAULT_LOCAL_SETTINGS, LOCAL_SETTINGS_RECORD_ID } from "../persistence/settingsDefaults.js";
 import { LocalFirstSyncCoordinator } from "../persistence/syncEngine";
+import { getLocalPronunciationRecent, getLocalPronunciationWeakest, getStaticLocalPronunciationAvailability } from "../services/localPronunciationHistory.js";
 import { STATIC_LOCAL_USER } from "../runtime/runtime";
 import { LanguageApiClient, type VocabularyEnrichment, type VocabularyContext } from "../services/languageApi";
 import { buildGameItems, isGameType, publicGameItem, scoreGameAnswer, type GeneratedGameItem } from "../../shared/gameModes";
@@ -210,9 +211,14 @@ export class StaticApiRouter {
     match = path.match(/^\/api\/games\/([^/]+)(?:\/(answer))?$/u);
     if (match) return (match[2] ? this.answerGame(match[1]!, body.itemId, body.answer) : this.getGame(match[1]!)) as Promise<T>;
 
-    if (path === "/api/pronunciation/availability") return { configured: false, provider: null, status: "NOT_CONFIGURED", assessmentAvailable: false } as T;
-    if (path === "/api/pronunciation/recent" || path === "/api/pronunciation/weakest") return [] as T;
-    if (path === "/api/tts" || path === "/api/pronunciation/assess") throw new Error("Trình duyệt sẽ dùng SpeechSynthesis; chấm phát âm chưa có trong bản static.");
+    if (path === "/api/pronunciation/availability") {
+      const language = url.searchParams.get("language");
+      return getStaticLocalPronunciationAvailability(language) as T;
+    }
+    if (path === "/api/pronunciation/recent") return getLocalPronunciationRecent(Number(url.searchParams.get("limit") || 20), this.persistence) as Promise<T>;
+    if (path === "/api/pronunciation/weakest") return getLocalPronunciationWeakest(Number(url.searchParams.get("limit") || 20), this.persistence) as Promise<T>;
+    if (path === "/api/pronunciation/assess") throw new Error("Chấm luyện đọc bản static chạy trong Web Worker trên thiết bị; endpoint này không nhận âm thanh.");
+    if (path === "/api/tts") throw new Error("Trình duyệt dùng Local TTS hoặc SpeechSynthesis theo cấu hình âm thanh.");
 
     throw new Error(`Static mode chưa hỗ trợ endpoint ${method} ${path}.`);
   }
