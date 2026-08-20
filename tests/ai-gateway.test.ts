@@ -251,7 +251,28 @@ describe("Workers KV AI gateway cache", () => {
     expect(namespace.put).not.toHaveBeenCalled();
   });
 
-  it("KV_CACHE_STORES_VALIDATED_OUTPUT_ONLY", async () => {
+  it("KV_CACHE_STORES_VALIDATED_OUTPUT_ONLY and hydrates a separately validated cached value", async () => {
+    const namespace = kvNamespace(vi.fn().mockResolvedValue("khách hàng"));
+    const gemini = vi.fn();
+    const result = await new AiGateway([provider("gemini", gemini)], createKvAiGatewayCache(namespace)).run(
+      { ...request, cacheKey: "customer-key" },
+      (value) => {
+        if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("Provider response must be an object.");
+        const meaningVi = (value as { meaningVi?: unknown }).meaningVi;
+        if (typeof meaningVi !== "string") throw new TypeError("Provider response is invalid.");
+        return meaningVi;
+      },
+      (cached) => {
+        if (typeof cached !== "string") throw new TypeError("Cached response is invalid.");
+        return cached;
+      },
+    );
+
+    expect(result).toMatchObject({ provider: "cache", cacheHit: true, value: "khách hàng" });
+    expect(gemini).not.toHaveBeenCalled();
+  });
+
+  it("does not cache malformed provider output", async () => {
     const namespace = kvNamespace(vi.fn().mockResolvedValue(null));
     const gateway = new AiGateway([provider("gemini", vi.fn().mockResolvedValue({ term: "customer" }))], createKvAiGatewayCache(namespace));
 

@@ -372,15 +372,20 @@ export class AiGateway {
     }
   }
 
-  async run<T>(request: AiGatewayRequest, validate: (value: unknown) => T): Promise<AiGatewayResult<T>> {
+  async run<T>(request: AiGatewayRequest, validate: (value: unknown) => T, validateCached: (value: unknown) => T = validate): Promise<AiGatewayResult<T>> {
     if (request.cacheKey && this.cache) {
+      let cached: unknown | undefined;
       try {
-        const cached = await this.cache.get(request.cacheKey);
-        if (cached !== undefined) {
-          return { value: validate(cached), provider: "cache", fallbackCount: 0, cacheHit: true, attempts: [] };
-        }
+        cached = await this.cache.get(request.cacheKey);
       } catch {
         console.warn(JSON.stringify({ event: "ai_gateway_cache_read_failed" }));
+      }
+      if (cached !== undefined) {
+        try {
+          return { value: validateCached(cached), provider: "cache", fallbackCount: 0, cacheHit: true, attempts: [] };
+        } catch {
+          console.warn(JSON.stringify({ event: "ai_gateway_cache_value_invalid" }));
+        }
       }
     }
 
