@@ -60,6 +60,7 @@ const previewItem = (index: number): EditablePreviewItem => ({
   exampleTranslation: "",
   topic: "",
   topics: [],
+  suggestedTopics: [],
   level: "",
   toeicLevel: "",
   tone: "",
@@ -96,6 +97,8 @@ function PreviewHarness({ count, onRender }: { count: number; onRender: (id: str
           onChooseSense={noopSense}
           onOpenTopics={noopId}
           onRemoveTopic={noopTopic}
+          onAcceptSuggestedTopic={noopTopic}
+          onDismissSuggestedTopic={noopTopic}
           onRender={onRender}
         />
       ))}
@@ -182,6 +185,24 @@ const previewResponseMany = (terms: string[]): BulkVocabularyPreview => ({
   })),
 });
 
+const previewResponseWithSuggestedTopics = (term: string, suggestedTopics: string[], legacyTopic?: string): BulkVocabularyPreview => ({
+  enrichment: { configured: true, provider: "test" },
+  items: [{
+    term,
+    normalizedTerm: term.toLocaleLowerCase(),
+    duplicate: false,
+    status: "READY",
+    suggestion: {
+      meaningVi: `nghĩa ${term}`,
+      partOfSpeech: "noun",
+      pronunciation: `/${term}/`,
+      ipa: `/${term}/`,
+      suggestedTopics,
+      topic: legacyTopic ?? null,
+    },
+  }],
+});
+
 async function renderAddPage(): Promise<void> {
   await act(async () => root.render(<MemoryRouter><AddVocabularyPage /></MemoryRouter>));
 }
@@ -210,6 +231,10 @@ async function analyze(): Promise<void> {
 
 function previewTerm(value: string): HTMLInputElement | undefined {
   return Array.from(container.querySelectorAll<HTMLInputElement>('input[type="text"]')).find((input) => input.value === value);
+}
+
+function saveButton(): HTMLButtonElement {
+  return Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent?.includes("vào kho"))!;
 }
 
 beforeEach(() => {
@@ -520,6 +545,107 @@ describe("Quick Add topics", () => {
     expect(payload).toHaveLength(2);
     expect(payload[0]).toMatchObject({ term: "go", topic: "TOEIC", topics: ["TOEIC"] });
     expect(payload[1]).toMatchObject({ term: "live", topic: "Business", topics: ["Business", "TOEIC"] });
+  });
+
+  it("keeps AI topic suggestions out of assigned topics and the save payload until accepted", async () => {
+    apiMocks.bulkPreview.mockResolvedValue(previewResponseWithSuggestedTopics("go", ["Business"], "TOEIC"));
+    apiMocks.bulkCreate.mockResolvedValue({ mode: "PARTIAL", created: [], existing: [], failed: [] });
+    await renderAddPage();
+    await changeQuickInput("go");
+    await analyze();
+    await act(async () => { await Promise.resolve(); });
+
+    expect(container.querySelector('button[aria-label="Gỡ chủ đề Business khỏi go"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="Gỡ chủ đề TOEIC khỏi go"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="Thêm gợi ý chủ đề Business cho go"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Thêm gợi ý chủ đề TOEIC cho go"]')).not.toBeNull();
+
+    await act(async () => saveButton().click());
+    const [, payload] = apiMocks.bulkCreate.mock.calls[0]!;
+    expect(payload).toHaveLength(1);
+    expect(payload[0]).toMatchObject({ term: "go", topics: [] });
+    expect(payload[0].topic).toBeUndefined();
+  });
+
+  it("accepts a suggested topic locally and includes it only after the normal Save flow", async () => {
+    apiMocks.bulkPreview.mockResolvedValue(previewResponseWithSuggestedTopics("go", ["Business"]));
+    apiMocks.bulkCreate.mockResolvedValue({ mode: "PARTIAL", created: [], existing: [], failed: [] });
+    await renderAddPage();
+    await changeQuickInput("go");
+    await analyze();
+    await act(async () => { await Promise.resolve(); });
+
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Thêm gợi ý chủ đề Business cho go"]')!.click());
+    expect(container.querySelector('button[aria-label="Gỡ chủ đề Business khỏi go"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Thêm gợi ý chủ đề Business cho go"]')).toBeNull();
+    expect(apiMocks.bulkCreate).not.toHaveBeenCalled();
+    expect(apiMocks.create).not.toHaveBeenCalled();
+
+    await act(async () => saveButton().click());
+    const [, payload] = apiMocks.bulkCreate.mock.calls[0]!;
+    expect(payload[0]).toMatchObject({ term: "go", topic: "Business", topics: ["Business"] });
+  });
+
+  it("lets a user dismiss or ignore a suggestion without changing assigned-topic payload", async () => {
+    apiMocks.bulkPreview.mockResolvedValue(previewResponseWithSuggestedTopics("go", ["Business"]));
+    apiMocks.bulkCreate.mockResolvedValue({ mode: "PARTIAL", created: [], existing: [], failed: [] });
+    await renderAddPage();
+    await changeQuickInput("go");
+    await analyze();
+    await act(async () => { await Promise.resolve(); });
+
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Bỏ gợi ý chủ đề Business cho go"]')!.click());
+    expect(container.querySelector('button[aria-label="Thêm gợi ý chủ đề Business cho go"]')).toBeNull();
+    expect(apiMocks.bulkCreate).not.toHaveBeenCalled();
+    expect(apiMocks.create).not.toHaveBeenCalled();
+
+    await act(async () => saveButton().click());
+    const [, payload] = apiMocks.bulkCreate.mock.calls[0]!;
+    expect(payload[0]).toMatchObject({ term: "go", topics: [] });
+    expect(payload[0].topic).toBeUndefined();
+  });
+
+  it("preserves assigned and accepted topics while retrying enrichment, and refreshes deduped suggestions", async () => {
+    apiMocks.bulkPreview
+      .mockResolvedValueOnce({
+        enrichment: { configured: true, provider: "test" },
+        items: [{
+          term: "go", normalizedTerm: "go", duplicate: true, status: "EXISTS",
+          suggestion: { meaningVi: "đi", partOfSpeech: "verb", ipa: "/ɡoʊ/", needsRepair: true, suggestedTopics: ["Business"] },
+        }],
+      } satisfies BulkVocabularyPreview)
+      .mockResolvedValueOnce(previewResponseWithSuggestedTopics("go", ["Business", "Work", "TOEIC"]));
+    apiMocks.bulkCreate.mockResolvedValue({ mode: "PARTIAL", created: [], existing: [], failed: [] });
+    await renderAddPage();
+    await changeQuickInput("go");
+    await analyze();
+    await act(async () => { await Promise.resolve(); });
+
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Thêm gợi ý chủ đề Business cho go"]')!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Thêm chủ đề cho go"]')!.click());
+    const topicInput = container.querySelector<HTMLInputElement>('input[aria-label="Tìm hoặc tạo chủ đề"]')!;
+    await act(async () => {
+      setNativeInputValue(topicInput, "Work");
+      topicInput.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: "Work" }));
+    });
+    await act(async () => Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent?.includes("Tạo chủ đề mới"))!.click());
+    await act(async () => Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent?.trim() === "Áp dụng chủ đề")!.click());
+    expect(container.querySelector('button[aria-label="Gỡ chủ đề Business khỏi go"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Gỡ chủ đề Work khỏi go"]')).not.toBeNull();
+
+    await act(async () => Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent?.includes("Cập nhật bằng AI"))!.click());
+    await act(async () => { await Promise.resolve(); });
+
+    expect(apiMocks.bulkPreview).toHaveBeenLastCalledWith("en", "go", true);
+    expect(container.querySelector('button[aria-label="Gỡ chủ đề Business khỏi go"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Gỡ chủ đề Work khỏi go"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Thêm gợi ý chủ đề Business cho go"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="Thêm gợi ý chủ đề Work cho go"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="Thêm gợi ý chủ đề TOEIC cho go"]')).not.toBeNull();
+
+    await act(async () => saveButton().click());
+    const [, payload] = apiMocks.bulkCreate.mock.calls[0]!;
+    expect(payload[0]).toMatchObject({ term: "go", topic: "Business", topics: ["Business", "Work"] });
   });
 });
 
