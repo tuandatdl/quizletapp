@@ -1,6 +1,7 @@
 import React from "react";
 import { BrowserRouter, HashRouter, Routes, Route, Link, Navigate } from "react-router-dom";
 import { AuthProvider } from "./context/AuthContext";
+import { CloudAccountProvider } from "./context/CloudAccountContext";
 import { LanguageProvider } from "./context/LanguageContext";
 import { ThemeProvider } from "./context/ThemeContext";
 import { ToastProvider } from "./context/ToastContext";
@@ -91,7 +92,7 @@ export const App: React.FC = () => {
     }
 
     // Auth callback detected — process it BEFORE HashRouter renders.
-    // handleAuthRedirect() will call window.location.replace(…#/settings)
+    // handleAuthRedirect() will call window.location.replace(…#<returnRoute>)
     // on success/failure, which triggers a fresh page load with a clean route.
     void handleAuthRedirect().finally(() => {
       // If replace() was called, this code is never reached (page reloads).
@@ -112,45 +113,47 @@ export const App: React.FC = () => {
   return (
     <ThemeProvider>
       <AuthProvider>
-        <LanguageProvider>
-          <ToastProvider>
-            <Router>
-              <React.Suspense fallback={<RouteLoadingPage />}>
-                <Routes>
-                {/* Public Auth Routes */}
-                <Route path="/login" element={staticMode ? <Navigate to="/" replace /> : <LoginPage />} />
-                <Route path="/register" element={staticMode ? <Navigate to="/" replace /> : <RegisterPage />} />
+        <CloudAccountProvider>
+          <LanguageProvider>
+            <ToastProvider>
+              <Router>
+                <React.Suspense fallback={<RouteLoadingPage />}>
+                  <Routes>
+                    {/* Public Auth Routes */}
+                    <Route path="/login" element={<LoginPage />} />
+                    <Route path="/register" element={staticMode ? <Navigate to="/login" replace /> : <RegisterPage />} />
 
-                {/* Protected Application Routes */}
-                <Route
-                  element={
-                    <ProtectedRoute>
-                      <AppShell />
-                    </ProtectedRoute>
-                  }
-                >
-                  <Route path="/" element={<HomePage />} />
-                  <Route path="/vocabulary" element={<VocabularyListPage />} />
-                  <Route path="/add" element={<AddVocabularyPage />} />
-                  <Route path="/flashcards" element={<FlashcardPage />} />
-                  <Route path="/reading" element={<ReadingListPage />} />
-                  <Route path="/reading/new" element={<AddReadingPage />} />
-                  <Route path="/reading/:id" element={<ReadingDetailPage />} />
-                  <Route path="/shadowing" element={<ShadowingPage />} />
-                  <Route path="/pronunciation" element={<PronunciationPage />} />
-                  <Route path="/quiz" element={<QuizPage />} />
-                  <Route path="/games" element={<GamesPage />} />
-                  <Route path="/progress" element={<ProgressPage />} />
-                  <Route path="/settings" element={<SettingsPage />} />
-                </Route>
+                    {/* Protected Application Routes */}
+                    <Route
+                      element={
+                        <ProtectedRoute>
+                          <AppShell />
+                        </ProtectedRoute>
+                      }
+                    >
+                      <Route path="/" element={<HomePage />} />
+                      <Route path="/vocabulary" element={<VocabularyListPage />} />
+                      <Route path="/add" element={<AddVocabularyPage />} />
+                      <Route path="/flashcards" element={<FlashcardPage />} />
+                      <Route path="/reading" element={<ReadingListPage />} />
+                      <Route path="/reading/new" element={<AddReadingPage />} />
+                      <Route path="/reading/:id" element={<ReadingDetailPage />} />
+                      <Route path="/shadowing" element={<ShadowingPage />} />
+                      <Route path="/pronunciation" element={<PronunciationPage />} />
+                      <Route path="/quiz" element={<QuizPage />} />
+                      <Route path="/games" element={<GamesPage />} />
+                      <Route path="/progress" element={<ProgressPage />} />
+                      <Route path="/settings" element={<SettingsPage />} />
+                    </Route>
 
-                {/* Catch-all fallback */}
-                <Route path="*" element={<NotFoundPage />} />
-                </Routes>
-              </React.Suspense>
-            </Router>
-          </ToastProvider>
-        </LanguageProvider>
+                    {/* Catch-all fallback */}
+                    <Route path="*" element={<NotFoundPage />} />
+                  </Routes>
+                </React.Suspense>
+              </Router>
+            </ToastProvider>
+          </LanguageProvider>
+        </CloudAccountProvider>
       </AuthProvider>
     </ThemeProvider>
   );

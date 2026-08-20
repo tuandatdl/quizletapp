@@ -75,11 +75,25 @@ export function isAuthCallbackUrl(): boolean {
   );
 }
 
+function getSafeReturnRoute(): string {
+  if (typeof window === "undefined" || !window.sessionStorage) return "/settings";
+  try {
+    const stored = window.sessionStorage.getItem("lexis_auth_return_to");
+    window.sessionStorage.removeItem("lexis_auth_return_to");
+    if (stored && stored.startsWith("/") && !stored.startsWith("//") && !stored.includes("://")) {
+      return stored;
+    }
+  } catch {
+    // Ignore storage read errors
+  }
+  return "/settings";
+}
+
 /**
  * Handles HashRouter-compatible Supabase Auth redirect tokens on GitHub Pages.
  *
  * After a successful auth exchange, performs a full same-origin replace to
- * `#/settings` so HashRouter boots with a clean, valid route.
+ * `#/settings` (or safe stored return route) so HashRouter boots with a clean, valid route.
  *
  * Returns the resulting Session (or null on failure / no callback present).
  */
@@ -88,6 +102,8 @@ export async function handleAuthRedirect(): Promise<Session | null> {
   if (!supabase || typeof window === "undefined") return null;
 
   try {
+    const targetRoute = getSafeReturnRoute();
+
     // ── 1. PKCE flow: ?code= in query string ──────────────────────────────
     const urlParams = new URLSearchParams(window.location.search);
     const code = urlParams.get("code");
@@ -105,8 +121,8 @@ export async function handleAuthRedirect(): Promise<Session | null> {
         return null;
       }
 
-      // Full replace so HashRouter sees a clean #/settings on boot
-      window.location.replace(`${window.location.pathname}${cleanSearch}#/settings`);
+      // Full replace so HashRouter sees a clean route on boot
+      window.location.replace(`${window.location.pathname}${cleanSearch}#${targetRoute}`);
       return data.session;
     }
 
@@ -138,8 +154,8 @@ export async function handleAuthRedirect(): Promise<Session | null> {
           return null;
         }
 
-        // Full replace — HashRouter will boot at #/settings cleanly
-        window.location.replace(`${window.location.pathname}${window.location.search}#/settings`);
+        // Full replace — HashRouter will boot cleanly
+        window.location.replace(`${window.location.pathname}${window.location.search}#${targetRoute}`);
         return data.session;
       }
     }
@@ -152,3 +168,4 @@ export async function handleAuthRedirect(): Promise<Session | null> {
     return null;
   }
 }
+
