@@ -19,4 +19,4 @@ This repository employs automated security controls:
 - **Dependabot**: Automated vulnerability alerts and dependency version updates.
 - **Branch Protection**: Strict status checks and administrative enforcement on the `main` branch.
 - **Cryptographic Commit Signing**: All official maintainer commits are signed with verified SSH keys.
-
+- **Privacy & Identity Protection**: Maintainer commits utilize verified GitHub privacy identities for audit integrity.
