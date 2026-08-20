@@ -84,4 +84,37 @@ describe("Phase K: Final UI/UX Polish & Production Readiness", () => {
       expect(homePageSrc).toContain("Có {dueReviews} thẻ từ vựng đến hạn ôn tập hôm nay");
     });
   });
+
+  describe("Brand Identity Micro-Redesign: LEXIS", () => {
+    const sidebarPath = path.join(root, "src/frontend/components/layout/Sidebar.tsx");
+    const mobileNavPath = path.join(root, "src/frontend/components/layout/MobileNav.tsx");
+    const loginPagePath = path.join(root, "src/frontend/pages/auth/LoginPage.tsx");
+    const indexHtmlPath = path.join(root, "index.html");
+
+    const sidebarSrc = fs.readFileSync(sidebarPath, "utf-8");
+    const mobileNavSrc = fs.readFileSync(mobileNavPath, "utf-8");
+    const loginPageSrc = fs.readFileSync(loginPagePath, "utf-8");
+    const indexHtmlSrc = fs.readFileSync(indexHtmlPath, "utf-8");
+
+    it("renders LEXIS wordmark and LANGUAGE WORKSPACE subtitle in Sidebar", () => {
+      expect(sidebarSrc).toContain("LEXIS");
+      expect(sidebarSrc).toContain("LANGUAGE WORKSPACE");
+      expect(sidebarSrc).not.toContain("TÚ TRINH");
+    });
+
+    it("renders LEXIS wordmark and subtitle in MobileNav drawer", () => {
+      expect(mobileNavSrc).toContain("LEXIS");
+      expect(mobileNavSrc).toContain("LANGUAGE WORKSPACE");
+    });
+
+    it("renders LEXIS wordmark in LoginPage", () => {
+      expect(loginPageSrc).toContain("LEXIS");
+      expect(loginPageSrc).toContain("LANGUAGE WORKSPACE");
+    });
+
+    it("sets document title to LEXIS — Language Workspace in index.html", () => {
+      expect(indexHtmlSrc).toContain("<title>LEXIS — Language Workspace</title>");
+      expect(indexHtmlSrc).toContain("LEXIS Language Workspace");
+    });
+  });
 });

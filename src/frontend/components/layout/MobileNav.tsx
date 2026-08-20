@@ -175,8 +175,66 @@ export const MobileNav: React.FC = () => {
                 justifyContent: "space-between",
               }}
             >
-              <span style={{ fontWeight: 700, fontSize: "var(--text-base)" }}>Menu điều hướng</span>
-              <button ref={closeButtonRef} type="button" aria-label="Đóng menu điều hướng" onClick={() => setDrawerOpen(false)} style={{ color: "var(--text-tertiary)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                <div
+                  style={{
+                    width: "28px",
+                    height: "28px",
+                    borderRadius: "8px",
+                    backgroundColor: isEn ? "var(--accent-en-primary)" : "var(--accent-zh-primary)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    color: "#FFFFFF",
+                    flexShrink: 0,
+                  }}
+                >
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path
+                      d="M12 2L14.5 9.5L22 12L14.5 14.5L12 22L9.5 14.5L2 12L9.5 9.5L12 2Z"
+                      fill="currentColor"
+                      fillOpacity="0.2"
+                    />
+                  </svg>
+                </div>
+                <div>
+                  <div
+                    style={{
+                      fontFamily: "var(--font-display)",
+                      fontWeight: 800,
+                      fontSize: "1rem",
+                      letterSpacing: "0.06em",
+                      lineHeight: 1.1,
+                      color: "var(--text-primary)",
+                    }}
+                  >
+                    LEXIS
+                  </div>
+                  <div
+                    style={{
+                      fontSize: "0.5625rem",
+                      letterSpacing: "0.1em",
+                      fontWeight: 700,
+                      color: "var(--text-tertiary)",
+                      textTransform: "uppercase",
+                      lineHeight: 1,
+                    }}
+                  >
+                    LANGUAGE WORKSPACE
+                  </div>
+                </div>
+              </div>
+              <button ref={closeButtonRef} type="button" aria-label="Đóng menu điều hướng" onClick={() => setDrawerOpen(false)} style={{ color: "var(--text-tertiary)", padding: "4px" }}>
                 <X size={20} />
               </button>
             </div>
