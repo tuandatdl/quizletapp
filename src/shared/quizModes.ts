@@ -89,7 +89,7 @@ function englishQuestion(item: QuizVocabulary, options: BuildQuizQuestionsOption
 
   switch (options.type) {
     case "TERM_TO_MEANING":
-      return { ...base, prompt: item.term, answer: item.meaningVi, options: choices(item.meaningVi, meanings, random), instruction: "Chọn nghĩa đúng", answerMode: "MULTIPLE_CHOICE" };
+      return { ...base, prompt: item.term, answer: item.meaningVi, options: choices(item.meaningVi, meanings, random), audioText: item.term, instruction: "Chọn nghĩa đúng", answerMode: "MULTIPLE_CHOICE" };
     case "MEANING_TO_TERM":
       return { ...base, prompt: item.meaningVi, answer: item.term, options: choices(item.term, terms, random), instruction: "Chọn thuật ngữ tiếng Anh đúng", answerMode: "MULTIPLE_CHOICE" };
     case "FILL_BLANK": {
@@ -119,6 +119,7 @@ function englishQuestion(item: QuizVocabulary, options: BuildQuizQuestionsOption
         contextText: item.example!.trim(),
         instruction: "Dựa vào ngữ cảnh, chọn nghĩa đúng",
         answerMode: "MULTIPLE_CHOICE",
+        feedback: { ...base.feedback, completedSentence: item.example!.trim() },
       };
     }
     default:

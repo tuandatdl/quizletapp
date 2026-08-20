@@ -21,6 +21,9 @@ describe("distinct English quiz modes", () => {
     expect(question.prompt).toBe("abundant");
     expect(question.answer).toBe("dồi dào");
     expect(question.answerMode).toBe("MULTIPLE_CHOICE");
+    expect(question.audioText).toBe("abundant");
+    expect(question.options).toContain("dồi dào");
+    expect(question.options).not.toContain("abundant");
   });
 
   it("QUIZ_MEANING_TO_TERM_DISTINCT", () => {
@@ -28,12 +31,15 @@ describe("distinct English quiz modes", () => {
     expect(question.prompt).toBe("dồi dào");
     expect(question.answer).toBe("abundant");
     expect(question.options).toContain("abundant");
+    expect(question.options).not.toContain("dồi dào");
+    expect(question.audioText).toBeUndefined();
   });
 
   it("QUIZ_FILL_BLANK_USES_EXAMPLE", () => {
     const question = build("FILL_BLANK")[0]!;
     expect(question.prompt).toBe("Water was ______ in this region.");
     expect(question.answer).toBe("abundant");
+    expect(question.options).toContain("abundant");
     expect(question.feedback.completedSentence).toBe("Water was abundant in this region.");
   });
 
@@ -49,6 +55,8 @@ describe("distinct English quiz modes", () => {
     expect(publicQuestion.prompt).toBe("Nghe và chọn nghĩa đúng");
     expect(publicQuestion.prompt).not.toContain("abundant");
     expect(publicQuestion.audioText).toBe("abundant");
+    expect(publicQuestion.options).toContain("dồi dào");
+    expect(publicQuestion.options).not.toContain("abundant");
     expect(publicQuestion).not.toHaveProperty("feedback");
   });
 
@@ -58,6 +66,9 @@ describe("distinct English quiz modes", () => {
     expect(context.contextText).toBe("Water was abundant in this region.");
     expect(context.prompt).toContain("abundant");
     expect(context.prompt).not.toBe(direct.prompt);
+    expect(context.options).toContain("dồi dào");
+    expect(context.options).not.toContain("abundant");
+    expect(context.feedback.completedSentence).toBe("Water was abundant in this region.");
   });
 
   it("QUIZ_OPTIONS_INCLUDE_CORRECT_ONCE, QUIZ_OPTIONS_NO_DUPLICATES and QUIZ_OPTIONS_SHUFFLED", () => {
@@ -97,5 +108,17 @@ describe("distinct English quiz modes", () => {
     await runAudioEnginePolicy({ engine: "LOCAL", playLocal: local, playCloud: cloud, playBrowser: browser });
     expect(cloud).not.toHaveBeenCalled();
     expect(browser).not.toHaveBeenCalled();
+  });
+
+  it("QUIZ_CHINESE_MODES_STABILITY", () => {
+    const zhVocab: QuizVocabulary[] = [
+      { id: "zh-1", language: "zh", term: "朋友", meaningVi: "bạn bè", pronunciation: "péngyou", metadata: { pinyin: "péngyou", toneData: [2, 0] } },
+      { id: "zh-2", language: "zh", term: "学习", meaningVi: "học tập", pronunciation: "xuéxí", metadata: { pinyin: "xuéxí", toneData: [2, 2] } },
+    ];
+    for (const type of ["HANZI_TO_MEANING", "MEANING_TO_HANZI", "HANZI_TO_PINYIN", "PINYIN_TO_HANZI", "TONE_SELECTION", "LISTENING"]) {
+      const q = buildQuizQuestions({ language: "zh", type, count: 1, vocabulary: zhVocab, createId: () => "zh" })[0]!;
+      expect(q).toBeDefined();
+      expect(q.answer).toBeTruthy();
+    }
   });
 });
