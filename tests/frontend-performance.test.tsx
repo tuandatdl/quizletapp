@@ -11,6 +11,7 @@ const apiMocks = vi.hoisted(() => ({
   bulkPreview: vi.fn(),
   bulkCreate: vi.fn(),
   create: vi.fn(),
+  list: vi.fn(),
 }));
 
 const toastMocks = vi.hoisted(() => ({
@@ -37,7 +38,7 @@ vi.mock("../src/frontend/context/ToastContext.js", () => ({
   useToast: () => toastMocks,
 }));
 
-import { AddVocabularyPage, updatePreviewItemField } from "../src/frontend/pages/vocabulary/AddVocabularyPage.js";
+import { AddVocabularyPage, mergeQuickTopics, updatePreviewItemField } from "../src/frontend/pages/vocabulary/AddVocabularyPage.js";
 import { QuickAddPreviewRow } from "../src/frontend/pages/vocabulary/QuickAddPreviewRows.js";
 import { VocabularyGridCard } from "../src/frontend/pages/vocabulary/VocabularyListPage.js";
 import type { VocabularyItem } from "../src/frontend/types/api.js";
@@ -58,6 +59,7 @@ const previewItem = (index: number): EditablePreviewItem => ({
   example: "",
   exampleTranslation: "",
   topic: "",
+  topics: [],
   level: "",
   toeicLevel: "",
   tone: "",
@@ -76,6 +78,7 @@ function PreviewHarness({ count, onRender }: { count: number; onRender: (id: str
   const noopId = useCallback((_id: string) => undefined, []);
   const noopRetry = useCallback((_terms: string[]) => undefined, []);
   const noopSense = useCallback((_id: string, _senseIndex: number) => undefined, []);
+  const noopTopic = useCallback((_id: string, _topic: string) => undefined, []);
 
   return (
     <>
@@ -91,6 +94,8 @@ function PreviewHarness({ count, onRender }: { count: number; onRender: (id: str
           onRetry={noopRetry}
           onAcceptRepair={noopId}
           onChooseSense={noopSense}
+          onOpenTopics={noopId}
+          onRemoveTopic={noopTopic}
           onRender={onRender}
         />
       ))}
@@ -166,6 +171,17 @@ const previewResponse = (term: string, meaningVi = `nghĩa ${term}`): BulkVocabu
   }],
 });
 
+const previewResponseMany = (terms: string[]): BulkVocabularyPreview => ({
+  enrichment: { configured: true, provider: "test" },
+  items: terms.map((term) => ({
+    term,
+    normalizedTerm: term.toLocaleLowerCase(),
+    duplicate: false,
+    status: "READY" as const,
+    suggestion: { meaningVi: `nghĩa ${term}`, partOfSpeech: "noun", pronunciation: `/${term}ə/`, ipa: `/${term}ə/` },
+  })),
+});
+
 async function renderAddPage(): Promise<void> {
   await act(async () => root.render(<MemoryRouter><AddVocabularyPage /></MemoryRouter>));
 }
@@ -205,6 +221,8 @@ beforeEach(() => {
   apiMocks.bulkPreview.mockReset();
   apiMocks.bulkCreate.mockReset();
   apiMocks.create.mockReset();
+  apiMocks.list.mockReset();
+  apiMocks.list.mockResolvedValue([]);
 });
 
 afterEach(async () => {
@@ -250,6 +268,50 @@ describe("Quick Add render isolation", () => {
 });
 
 describe("Quick Add analysis correctness", () => {
+  it("sends extracted terms only and keeps structured user fields ahead of reordered AI fields", async () => {
+    apiMocks.bulkPreview.mockResolvedValue({
+      enrichment: { configured: true, provider: "test" },
+      items: [
+        { term: "barely", normalizedTerm: "barely", duplicate: false, status: "READY", suggestion: { meaningVi: "AI barely", partOfSpeech: "adjective", ipa: "/ˈberli/" } },
+        { term: "abundantly", normalizedTerm: "abundantly", duplicate: false, status: "READY", suggestion: { meaningVi: "AI abundantly", partOfSpeech: "noun", synonyms: ["richly", "PLENTIFULLY"], ipa: "/əˈbʌndəntli/" } },
+      ],
+    } satisfies BulkVocabularyPreview);
+    await renderAddPage();
+    await changeQuickInput("abundantly = plentifully (adv)\nmột cách dồi dào.\n\nbarely: vừa đủ.");
+    await analyze();
+    await act(async () => { await Promise.resolve(); });
+
+    expect(apiMocks.bulkPreview).toHaveBeenCalledWith("en", "abundantly\nbarely");
+    const termInputs = Array.from(container.querySelectorAll<HTMLInputElement>(".quick-vocab-row input[type=text]"));
+    expect(termInputs.filter((input) => ["abundantly", "barely"].includes(input.value)).map((input) => input.value)).toEqual(["abundantly", "barely"]);
+    expect(Array.from(container.querySelectorAll<HTMLInputElement>("input[required]")).map((input) => input.value)).toEqual(["một cách dồi dào.", "vừa đủ."]);
+    expect(container.querySelector<HTMLSelectElement>(".quick-vocab-row select")?.value).toBe("adverb");
+
+    const details = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent?.includes("Chi tiết"))!;
+    await act(async () => details.click());
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="Từ đồng nghĩa cho abundantly"]')?.value).toBe("plentifully, richly");
+  });
+
+  it("retains structured values when enrichment fails without weakening invalid classification", async () => {
+    apiMocks.bulkPreview.mockRejectedValueOnce(new Error("quota exhausted"));
+    await renderAddPage();
+    await changeQuickInput("barely (adv): vừa đủ.");
+    await analyze();
+    await act(async () => { await Promise.resolve(); });
+    expect(container.querySelector<HTMLInputElement>("input[required]")?.value).toBe("vừa đủ.");
+    expect(container.querySelector<HTMLSelectElement>(".quick-vocab-row select")?.value).toBe("adverb");
+
+    apiMocks.bulkPreview.mockResolvedValueOnce({
+      enrichment: { configured: true, provider: "test" },
+      items: [{ term: "noise", normalizedTerm: "noise", duplicate: false, status: "INVALID", suggestion: { meaningVi: "nhiễu", lexicalStatus: "INVALID", lexicalReason: "not lexical" } }],
+    } satisfies BulkVocabularyPreview);
+    await changeQuickInput("noise: nghĩa do người dùng nhập");
+    await analyze();
+    await act(async () => { await Promise.resolve(); });
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="Chọn từ noise"]')?.checked).toBe(false);
+    expect(container.textContent).toContain("Không được chọn để lưu tự động");
+  });
+
   it("invalidates an analyzed go preview and stale save action when source changes to car", async () => {
     apiMocks.bulkPreview.mockResolvedValue(previewResponse("go"));
     await renderAddPage();
@@ -384,6 +446,80 @@ describe("Quick Add analysis correctness", () => {
     expect(previewTerm("go")).toBeDefined();
     expect(container.querySelector<HTMLInputElement>('input[required]')?.value).toBe("di chuyển");
     expect(apiMocks.bulkPreview).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Quick Add topics", () => {
+  it("normalizes topic labels case-insensitively", () => {
+    expect(mergeQuickTopics(["Business"], [" business ", "BUSINESS", "TOEIC"])).toEqual(["Business", "TOEIC"]);
+  });
+
+  it("searches and assigns one existing topic to an individual word", async () => {
+    apiMocks.bulkPreview.mockResolvedValue(previewResponse("go"));
+    apiMocks.list.mockResolvedValue([{ ...vocabularyItem(1), topics: ["Business"] }]);
+    await renderAddPage();
+    await changeQuickInput("go");
+    await analyze();
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Thêm chủ đề cho go"]')!.click());
+    await act(async () => { await Promise.resolve(); });
+
+    const search = container.querySelector<HTMLInputElement>('input[aria-label="Tìm hoặc tạo chủ đề"]')!;
+    await act(async () => {
+      setNativeInputValue(search, "bus");
+      search.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: "bus" }));
+    });
+    await act(async () => container.querySelector<HTMLInputElement>('input[aria-label="Chọn chủ đề Business"]')!.click());
+    await act(async () => Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent?.trim() === "Áp dụng chủ đề")!.click());
+    expect(container.querySelector('button[aria-label="Gỡ chủ đề Business khỏi go"]')).not.toBeNull();
+  });
+
+  it("creates and assigns multiple topics only to selected rows, removes one, and saves topics[]", async () => {
+    apiMocks.bulkPreview.mockResolvedValue(previewResponseMany(["go", "car", "live"]));
+    apiMocks.bulkCreate.mockResolvedValue({ mode: "PARTIAL", created: [], existing: [], failed: [] });
+    await renderAddPage();
+    await changeQuickInput("go, car, live");
+    await analyze();
+    await act(async () => { await Promise.resolve(); });
+
+    await act(async () => container.querySelector<HTMLInputElement>('input[aria-label="Chọn từ car"]')!.click());
+    const batchTopicButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent?.trim() === "Thêm vào chủ đề")!;
+    await act(async () => batchTopicButton.click());
+    await act(async () => { await Promise.resolve(); });
+
+    const topicInput = container.querySelector<HTMLInputElement>('input[aria-label="Tìm hoặc tạo chủ đề"]')!;
+    await act(async () => {
+      setNativeInputValue(topicInput, "Business");
+      topicInput.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: "Business" }));
+    });
+    expect(apiMocks.bulkCreate).not.toHaveBeenCalled();
+    expect(apiMocks.create).not.toHaveBeenCalled();
+    await act(async () => Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent?.includes("Tạo chủ đề mới"))!.click());
+
+    const refreshedTopicInput = container.querySelector<HTMLInputElement>('input[aria-label="Tìm hoặc tạo chủ đề"]')!;
+    await act(async () => {
+      setNativeInputValue(refreshedTopicInput, "TOEIC");
+      refreshedTopicInput.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: "TOEIC" }));
+    });
+    await act(async () => Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent?.includes("Tạo chủ đề mới"))!.click());
+    await act(async () => Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent?.trim() === "Áp dụng chủ đề")!.click());
+
+    expect(container.querySelector('button[aria-label="Gỡ chủ đề Business khỏi go"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Gỡ chủ đề TOEIC khỏi go"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Gỡ chủ đề Business khỏi live"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Gỡ chủ đề Business khỏi car"]')).toBeNull();
+
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Gỡ chủ đề Business khỏi go"]')!.click());
+    expect(container.querySelector('button[aria-label="Gỡ chủ đề Business khỏi go"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="Gỡ chủ đề TOEIC khỏi go"]')).not.toBeNull();
+
+    const saveButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent?.includes("Lưu 2 từ vào kho"))!;
+    await act(async () => saveButton.click());
+    await act(async () => { await Promise.resolve(); });
+    const [, payload] = apiMocks.bulkCreate.mock.calls[0]!;
+    expect(payload).toHaveLength(2);
+    expect(payload[0]).toMatchObject({ term: "go", topic: "TOEIC", topics: ["TOEIC"] });
+    expect(payload[1]).toMatchObject({ term: "live", topic: "Business", topics: ["Business", "TOEIC"] });
   });
 });
 
