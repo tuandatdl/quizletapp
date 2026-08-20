@@ -699,7 +699,7 @@ export const SettingsPage: React.FC = () => {
               </div>
             </div>
             <p style={{ margin: "10px 0 0", fontSize: "var(--text-xs)", color: "var(--text-secondary)" }}>
-              Lần đầu cần tải model; sau đó Local English TTS không gọi API và không dùng giọng SpeechSynthesis của thiết bị.
+              Lần đầu cần tải mô hình. Sau đó có thể phát âm mà không dùng API. Local English TTS cũng không dùng giọng SpeechSynthesis của thiết bị.
               {localModelProgress?.phase === "download" ? ` Đang tải giọng đọc... ${localModelProgress.loaded && localModelProgress.total ? Math.min(100, Math.round(localModelProgress.loaded / localModelProgress.total * 100)) : 0}%` : ""}
               {localModelProgress?.phase === "load" ? " Đang tải giọng đọc..." : ""}
             </p>
