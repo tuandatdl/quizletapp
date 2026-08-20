@@ -21,14 +21,21 @@ export const Modal: React.FC<ModalProps> = ({
 }) => {
   const dialogRef = useRef<HTMLDivElement>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
   const titleId = useId();
 
   useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && isOpen) {
-        onClose();
+      if (e.key === "Escape") {
+        onCloseRef.current();
       }
-      if (e.key === "Tab" && isOpen && dialogRef.current) {
+      if (e.key === "Tab" && dialogRef.current) {
         const focusable = Array.from(dialogRef.current.querySelectorAll<HTMLElement>('button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'));
         if (!focusable.length) { e.preventDefault(); dialogRef.current.focus(); return; }
         const first = focusable[0]!;
@@ -37,21 +44,24 @@ export const Modal: React.FC<ModalProps> = ({
         else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
       }
     };
-    if (isOpen) {
-      returnFocusRef.current = document.activeElement as HTMLElement | null;
-      document.body.style.overflow = "hidden";
-      window.addEventListener("keydown", handleKeyDown);
-      requestAnimationFrame(() => {
-        const first = dialogRef.current?.querySelector<HTMLElement>('button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled])');
-        (first ?? dialogRef.current)?.focus();
-      });
-    }
+    returnFocusRef.current = document.activeElement as HTMLElement | null;
+    const previousBodyOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", handleKeyDown);
+    const focusFrame = requestAnimationFrame(() => {
+      const currentFocus = document.activeElement;
+      if (currentFocus !== returnFocusRef.current && currentFocus !== document.body) return;
+      const first = dialogRef.current?.querySelector<HTMLElement>('button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled])');
+      (first ?? dialogRef.current)?.focus();
+    });
+
     return () => {
-      document.body.style.overflow = "";
+      cancelAnimationFrame(focusFrame);
+      document.body.style.overflow = previousBodyOverflow;
       window.removeEventListener("keydown", handleKeyDown);
-      if (isOpen) returnFocusRef.current?.focus();
+      returnFocusRef.current?.focus();
     };
-  }, [isOpen, onClose]);
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
