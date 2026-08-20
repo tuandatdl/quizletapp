@@ -61,30 +61,43 @@ interface EditablePreviewItem {
   enrichmentError?: string;
 }
 
-const toEditablePreview = (item: BulkVocabularyPreview["items"][number], idx: number): EditablePreviewItem => ({
-  id: `${item.normalizedTerm}-${idx}`,
-  term: item.term,
-  normalizedTerm: item.normalizedTerm,
-  duplicate: item.duplicate,
-  meaningVi: item.suggestion.meaningVi || "",
-  partOfSpeech: item.suggestion.partOfSpeech || "",
-  pronunciation: item.suggestion.pronunciation || item.suggestion.pinyin || item.suggestion.ipa || "",
-  ipa: item.suggestion.ipa || undefined,
-  pinyin: item.suggestion.pinyin || undefined,
-  synonyms: (item.suggestion.synonyms || []).join(", "),
-  example: item.suggestion.example || "",
-  exampleTranslation: item.suggestion.exampleTranslation || "",
-  topic: item.suggestion.topic || "",
-  level: item.suggestion.cefr || (item.suggestion.hskLevel ? `HSK${item.suggestion.hskLevel}` : ""),
-  toeicLevel: item.suggestion.toeicLevel || "",
-  tone: item.suggestion.toneData?.[0] !== undefined ? String(item.suggestion.toneData[0]) : "",
-  traditional: item.suggestion.traditional || "",
-  selected: true,
-  expandedDetails: false,
-  senses: item.suggestion.senses || [],
-  enrichmentState: item.duplicate ? "exists" : item.error ? "failed" : item.status === "READY" ? "ready" : "partial",
-  enrichmentError: item.error?.message,
-});
+const toEditablePreview = (
+  item: BulkVocabularyPreview["items"][number],
+  idx: number,
+  language: Language = "en"
+): EditablePreviewItem => {
+  const isChinese = language === "zh" || Boolean(item.suggestion.pinyin);
+  const pronunciation = isChinese
+    ? (item.suggestion.pinyin || item.suggestion.pronunciation || item.suggestion.ipa || "")
+    : (item.suggestion.ipa || item.suggestion.pronunciation || "");
+  const ipa = item.suggestion.ipa || (!isChinese && pronunciation ? pronunciation : undefined);
+  const pinyin = item.suggestion.pinyin || (isChinese && pronunciation ? pronunciation : undefined);
+
+  return {
+    id: `${item.normalizedTerm}-${idx}`,
+    term: item.term,
+    normalizedTerm: item.normalizedTerm,
+    duplicate: item.duplicate,
+    meaningVi: item.suggestion.meaningVi || "",
+    partOfSpeech: item.suggestion.partOfSpeech || "",
+    pronunciation,
+    ipa,
+    pinyin,
+    synonyms: (item.suggestion.synonyms || []).join(", "),
+    example: item.suggestion.example || "",
+    exampleTranslation: item.suggestion.exampleTranslation || "",
+    topic: item.suggestion.topic || "",
+    level: item.suggestion.cefr || (item.suggestion.hskLevel ? `HSK${item.suggestion.hskLevel}` : ""),
+    toeicLevel: item.suggestion.toeicLevel || "",
+    tone: item.suggestion.toneData?.[0] !== undefined ? String(item.suggestion.toneData[0]) : "",
+    traditional: item.suggestion.traditional || "",
+    selected: true,
+    expandedDetails: false,
+    senses: item.suggestion.senses || [],
+    enrichmentState: item.duplicate ? "exists" : item.error ? "failed" : item.status === "READY" ? "ready" : "partial",
+    enrichmentError: item.error?.message,
+  };
+};
 
 const needsEnrichmentRetry = (item: EditablePreviewItem): boolean =>
   !item.duplicate &&
@@ -154,7 +167,7 @@ export const AddVocabularyPage: React.FC = () => {
     try {
       const res = await vocabularyApi.bulkPreview(formLang, quickInput);
       setEnrichmentConfigured(res.enrichment.configured);
-      const items = res.items.map(toEditablePreview);
+      const items = res.items.map((item, idx) => toEditablePreview(item, idx, formLang));
 
       setPreviewItems(items);
       setHasParsed(true);
@@ -177,7 +190,7 @@ export const AddVocabularyPage: React.FC = () => {
     setPreviewItems((items) => items.map((item) => normalizedTargets.has(item.normalizedTerm) ? { ...item, enrichmentState: "loading", enrichmentError: undefined } : item));
     try {
       const res = await vocabularyApi.bulkPreview(formLang, targets.join("\n"), true);
-      const replacements = new Map(res.items.map((item, idx) => [item.normalizedTerm, toEditablePreview(item, idx)]));
+      const replacements = new Map(res.items.map((item, idx) => [item.normalizedTerm, toEditablePreview(item, idx, formLang)]));
       setPreviewItems((items) => items.map((item) => {
         const replacement = replacements.get(item.normalizedTerm);
         return replacement ? { ...replacement, id: item.id, selected: item.selected, expandedDetails: item.expandedDetails } : item;
@@ -195,7 +208,9 @@ export const AddVocabularyPage: React.FC = () => {
       if (item.id !== id) return item;
       const sense = item.senses[senseIndex];
       if (!sense) return item;
-      const newPronunciation = sense.ipa || sense.pinyin || sense.pronunciation || item.pronunciation;
+      const newPronunciation = formLang === "zh"
+        ? (sense.pinyin || sense.pronunciation || sense.ipa || item.pronunciation)
+        : (sense.ipa || sense.pronunciation || item.pronunciation);
       return {
         ...item,
         meaningVi: sense.meaningVi || item.meaningVi,

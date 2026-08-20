@@ -142,11 +142,82 @@ function cleanStrings(value: unknown, maxItems = 30): string[] | undefined {
   return clean.length ? clean : undefined;
 }
 
+function areLikelyHomophones(wordA: string, wordB: string): boolean {
+  const a = wordA.trim().toLowerCase();
+  const b = wordB.trim().toLowerCase();
+  if (a === b) return true;
+  const homophonePairs: string[][] = [
+    ["right", "write", "rite"],
+    ["see", "sea"],
+    ["to", "too", "two"],
+    ["meat", "meet", "mete"],
+    ["flower", "flour"],
+    ["son", "sun"],
+    ["peace", "piece"],
+    ["break", "brake"],
+    ["bare", "bear"],
+    ["pair", "pear", "pare"],
+    ["plain", "plane"],
+    ["hear", "here"],
+    ["dear", "deer"],
+    ["hair", "hare"],
+    ["fair", "fare"],
+    ["stair", "stare"],
+    ["tail", "tale"],
+    ["wait", "weight"],
+    ["weak", "week"],
+    ["buy", "by", "bye"],
+    ["cell", "sell"],
+    ["cent", "scent", "sent"],
+    ["die", "dye"],
+    ["flu", "flew", "flue"],
+    ["heal", "heel"],
+    ["hole", "whole"],
+    ["hour", "our"],
+    ["knight", "night"],
+    ["knot", "not"],
+    ["know", "no"],
+    ["knew", "new"],
+    ["lead", "led"],
+    ["made", "maid"],
+    ["mail", "male"],
+    ["main", "mane"],
+    ["one", "won"],
+    ["passed", "past"],
+    ["patience", "patients"],
+    ["poor", "pour", "pore"],
+    ["principal", "principle"],
+    ["profit", "prophet"],
+    ["rain", "reign", "rein"],
+    ["read", "red"],
+    ["road", "rode", "rowed"],
+    ["sail", "sale"],
+    ["scene", "seen"],
+    ["sew", "so", "sow"],
+    ["sight", "site", "cite"],
+    ["sole", "soul"],
+    ["some", "sum"],
+    ["steal", "steel"],
+    ["sweet", "suite"],
+    ["threw", "through"],
+    ["tire", "tyre"],
+    ["vain", "vane", "vein"],
+    ["waist", "waste"],
+    ["warn", "worn"],
+    ["way", "weigh"],
+    ["weather", "whether"],
+    ["which", "witch"],
+    ["wood", "would"],
+    ["there", "their", "they're"],
+  ];
+  return homophonePairs.some((group) => group.includes(a) && group.includes(b));
+}
+
 export function validateEnrichmentItems(value: unknown, terms: string[], language: Language): Array<Record<string, unknown>> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("AI output must be an object.");
   const rawItems = (value as Record<string, unknown>).items;
   if (!Array.isArray(rawItems) || rawItems.length !== terms.length) throw new TypeError("AI output has an invalid item count.");
-  return rawItems.map((raw, index) => {
+  const items = rawItems.map((raw, index) => {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new TypeError("AI vocabulary item is invalid.");
     const item = raw as Record<string, unknown>;
     const expectedTerm = terms[index]!;
@@ -170,6 +241,12 @@ export function validateEnrichmentItems(value: unknown, terms: string[], languag
       }
       ipa = candidateIpa.startsWith("/") && candidateIpa.endsWith("/") ? candidateIpa : `/${candidateIpa.replace(/^\/|\/$/g, "")}/`;
       pronunciation = ipa;
+
+      // Detect example bias / copy errors: e.g. /ɡoʊ/ assigned to terms that are not "go"
+      const normalizedExpected = expectedTerm.trim().toLowerCase();
+      if (normalizedExpected !== "go" && ipa === "/ɡoʊ/") {
+        throw new TypeError(`AI vocabulary item for '${expectedTerm}' has anomalous IPA '/ɡoʊ/'.`);
+      }
     }
 
     const senses = Array.isArray(item.senses) ? item.senses.slice(0, 20).flatMap((rawSense) => {
@@ -211,6 +288,25 @@ export function validateEnrichmentItems(value: unknown, terms: string[], languag
       toneData,
     };
   });
+
+  // Batch isolation check: ensure distinct non-homophone terms did not receive identical IPA
+  if (language === "en" && items.length > 1) {
+    for (let i = 0; i < items.length; i++) {
+      for (let j = i + 1; j < items.length; j++) {
+        const itemA = items[i]!;
+        const itemB = items[j]!;
+        const termA = terms[i]!.trim().toLowerCase();
+        const termB = terms[j]!.trim().toLowerCase();
+        if (termA !== termB && itemA.ipa && itemB.ipa && itemA.ipa === itemB.ipa) {
+          if (!areLikelyHomophones(termA, termB)) {
+            throw new TypeError(`Batch cross-contamination detected: '${terms[i]}' and '${terms[j]}' have identical IPA '${itemA.ipa}'.`);
+          }
+        }
+      }
+    }
+  }
+
+  return items;
 }
 
 export function createEnrichmentSchema(terms: readonly string[], language: Language): Record<string, unknown> {
@@ -259,7 +355,9 @@ export function createEnrichmentSchema(terms: readonly string[], language: Langu
         items: {
           type: "object",
           properties: { ...commonProperties, ...chineseProperties },
-          required: ["term", "language", "meaningVi", "partOfSpeech"],
+          required: language === "en"
+            ? ["term", "language", "meaningVi", "partOfSpeech", "ipa", "pronunciation"]
+            : ["term", "language", "meaningVi", "partOfSpeech", "pinyin"],
           additionalProperties: false,
         },
       },
@@ -301,12 +399,25 @@ function enrichmentPrompt(language: Language, terms: string[], contexts?: Array<
     "1. PART OF SPEECH (partOfSpeech):",
     "   - Accurately classify POS. Standard tags: 'noun', 'verb', 'adjective', 'adverb', 'pronoun', 'preposition', 'conjunction', 'determiner', 'interjection', 'phrasal verb', 'phrase', 'idiom'.",
     "",
-    "2. PRONUNCIATION / IPA:",
+    "2. PRONUNCIATION / IPA (STRICT REQUIREMENT):",
     language === "en"
       ? [
-          "   - Provide accurate General American (en-US) IPA notation enclosed in slashes (e.g., '/ɡoʊ/', '/ˈæp.əl/', '/lɪv/', '/rɪˈkɔːrd/').",
-          "   - Each item's IPA MUST correspond specifically to that item's term and context. For phrases, provide the phrase's IPA (e.g. 'give up' -> '/ɡɪv ʌp/').",
-          "   - Never return spelling approximations, plain words, or fake phonetics.",
+          "   - Provide accurate General American (en-US) IPA notation enclosed in slashes.",
+          "   - CRITICAL: IPA MUST represent the exact requested term and its syllable count / phonetic sounds.",
+          "   - Re-evaluate pronunciation independently for EACH indexed term. Never copy IPA from another item in the batch or from any prompt example.",
+          "   - Before returning each item, internally verify: term -> pronunciation -> IPA consistency. Treat `meaningVi`, `partOfSpeech`, and `ipa` as one coherent lexical entry.",
+          "   - Guidance examples (illustrative only - DO NOT copy onto other terms):",
+          "     * go -> '/ɡoʊ/'",
+          "     * customer -> '/ˈkʌs.tə.mɚ/'",
+          "     * computer -> '/kəmˈpjuː.tɚ/'",
+          "     * beautiful -> '/ˈbjuː.t̬ə.fəl/'",
+          "     * development -> '/dɪˈvel.əp.mənt/'",
+          "     * language -> '/ˈlæŋ.ɡwɪdʒ/'",
+          "     * important -> '/ɪmˈpɔːr.tənt/'",
+          "     * comfortable -> '/ˈkʌm.fɚ.t̬ə.bəl/'",
+          "     * vegetable -> '/ˈvedʒ.tə.bəl/'",
+          "   - For multi-word phrases, provide the phrase's IPA (e.g. 'give up' -> '/ɡɪv ʌp/').",
+          "   - Never return spelling approximations, plain English words, or fake phonetics.",
           "   - Set both `ipa` and `pronunciation` to this IPA string.",
         ].join("\n")
       : [

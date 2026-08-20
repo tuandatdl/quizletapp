@@ -2,7 +2,7 @@ import type { Language } from "../types/api";
 import type { PersistenceAdapter, StoredRecord } from "../persistence/types";
 import { getLanguageApiUrl } from "../runtime/runtime";
 
-export const ENRICHMENT_VERSION = "vocabulary-enrichment-v2";
+export const ENRICHMENT_VERSION = "vocabulary-enrichment-v3";
 export const MAX_ENRICHMENT_BATCH_SIZE = 25;
 
 export interface VocabularyContext {
@@ -40,7 +40,7 @@ export interface VocabularyEnrichment {
   partial?: boolean;
 }
 
-interface CacheRecord extends StoredRecord {
+export interface CacheRecord extends StoredRecord {
   version: string;
   language: Language;
   normalizedTerm: string;
@@ -48,12 +48,36 @@ interface CacheRecord extends StoredRecord {
   updatedAt: string;
 }
 
-function normalizeTerm(term: string, language: Language): string {
+export function normalizeTerm(term: string, language: Language): string {
   return term.normalize("NFKC").trim().replace(/\s+/gu, " ").toLocaleLowerCase(language === "zh" ? "zh-CN" : "en-US");
 }
 
-function cacheKey(language: Language, term: string): string {
+export function cacheKey(language: Language, term: string): string {
   return `${ENRICHMENT_VERSION}:${language}:${normalizeTerm(term, language)}`;
+}
+
+export function isValidEnrichmentCacheRecord(
+  cached: unknown,
+  expectedLanguage: Language,
+  expectedTerm: string
+): cached is CacheRecord {
+  if (!cached || typeof cached !== "object" || Array.isArray(cached)) return false;
+  const record = cached as Partial<CacheRecord>;
+  if (record.version !== ENRICHMENT_VERSION) return false;
+  if (record.language !== expectedLanguage) return false;
+  const normalizedExpected = normalizeTerm(expectedTerm, expectedLanguage);
+  if (record.normalizedTerm !== normalizedExpected) return false;
+  if (!record.value || typeof record.value !== "object" || Array.isArray(record.value)) return false;
+  if (record.value.language !== expectedLanguage) return false;
+  if (normalizeTerm(record.value.term, expectedLanguage) !== normalizedExpected) return false;
+  if (!record.value.meaningVi || typeof record.value.meaningVi !== "string") return false;
+  if (expectedLanguage === "en") {
+    const ipa = record.value.ipa || record.value.pronunciation;
+    if (ipa && typeof ipa === "string") {
+      if (normalizedExpected !== "go" && ipa.trim() === "/ɡoʊ/") return false;
+    }
+  }
+  return true;
 }
 
 function optionalString(value: unknown, max: number): string | undefined {
@@ -165,8 +189,14 @@ export class LanguageApiClient {
     for (const term of uniqueTerms) {
       const key = cacheKey(language, term);
       const cached = refresh ? undefined : await this.persistence.get<CacheRecord>("enrichmentCache", key);
-      if (cached?.version === ENRICHMENT_VERSION) results.set(normalizeTerm(term, language), validateEnrichment(cached.value, language));
-      else missing.push(term);
+      if (isValidEnrichmentCacheRecord(cached, language, term)) {
+        results.set(normalizeTerm(term, language), validateEnrichment(cached.value, language));
+      } else {
+        if (cached) {
+          await this.persistence.delete("enrichmentCache", key).catch(() => {});
+        }
+        missing.push(term);
+      }
     }
 
     for (let offset = 0; offset < missing.length; offset += MAX_ENRICHMENT_BATCH_SIZE) {
