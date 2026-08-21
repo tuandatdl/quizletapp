@@ -974,4 +974,675 @@ describe("LEXIS Google Account & Cloud Sync Integration", () => {
       expect(meta.localDatasetOwnerUserId).toBe("account-a-uuid");
     });
   });
+
+  // =========================================================================
+  // GROUP K: REMOTE TOMBSTONE & MULTI-DEVICE STALE DELETE AUDIT
+  // =========================================================================
+  describe("Group K: Remote Tombstone & Stale Delete Concurrency Audit", () => {
+    it("1. remote absent + local active => local-only upload", async () => {
+      await adapter.put("vocabulary", { id: "local-v-active", term: "independent", meaningVi: "độc lập" });
+
+      const uploaded: string[] = [];
+      const mockRemote = {
+        pull: vi.fn().mockResolvedValue({ changes: [], hasMore: false, cursor: "1" }),
+        push: vi.fn().mockImplementation(async (changes: SyncChange[]) => {
+          for (const c of changes) uploaded.push(`${c.store}:${c.id}`);
+          return { acknowledgedKeys: changes.map((c) => `${c.store}:${c.id}`) };
+        }),
+      };
+
+      const mockSupabase = {
+        auth: {
+          getSession: vi.fn().mockResolvedValue({ data: { session: { user: { id: "user-k1" } } } }),
+          onAuthStateChange: vi.fn(() => ({ data: { subscription: { unsubscribe: vi.fn() } } })),
+        },
+      } as any;
+      resetSupabaseClientForTesting(mockSupabase);
+
+      const coordinator = new LocalFirstSyncCoordinator(adapter);
+      const res = await coordinator.executeMerge(mockRemote as any);
+
+      expect(res.success).toBe(true);
+      expect(uploaded).toContain("vocabulary:local-v-active");
+      const conflicts = await coordinator.getConflicts();
+      expect(conflicts).toHaveLength(0);
+    });
+
+    it("2. remote tombstone + local active => conflict => NO automatic upload", async () => {
+      await adapter.put("vocabulary", { id: "v-tomb-local-active", term: "resilient", meaningVi: "kiên cường" });
+
+      const uploaded: string[] = [];
+      const mockRemote = {
+        pull: vi.fn().mockResolvedValue({
+          changes: [
+            {
+              store: "vocabulary",
+              id: "v-tomb-local-active",
+              deleted: true,
+              record: undefined,
+              changeSeq: "10",
+              updatedAt: "2026-08-20T00:00:00Z",
+            },
+          ],
+          hasMore: false,
+          cursor: "10",
+        }),
+        push: vi.fn().mockImplementation(async (changes: SyncChange[]) => {
+          for (const c of changes) uploaded.push(`${c.store}:${c.id}`);
+          return { acknowledgedKeys: changes.map((c) => `${c.store}:${c.id}`) };
+        }),
+      };
+
+      const mockSupabase = {
+        auth: {
+          getSession: vi.fn().mockResolvedValue({ data: { session: { user: { id: "user-k2" } } } }),
+          onAuthStateChange: vi.fn(() => ({ data: { subscription: { unsubscribe: vi.fn() } } })),
+        },
+      } as any;
+      resetSupabaseClientForTesting(mockSupabase);
+
+      const coordinator = new LocalFirstSyncCoordinator(adapter);
+      const res = await coordinator.executeMerge(mockRemote as any);
+
+      expect(res.success).toBe(true);
+      // MUST NOT automatically upload local item over remote tombstone
+      expect(uploaded).not.toContain("vocabulary:v-tomb-local-active");
+
+      // MUST record explicit conflict
+      const conflicts = await coordinator.getConflicts();
+      expect(conflicts).toHaveLength(1);
+      expect(conflicts[0].recordId).toBe("v-tomb-local-active");
+      expect(conflicts[0].localRecord).toBeDefined();
+      expect(conflicts[0].remoteRecord).toBeUndefined();
+    });
+
+    it("3. remote tombstone + local absent => stays deleted (no resurrection)", async () => {
+      const mockRemote = {
+        pull: vi.fn().mockResolvedValue({
+          changes: [
+            {
+              store: "vocabulary",
+              id: "v-remote-dead",
+              deleted: true,
+              record: undefined,
+              changeSeq: "11",
+              updatedAt: "2026-08-20T00:00:00Z",
+            },
+          ],
+          hasMore: false,
+          cursor: "11",
+        }),
+        push: vi.fn().mockResolvedValue({ acknowledgedKeys: [] }),
+      };
+
+      const mockSupabase = {
+        auth: {
+          getSession: vi.fn().mockResolvedValue({ data: { session: { user: { id: "user-k3" } } } }),
+          onAuthStateChange: vi.fn(() => ({ data: { subscription: { unsubscribe: vi.fn() } } })),
+        },
+      } as any;
+      resetSupabaseClientForTesting(mockSupabase);
+
+      const coordinator = new LocalFirstSyncCoordinator(adapter);
+      const res = await coordinator.executeMerge(mockRemote as any);
+
+      expect(res.success).toBe(true);
+      const local = await adapter.get("vocabulary", "v-remote-dead");
+      expect(local).toBeUndefined();
+      const conflicts = await coordinator.getConflicts();
+      expect(conflicts).toHaveLength(0);
+    });
+
+    it("4. remote tombstone conflict + choose local => explicit resurrection", async () => {
+      const conflictId = "vocabulary:v-resurrect";
+      await adapter.put("syncConflicts", {
+        id: conflictId,
+        store: "vocabulary",
+        recordId: "v-resurrect",
+        localRecord: { id: "v-resurrect", term: "resurrected", meaningVi: "hồi sinh" },
+        localDeleted: false,
+        remoteRecord: undefined,
+        conflictAt: new Date().toISOString(),
+        resolution: "local",
+      });
+
+      const coordinator = new LocalFirstSyncCoordinator(adapter);
+      await coordinator.resolveConflict(conflictId, "local");
+
+      // Local record must be restored to vocabulary store
+      const local = await adapter.get("vocabulary", "v-resurrect");
+      expect(local).toBeDefined();
+      expect((local as any).term).toBe("resurrected");
+
+      // Upload mutation must be queued
+      const queue = await adapter.get("syncQueue", conflictId);
+      expect(queue).toBeDefined();
+      expect((queue as any).deleted).toBe(false);
+    });
+
+    it("5. remote tombstone conflict + choose remote => local deleted", async () => {
+      const conflictId = "vocabulary:v-discard";
+      await adapter.put("vocabulary", { id: "v-discard", term: "discarded", meaningVi: "bỏ đi" });
+      await adapter.put("syncConflicts", {
+        id: conflictId,
+        store: "vocabulary",
+        recordId: "v-discard",
+        localRecord: { id: "v-discard", term: "discarded", meaningVi: "bỏ đi" },
+        localDeleted: false,
+        remoteRecord: undefined,
+        conflictAt: new Date().toISOString(),
+        resolution: "local",
+      });
+
+      const coordinator = new LocalFirstSyncCoordinator(adapter);
+      await coordinator.resolveConflict(conflictId, "remote");
+
+      // Local record must be deleted from vocabulary store
+      const local = await adapter.get("vocabulary", "v-discard");
+      expect(local).toBeUndefined();
+    });
+
+    it("6. Device A creates newer cloud version, Device B has stale queued delete => stale delete cannot silently destroy newer version", async () => {
+      // Device B has stale queued delete
+      await adapter.put("syncQueue", {
+        id: "vocabulary:v-shared",
+        store: "vocabulary",
+        recordId: "v-shared",
+        deleted: true,
+        updatedAt: "2026-08-10T00:00:00Z",
+      });
+
+      // Remote cloud has newer active version created by Device A
+      const mockRemote = {
+        pull: vi.fn().mockResolvedValue({
+          changes: [
+            {
+              store: "vocabulary",
+              id: "v-shared",
+              deleted: false,
+              record: { id: "v-shared", term: "shared-v2", meaningVi: "bản mới từ device A" },
+              changeSeq: "50",
+              updatedAt: "2026-08-20T00:00:00Z",
+            },
+          ],
+          hasMore: false,
+          cursor: "50",
+        }),
+        push: vi.fn().mockResolvedValue({ acknowledgedKeys: [] }),
+      };
+
+      const mockSupabase = {
+        auth: {
+          getSession: vi.fn().mockResolvedValue({ data: { session: { user: { id: "user-k6" } } } }),
+          onAuthStateChange: vi.fn(() => ({ data: { subscription: { unsubscribe: vi.fn() } } })),
+        },
+      } as any;
+      resetSupabaseClientForTesting(mockSupabase);
+
+      const coordinator = new LocalFirstSyncCoordinator(adapter);
+      await adapter.put("meta", {
+        id: "sync-meta",
+        localDatasetOwnerUserId: "user-k6",
+        lastCursor: "10",
+        lastSyncAt: "2026-08-10T00:00:00Z",
+        lastSyncStatus: "IDLE",
+        lastSyncError: null,
+      });
+
+      const res = await coordinator.sync(mockRemote as any);
+      expect(res.success).toBe(true);
+
+      // Stale delete must NOT have pushed
+      expect(mockRemote.push).not.toHaveBeenCalled();
+
+      // Cloud version must be applied locally
+      const local = await adapter.get("vocabulary", "v-shared");
+      expect(local).toBeDefined();
+      expect((local as any).term).toBe("shared-v2");
+
+      // Conflict must be recorded
+      const conflicts = await coordinator.getConflicts();
+      expect(conflicts).toHaveLength(1);
+    });
+
+    it("7. Guest merge with normal active records => no regression", async () => {
+      await adapter.put("vocabulary", { id: "v-guest-active", term: "flourish", meaningVi: "phát triển" });
+
+      const mockRemote = {
+        pull: vi.fn().mockResolvedValue({
+          changes: [
+            {
+              store: "vocabulary",
+              id: "v-cloud-existing",
+              deleted: false,
+              record: { id: "v-cloud-existing", term: "harmony", meaningVi: "hòa hợp" },
+              changeSeq: "100",
+              updatedAt: "2026-08-20T00:00:00Z",
+            },
+          ],
+          hasMore: false,
+          cursor: "100",
+        }),
+        push: vi.fn().mockResolvedValue({ acknowledgedKeys: ["vocabulary:v-guest-active"] }),
+      };
+
+      const mockSupabase = {
+        auth: {
+          getSession: vi.fn().mockResolvedValue({ data: { session: { user: { id: "user-k7" } } } }),
+          onAuthStateChange: vi.fn(() => ({ data: { subscription: { unsubscribe: vi.fn() } } })),
+        },
+      } as any;
+      resetSupabaseClientForTesting(mockSupabase);
+
+      const coordinator = new LocalFirstSyncCoordinator(adapter);
+      const res = await coordinator.executeMerge(mockRemote as any);
+
+      expect(res.success).toBe(true);
+      expect(await adapter.get("vocabulary", "v-guest-active")).toBeDefined();
+      expect(await adapter.get("vocabulary", "v-cloud-existing")).toBeDefined();
+    });
+
+    it("8. Account A / Account B isolation => unchanged", async () => {
+      await adapter.put("meta", {
+        id: "sync-meta",
+        localDatasetOwnerUserId: "user-a",
+        lastCursor: "10",
+        lastSyncAt: "2026-08-20T00:00:00Z",
+        lastSyncStatus: "IDLE",
+        lastSyncError: null,
+      });
+
+      vi.stubEnv("VITE_SUPABASE_URL", "https://example.supabase.co");
+      vi.stubEnv("VITE_SUPABASE_ANON_KEY", "sb_test_key");
+      const mockSupabase = {
+        auth: {
+          getSession: vi.fn().mockResolvedValue({ data: { session: { user: { id: "user-b" } } } }),
+          onAuthStateChange: vi.fn(() => ({ data: { subscription: { unsubscribe: vi.fn() } } })),
+        },
+      } as any;
+      resetSupabaseClientForTesting(mockSupabase);
+
+      const coordinator = new LocalFirstSyncCoordinator(adapter);
+      const preview = await coordinator.getMergePreview();
+      expect(preview).toBeNull();
+
+      const mergeRes = await coordinator.executeMerge();
+      expect(mergeRes.success).toBe(false);
+      expect(mergeRes.error).toContain("Dữ liệu trên máy này thuộc về tài khoản khác");
+    });
+
+    it("9. network failure during merge => local records and queue preserved", async () => {
+      await adapter.put("vocabulary", { id: "v-local-safe", term: "unbreakable", meaningVi: "không thể phá vỡ" });
+
+      const mockRemote = {
+        pull: vi.fn().mockRejectedValue(new Error("Network disconnect")),
+        push: vi.fn(),
+      };
+
+      const mockSupabase = {
+        auth: {
+          getSession: vi.fn().mockResolvedValue({ data: { session: { user: { id: "user-k9" } } } }),
+          onAuthStateChange: vi.fn(() => ({ data: { subscription: { unsubscribe: vi.fn() } } })),
+        },
+      } as any;
+      resetSupabaseClientForTesting(mockSupabase);
+
+      const coordinator = new LocalFirstSyncCoordinator(adapter);
+      const res = await coordinator.executeMerge(mockRemote as any);
+
+      expect(res.success).toBe(false);
+      expect(res.error).toBe("Network disconnect");
+
+      // Local record must still be intact
+      const local = await adapter.get("vocabulary", "v-local-safe");
+      expect(local).toBeDefined();
+
+      // Ownership must NOT have been changed
+      const meta = await coordinator.getMeta();
+      expect(meta.localDatasetOwnerUserId).toBeNull();
+    });
+  });
+
+  // =========================================================================
+  // GROUP L: GUEST DELETE POLICY & CLOUD PROTECTION
+  // =========================================================================
+  describe("Group L: Guest Delete Policy & Cloud Protection", () => {
+    it("A. guest unowned + existing cloud + queued delete for remote-active record => conflict & zero delete pushed", async () => {
+      // Guest queued a delete for v-shared-active
+      await adapter.put("syncQueue", {
+        id: "vocabulary:v-shared-active",
+        store: "vocabulary",
+        recordId: "v-shared-active",
+        deleted: true,
+        updatedAt: "2026-08-10T00:00:00Z",
+      });
+
+      const pushedDeletes: string[] = [];
+      const mockRemote = {
+        pull: vi.fn().mockResolvedValue({
+          changes: [
+            {
+              store: "vocabulary",
+              id: "v-shared-active",
+              deleted: false,
+              record: { id: "v-shared-active", term: "cloud active", meaningVi: "đang hoạt động trên cloud" },
+              changeSeq: "20",
+              updatedAt: "2026-08-20T00:00:00Z",
+            },
+          ],
+          hasMore: false,
+          cursor: "20",
+        }),
+        push: vi.fn().mockImplementation(async (changes: SyncChange[]) => {
+          for (const c of changes) {
+            if (c.deleted) pushedDeletes.push(`${c.store}:${c.id}`);
+          }
+          return { acknowledgedKeys: changes.map((c) => `${c.store}:${c.id}`) };
+        }),
+      };
+
+      const mockSupabase = {
+        auth: {
+          getSession: vi.fn().mockResolvedValue({ data: { session: { user: { id: "user-la" } } } }),
+          onAuthStateChange: vi.fn(() => ({ data: { subscription: { unsubscribe: vi.fn() } } })),
+        },
+      } as any;
+      resetSupabaseClientForTesting(mockSupabase);
+
+      const coordinator = new LocalFirstSyncCoordinator(adapter);
+      const res = await coordinator.executeMerge(mockRemote as any);
+
+      expect(res.success).toBe(true);
+      // Zero delete pushed to remote
+      expect(pushedDeletes).toHaveLength(0);
+
+      // Cloud record applied locally
+      const local = await adapter.get("vocabulary", "v-shared-active");
+      expect(local).toBeDefined();
+
+      // Conflict recorded with localDeleted: true
+      const conflicts = await coordinator.getConflicts();
+      expect(conflicts).toHaveLength(1);
+      expect(conflicts[0].localDeleted).toBe(true);
+    });
+
+    it("B. guest unowned + existing cloud + queued delete for remote-absent ID => zero automatic cloud tombstone", async () => {
+      // Guest queued a delete for an item that never existed in cloud
+      await adapter.put("syncQueue", {
+        id: "vocabulary:v-guest-only-dead",
+        store: "vocabulary",
+        recordId: "v-guest-only-dead",
+        deleted: true,
+        updatedAt: "2026-08-10T00:00:00Z",
+      });
+
+      const pushedKeys: string[] = [];
+      const mockRemote = {
+        pull: vi.fn().mockResolvedValue({
+          changes: [
+            {
+              store: "vocabulary",
+              id: "v-other-cloud",
+              deleted: false,
+              record: { id: "v-other-cloud", term: "unrelated", meaningVi: "không liên quan" },
+              changeSeq: "30",
+              updatedAt: "2026-08-20T00:00:00Z",
+            },
+          ],
+          hasMore: false,
+          cursor: "30",
+        }),
+        push: vi.fn().mockImplementation(async (changes: SyncChange[]) => {
+          for (const c of changes) pushedKeys.push(`${c.store}:${c.id}`);
+          return { acknowledgedKeys: changes.map((c) => `${c.store}:${c.id}`) };
+        }),
+      };
+
+      const mockSupabase = {
+        auth: {
+          getSession: vi.fn().mockResolvedValue({ data: { session: { user: { id: "user-lb" } } } }),
+          onAuthStateChange: vi.fn(() => ({ data: { subscription: { unsubscribe: vi.fn() } } })),
+        },
+      } as any;
+      resetSupabaseClientForTesting(mockSupabase);
+
+      const coordinator = new LocalFirstSyncCoordinator(adapter);
+      const res = await coordinator.executeMerge(mockRemote as any);
+
+      expect(res.success).toBe(true);
+      // Zero tombstone pushed for v-guest-only-dead
+      expect(pushedKeys).not.toContain("vocabulary:v-guest-only-dead");
+      // syncQueue is purged
+      const q = await adapter.get("syncQueue", "vocabulary:v-guest-only-dead");
+      expect(q).toBeUndefined();
+    });
+
+    it("C. guest unowned + existing cloud + multiple queued deletes => zero DELETE writes until explicit confirmation", async () => {
+      // 8 guest delete items
+      for (let i = 1; i <= 8; i++) {
+        await adapter.put("syncQueue", {
+          id: `vocabulary:v-multi-${i}`,
+          store: "vocabulary",
+          recordId: `v-multi-${i}`,
+          deleted: true,
+          updatedAt: "2026-08-10T00:00:00Z",
+        });
+      }
+
+      const pushedDeletes: string[] = [];
+      const mockRemote = {
+        pull: vi.fn().mockResolvedValue({
+          changes: [
+            {
+              store: "vocabulary",
+              id: "v-existing-one",
+              deleted: false,
+              record: { id: "v-existing-one", term: "solo", meaningVi: "đơn độc" },
+              changeSeq: "40",
+              updatedAt: "2026-08-20T00:00:00Z",
+            },
+          ],
+          hasMore: false,
+          cursor: "40",
+        }),
+        push: vi.fn().mockImplementation(async (changes: SyncChange[]) => {
+          for (const c of changes) {
+            if (c.deleted) pushedDeletes.push(`${c.store}:${c.id}`);
+          }
+          return { acknowledgedKeys: changes.map((c) => `${c.store}:${c.id}`) };
+        }),
+      };
+
+      const mockSupabase = {
+        auth: {
+          getSession: vi.fn().mockResolvedValue({ data: { session: { user: { id: "user-lc" } } } }),
+          onAuthStateChange: vi.fn(() => ({ data: { subscription: { unsubscribe: vi.fn() } } })),
+        },
+      } as any;
+      resetSupabaseClientForTesting(mockSupabase);
+
+      const coordinator = new LocalFirstSyncCoordinator(adapter);
+      const res = await coordinator.executeMerge(mockRemote as any);
+
+      expect(res.success).toBe(true);
+      // Zero delete mutations pushed
+      expect(pushedDeletes).toHaveLength(0);
+      // Remaining queue is 0
+      const remainingQueue = await adapter.getAll("syncQueue");
+      expect(remainingQueue).toHaveLength(0);
+    });
+
+    it("D. owned same account + legitimate post-sync local deletion => normal deletion still syncs", async () => {
+      const userId = "user-ld-owner";
+      await adapter.put("meta", {
+        id: "sync-meta",
+        localDatasetOwnerUserId: userId,
+        lastCursor: "50",
+        lastSyncAt: "2026-08-20T00:00:00Z",
+        lastSyncStatus: "IDLE",
+        lastSyncError: null,
+      });
+
+      // Legitimate local delete queued in owned session
+      await adapter.put("syncQueue", {
+        id: "vocabulary:v-legit-delete",
+        store: "vocabulary",
+        recordId: "v-legit-delete",
+        deleted: true,
+        updatedAt: "2026-08-21T00:00:00Z",
+      });
+
+      const pushedDeletes: string[] = [];
+      const mockRemote = {
+        pull: vi.fn().mockResolvedValue({ changes: [], hasMore: false, cursor: "50" }),
+        push: vi.fn().mockImplementation(async (changes: SyncChange[]) => {
+          for (const c of changes) {
+            if (c.deleted) pushedDeletes.push(`${c.store}:${c.id}`);
+          }
+          return { acknowledgedKeys: changes.map((c) => `${c.store}:${c.id}`) };
+        }),
+      };
+
+      const mockSupabase = {
+        auth: {
+          getSession: vi.fn().mockResolvedValue({ data: { session: { user: { id: userId } } } }),
+          onAuthStateChange: vi.fn(() => ({ data: { subscription: { unsubscribe: vi.fn() } } })),
+        },
+      } as any;
+      resetSupabaseClientForTesting(mockSupabase);
+
+      const coordinator = new LocalFirstSyncCoordinator(adapter);
+      const res = await coordinator.sync(mockRemote as any);
+
+      expect(res.success).toBe(true);
+      // Legitimate owned delete syncs normally
+      expect(pushedDeletes).toContain("vocabulary:v-legit-delete");
+    });
+
+    it("E. foreign account ownership => still blocked", async () => {
+      await adapter.put("meta", {
+        id: "sync-meta",
+        localDatasetOwnerUserId: "user-alpha",
+        lastCursor: "10",
+        lastSyncAt: "2026-08-20T00:00:00Z",
+        lastSyncStatus: "IDLE",
+        lastSyncError: null,
+      });
+
+      vi.stubEnv("VITE_SUPABASE_URL", "https://example.supabase.co");
+      vi.stubEnv("VITE_SUPABASE_ANON_KEY", "sb_test_key");
+      const mockSupabase = {
+        auth: {
+          getSession: vi.fn().mockResolvedValue({ data: { session: { user: { id: "user-beta" } } } }),
+          onAuthStateChange: vi.fn(() => ({ data: { subscription: { unsubscribe: vi.fn() } } })),
+        },
+      } as any;
+      resetSupabaseClientForTesting(mockSupabase);
+
+      const coordinator = new LocalFirstSyncCoordinator(adapter);
+      const res = await coordinator.executeMerge();
+      expect(res.success).toBe(false);
+      expect(res.error).toContain("Dữ liệu trên máy này thuộc về tài khoản khác");
+    });
+
+    it("F. normal local-only UPSERT => still works", async () => {
+      await adapter.put("vocabulary", { id: "v-normal-upsert", term: "creative", meaningVi: "sáng tạo" });
+
+      const uploaded: string[] = [];
+      const mockRemote = {
+        pull: vi.fn().mockResolvedValue({
+          changes: [
+            {
+              store: "vocabulary",
+              id: "v-cloud-peer",
+              deleted: false,
+              record: { id: "v-cloud-peer", term: "peer", meaningVi: "đồng trang lứa" },
+              changeSeq: "60",
+              updatedAt: "2026-08-20T00:00:00Z",
+            },
+          ],
+          hasMore: false,
+          cursor: "60",
+        }),
+        push: vi.fn().mockImplementation(async (changes: SyncChange[]) => {
+          for (const c of changes) uploaded.push(`${c.store}:${c.id}`);
+          return { acknowledgedKeys: changes.map((c) => `${c.store}:${c.id}`) };
+        }),
+      };
+
+      const mockSupabase = {
+        auth: {
+          getSession: vi.fn().mockResolvedValue({ data: { session: { user: { id: "user-lf" } } } }),
+          onAuthStateChange: vi.fn(() => ({ data: { subscription: { unsubscribe: vi.fn() } } })),
+        },
+      } as any;
+      resetSupabaseClientForTesting(mockSupabase);
+
+      const coordinator = new LocalFirstSyncCoordinator(adapter);
+      const res = await coordinator.executeMerge(mockRemote as any);
+
+      expect(res.success).toBe(true);
+      expect(uploaded).toContain("vocabulary:v-normal-upsert");
+      expect(await adapter.get("vocabulary", "v-normal-upsert")).toBeDefined();
+      expect(await adapter.get("vocabulary", "v-cloud-peer")).toBeDefined();
+    });
+
+    it("G. normal two-way non-delete sync => works", async () => {
+      const userId = "user-lg-sync";
+      await adapter.put("meta", {
+        id: "sync-meta",
+        localDatasetOwnerUserId: userId,
+        lastCursor: "70",
+        lastSyncAt: "2026-08-20T00:00:00Z",
+        lastSyncStatus: "IDLE",
+        lastSyncError: null,
+      });
+
+      await adapter.put("vocabulary", { id: "v-local-edit", term: "edit", meaningVi: "chỉnh sửa" });
+      await adapter.put("syncQueue", {
+        id: "vocabulary:v-local-edit",
+        store: "vocabulary",
+        recordId: "v-local-edit",
+        deleted: false,
+        updatedAt: "2026-08-21T00:00:00Z",
+      });
+
+      const pushedKeys: string[] = [];
+      const mockRemote = {
+        pull: vi.fn().mockResolvedValue({
+          changes: [
+            {
+              store: "vocabulary",
+              id: "v-remote-new",
+              deleted: false,
+              record: { id: "v-remote-new", term: "novel", meaningVi: "mới lạ" },
+              changeSeq: "80",
+              updatedAt: "2026-08-21T00:00:00Z",
+            },
+          ],
+          hasMore: false,
+          cursor: "80",
+        }),
+        push: vi.fn().mockImplementation(async (changes: SyncChange[]) => {
+          for (const c of changes) pushedKeys.push(`${c.store}:${c.id}`);
+          return { acknowledgedKeys: changes.map((c) => `${c.store}:${c.id}`) };
+        }),
+      };
+
+      const mockSupabase = {
+        auth: {
+          getSession: vi.fn().mockResolvedValue({ data: { session: { user: { id: userId } } } }),
+          onAuthStateChange: vi.fn(() => ({ data: { subscription: { unsubscribe: vi.fn() } } })),
+        },
+      } as any;
+      resetSupabaseClientForTesting(mockSupabase);
+
+      const coordinator = new LocalFirstSyncCoordinator(adapter);
+      const res = await coordinator.sync(mockRemote as any);
+
+      expect(res.success).toBe(true);
+      expect(pushedKeys).toContain("vocabulary:v-local-edit");
+      expect(await adapter.get("vocabulary", "v-remote-new")).toBeDefined();
+    });
+  });
 });
