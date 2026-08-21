@@ -62,7 +62,7 @@ export interface SelectionToolbarPosition {
 export const ReadingDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { showToast, success, error, info } = useToast();
+  const { success, error, info } = useToast();
   const { language: currentLang, settings } = useLanguage();
 
   const [passage, setPassage] = useState<ReadingPassage | null>(null);
@@ -739,7 +739,6 @@ export const ReadingDetailPage: React.FC = () => {
 
         if (rect.width === 0 && rect.height === 0) return;
 
-        const viewportW = window.innerWidth;
         const viewportH = window.innerHeight;
         const placeAbove = rect.top >= 130;
 
@@ -877,7 +876,6 @@ export const ReadingDetailPage: React.FC = () => {
     if (!pronunciationMode || !token.clickable) return;
     e.stopPropagation();
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const viewportW = window.innerWidth;
     const viewportH = window.innerHeight;
     const placeAbove = rect.top >= 70;
 

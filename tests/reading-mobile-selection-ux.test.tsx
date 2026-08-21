@@ -4,13 +4,9 @@
  * layout shift elimination, popover non-collision, and touch selection isolation.
  */
 
-import React from "react";
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { createRoot, Root } from "react-dom/client";
-import { act } from "react";
+import { describe, it, expect } from "vitest";
 import fs from "fs";
 import path from "path";
-import { ReadingDetailPage } from "../src/frontend/pages/reading/ReadingDetailPage";
 
 const cssPath = path.resolve(__dirname, "../src/frontend/styles/index.css");
 const readingDetailPath = path.resolve(__dirname, "../src/frontend/pages/reading/ReadingDetailPage.tsx");
