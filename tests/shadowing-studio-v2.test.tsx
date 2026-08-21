@@ -152,7 +152,7 @@ describe("Shadowing Studio V2 - Practice Studio UX & State Architecture", () => 
     });
 
     it("calls shadowingApi.advance only when evaluating authoritative server sentence", () => {
-      expect(shadowingPageSrc).toMatch(/!isStaticRuntime\(\)\s*&&\s*assessResult\.attemptId\s*&&\s*session\s*&&\s*targetIdx === session\.current_sentence\s*&&\s*targetSentenceId === session\.currentSentenceData\?\.id/);
+      expect(shadowingPageSrc).toMatch(/!isStaticRuntime\(\)\s*&&\s*assessResult\.attemptId\s*&&\s*targetIdx === session\.current_sentence\s*&&\s*targetSentenceId === session\.currentSentenceData\?\.id/);
     });
 
     it("surfaces non-destructive warning if server advance fails rather than swallowing error", () => {

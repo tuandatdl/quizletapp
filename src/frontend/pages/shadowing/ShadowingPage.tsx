@@ -651,7 +651,6 @@ export const ShadowingPage: React.FC = () => {
       if (
         !isStaticRuntime() &&
         assessResult.attemptId &&
-        session &&
         targetIdx === session.current_sentence &&
         targetSentenceId === session.currentSentenceData?.id
       ) {
