@@ -3,15 +3,19 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { indexedDB } from "fake-indexeddb";
 import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
 import { ReadingPlayer } from "../src/frontend/components/reading/ReadingPlayer";
+import { ReadingDetailPage } from "../src/frontend/pages/reading/ReadingDetailPage";
 import { HomePage } from "../src/frontend/pages/home/HomePage";
 import { formatRecordingTime } from "../src/frontend/pages/shadowing/ShadowingPage";
+import { AuthProvider } from "../src/frontend/context/AuthContext";
 import { CloudAccountProvider } from "../src/frontend/context/CloudAccountContext";
+import { LanguageProvider } from "../src/frontend/context/LanguageContext";
+import { ToastProvider } from "../src/frontend/context/ToastContext";
 import { CloudAuthService } from "../src/frontend/services/cloudAuth";
 import { resetSupabaseClientForTesting } from "../src/frontend/persistence/supabaseClient";
 import { synthesizeCloudSpeech } from "../src/frontend/services/cloudTts";
@@ -20,6 +24,32 @@ import type { ReadingPlaybackState } from "../src/frontend/types/api";
 globalThis.indexedDB = indexedDB;
 // @ts-ignore
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+// Mock speech synthesis
+class MockSpeechSynthesisUtterance {
+  text: string;
+  lang: string = "en-US";
+  rate: number = 1;
+  voice: any = null;
+  onstart: (() => void) | null = null;
+  onend: (() => void) | null = null;
+  onerror: ((event: any) => void) | null = null;
+  constructor(text: string) {
+    this.text = text;
+  }
+}
+globalThis.SpeechSynthesisUtterance = MockSpeechSynthesisUtterance as any;
+
+let spokenUtterances: MockSpeechSynthesisUtterance[] = [];
+globalThis.speechSynthesis = {
+  speak: vi.fn((utt: MockSpeechSynthesisUtterance) => {
+    spokenUtterances.push(utt);
+  }),
+  cancel: vi.fn(),
+  getVoices: vi.fn(() => [{ lang: "en-US", name: "Samantha", default: true }]),
+  addEventListener: vi.fn(),
+  removeEventListener: vi.fn(),
+} as any;
 
 // Mock static runtime
 vi.mock("../src/frontend/runtime/runtime.js", async (importOriginal) => {
@@ -37,6 +67,25 @@ vi.mock("../src/frontend/runtime/runtime.js", async (importOriginal) => {
     },
   };
 });
+
+vi.mock("../src/frontend/api/settings.api", () => ({
+  settingsApi: {
+    getSettings: vi.fn().mockResolvedValue({
+      id: "settings-1",
+      userId: "local-user",
+      currentLearningLanguage: "en",
+      audioEngine: "BROWSER",
+      audioSpeed: 1,
+      showTranslation: true,
+      themePreference: "system",
+      dailyGoalWords: 5,
+      preferredVoiceEn: null,
+      preferredVoiceZh: null,
+      preferredCloudVoiceEn: "aura-asteria-en",
+    }),
+    updateSettings: vi.fn().mockResolvedValue({}),
+  },
+}));
 
 vi.mock("../src/frontend/api/progress.api", () => ({
   progressApi: {
@@ -74,11 +123,20 @@ vi.mock("../src/frontend/api/reading.api", () => ({
       id: "passage-1",
       title: "Test Passage",
       language: "en",
+      level: "A1",
+      topic: "General",
+      audioUrl: null,
+      wordCount: 8,
+      createdAt: "2026-08-21T00:00:00.000Z",
+      updatedAt: "2026-08-21T00:00:00.000Z",
       sentences: [
-        { id: "s1", index: 0, text: "First test sentence." },
-        { id: "s2", index: 1, text: "Second test sentence." },
+        { id: "s1", passageId: "passage-1", order: 0, text: "First test sentence.", translationVi: "Câu một.", audioUrl: null, tokens: [] },
+        { id: "s2", passageId: "passage-1", order: 1, text: "Second test sentence.", translationVi: "Câu hai.", audioUrl: null, tokens: [] },
       ],
     }),
+    getTranslationAvailability: vi.fn().mockResolvedValue({ configured: true, provider: "workers-ai" }),
+    getVocabularyContext: vi.fn().mockResolvedValue(null),
+    enrichFromContext: vi.fn().mockResolvedValue(null),
   },
 }));
 
@@ -99,6 +157,7 @@ describe("Product Polish R1: Reading + Shadowing + TTS + Mobile UX", () => {
   let reactRoot: Root;
 
   beforeEach(() => {
+    spokenUtterances = [];
     container = document.createElement("div");
     document.body.appendChild(container);
     reactRoot = createRoot(container);
@@ -250,6 +309,211 @@ describe("Product Polish R1: Reading + Shadowing + TTS + Mobile UX", () => {
 
     it("E & F: strict LOCAL / CLOUD failure resets engine to undefined and does not claim active source", () => {
       expect(readingDetailSrc).toMatch(/setPlaybackState\(\(prev\)\s*=>\s*\(\{[\s\S]*status:\s*"paused"[\s\S]*engine:\s*undefined/);
+    });
+
+    it("A & B: Browser first sentence onstart sets engine='browser' and onend schedules next sentence", async () => {
+      const authService = new CloudAuthService();
+      vi.spyOn(authService, "isAvailable").mockReturnValue(false);
+
+      await act(async () => {
+        reactRoot.render(
+          <MemoryRouter initialEntries={["/reading/passage-1"]}>
+            <AuthProvider>
+              <CloudAccountProvider service={authService}>
+                <LanguageProvider>
+                  <ToastProvider>
+                    <Routes>
+                      <Route path="/reading/:id" element={<ReadingDetailPage />} />
+                    </Routes>
+                  </ToastProvider>
+                </LanguageProvider>
+              </CloudAccountProvider>
+            </AuthProvider>
+          </MemoryRouter>
+        );
+      });
+
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 100));
+      });
+
+      // Find and click the play button
+      const playBtn = container.querySelector(".rp-play-btn") as HTMLButtonElement;
+      expect(playBtn).not.toBeNull();
+
+      await act(async () => {
+        playBtn.click();
+        await new Promise((r) => setTimeout(r, 400));
+      });
+
+      // A browser utterance was created for sentence 0
+      expect(spokenUtterances.length).toBeGreaterThanOrEqual(1);
+      const firstUtt = spokenUtterances[0];
+      expect(firstUtt.text).toBe("First test sentence.");
+
+      // Fire utterance.onstart
+      await act(async () => {
+        firstUtt.onstart?.();
+      });
+
+      // Active source label is now SpeechSynthesis
+      expect(container.textContent).toContain("SpeechSynthesis");
+
+      // Fire utterance.onend to advance to sentence 2
+      await act(async () => {
+        firstUtt.onend?.();
+        await new Promise((r) => setTimeout(r, 400));
+      });
+
+      // Second sentence was spoken
+      expect(spokenUtterances.length).toBeGreaterThanOrEqual(2);
+      expect(spokenUtterances[1].text).toBe("Second test sentence.");
+    });
+
+    it("C: Duplicate onend events schedule next sentence exactly once", async () => {
+      const authService = new CloudAuthService();
+      vi.spyOn(authService, "isAvailable").mockReturnValue(false);
+
+      await act(async () => {
+        reactRoot.render(
+          <MemoryRouter initialEntries={["/reading/passage-1"]}>
+            <AuthProvider>
+              <CloudAccountProvider service={authService}>
+                <LanguageProvider>
+                  <ToastProvider>
+                    <Routes>
+                      <Route path="/reading/:id" element={<ReadingDetailPage />} />
+                    </Routes>
+                  </ToastProvider>
+                </LanguageProvider>
+              </CloudAccountProvider>
+            </AuthProvider>
+          </MemoryRouter>
+        );
+      });
+
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 100));
+      });
+
+      const playBtn = container.querySelector(".rp-play-btn") as HTMLButtonElement;
+      await act(async () => {
+        playBtn.click();
+        await new Promise((r) => setTimeout(r, 400));
+      });
+
+      const countBefore = spokenUtterances.length;
+      expect(countBefore).toBeGreaterThanOrEqual(1);
+      const firstUtt = spokenUtterances[0];
+
+      await act(async () => {
+        firstUtt.onend?.();
+        firstUtt.onend?.(); // duplicate trigger
+        await new Promise((r) => setTimeout(r, 400));
+      });
+
+      // Advanced to second sentence exactly once
+      expect(spokenUtterances.length).toBe(countBefore + 1);
+    });
+
+    it("E: Stale / canceled browser utterance onend is inert and does not schedule next sentence", async () => {
+      const authService = new CloudAuthService();
+      vi.spyOn(authService, "isAvailable").mockReturnValue(false);
+
+      await act(async () => {
+        reactRoot.render(
+          <MemoryRouter initialEntries={["/reading/passage-1"]}>
+            <AuthProvider>
+              <CloudAccountProvider service={authService}>
+                <LanguageProvider>
+                  <ToastProvider>
+                    <Routes>
+                      <Route path="/reading/:id" element={<ReadingDetailPage />} />
+                    </Routes>
+                  </ToastProvider>
+                </LanguageProvider>
+              </CloudAccountProvider>
+            </AuthProvider>
+          </MemoryRouter>
+        );
+      });
+
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 100));
+      });
+
+      const playBtn = container.querySelector(".rp-play-btn") as HTMLButtonElement;
+      await act(async () => {
+        playBtn.click();
+        await new Promise((r) => setTimeout(r, 400));
+      });
+
+      const countBefore = spokenUtterances.length;
+      expect(countBefore).toBeGreaterThanOrEqual(1);
+      const firstUtt = spokenUtterances[0];
+
+      // Pause / cancel playback
+      await act(async () => {
+        playBtn.click();
+        await new Promise((r) => setTimeout(r, 100));
+      });
+
+      // Now trigger stale onend
+      await act(async () => {
+        firstUtt.onend?.();
+        await new Promise((r) => setTimeout(r, 400));
+      });
+
+      // Next sentence was NOT scheduled
+      expect(spokenUtterances.length).toBe(countBefore);
+    });
+
+    it("F: Browser utterance.onerror pauses playback and resets engine to undefined", async () => {
+      const authService = new CloudAuthService();
+      vi.spyOn(authService, "isAvailable").mockReturnValue(false);
+
+      await act(async () => {
+        reactRoot.render(
+          <MemoryRouter initialEntries={["/reading/passage-1"]}>
+            <AuthProvider>
+              <CloudAccountProvider service={authService}>
+                <LanguageProvider>
+                  <ToastProvider>
+                    <Routes>
+                      <Route path="/reading/:id" element={<ReadingDetailPage />} />
+                    </Routes>
+                  </ToastProvider>
+                </LanguageProvider>
+              </CloudAccountProvider>
+            </AuthProvider>
+          </MemoryRouter>
+        );
+      });
+
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 100));
+      });
+
+      const playBtn = container.querySelector(".rp-play-btn") as HTMLButtonElement;
+      await act(async () => {
+        playBtn.click();
+        await new Promise((r) => setTimeout(r, 400));
+      });
+
+      const initialCount = spokenUtterances.length;
+      expect(initialCount).toBeGreaterThanOrEqual(1);
+      const firstUtt = spokenUtterances[0];
+
+      // Trigger error
+      await act(async () => {
+        firstUtt.onerror?.({ error: "audio-busy" });
+        await new Promise((r) => setTimeout(r, 100));
+      });
+
+      // Does NOT schedule next sentence
+      expect(spokenUtterances.length).toBe(initialCount);
+      // Engine is cleared to neutral
+      expect(container.textContent).toContain("Đang chọn nguồn giọng đọc...");
     });
   });
 

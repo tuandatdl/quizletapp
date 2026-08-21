@@ -361,6 +361,13 @@ export const ReadingDetailPage: React.FC = () => {
       setPlaybackState((prev) => ({ ...prev, loading: false, status: "playing", engine: "browser" }));
     };
 
+    let nextScheduled = false;
+    utterance.onend = () => {
+      if (nextScheduled || playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId || sentencePlayAttemptRef.current !== attemptId) return;
+      nextScheduled = true;
+      scheduleNextSentence(index + 1, effectiveSpeed, sessionId);
+    };
+
     utterance.onerror = (event) => {
       if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId || sentencePlayAttemptRef.current !== attemptId) return;
       if (!["canceled", "interrupted"].includes((event as any)?.error)) {
