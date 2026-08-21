@@ -117,6 +117,7 @@ export const SettingsPage: React.FC = () => {
     mergePreview,
     executeMerge,
     resolveConflict: resolveSyncConflict,
+    resolveAllConflicts: resolveAllSyncConflicts,
   } = useCloudAccount();
 
   const [isSigningInGoogle, setIsSigningInGoogle] = useState(false);
@@ -126,6 +127,7 @@ export const SettingsPage: React.FC = () => {
   const [isSyncingManual, setIsSyncingManual] = useState(false);
   const [isMerging, setIsMerging] = useState(false);
   const [resolvingConflictId, setResolvingConflictId] = useState<string | null>(null);
+  const [isResolvingAllConflicts, setIsResolvingAllConflicts] = useState(false);
 
   const handleExecuteMerge = async () => {
     setIsMerging(true);
@@ -215,6 +217,26 @@ export const SettingsPage: React.FC = () => {
       error(getFriendlyErrorMessage(err));
     } finally {
       setResolvingConflictId(null);
+    }
+  };
+
+  const handleResolveAllSyncConflicts = async () => {
+    if (syncConflicts.length === 0) return;
+    const confirmMessage =
+      `Bạn sắp giữ phiên bản đã sao lưu cho ${syncConflicts.length} xung đột.\n\n` +
+      `Các phiên bản cục bộ cũ vẫn được giữ trong lịch sử xung đột.\n` +
+      `Dữ liệu đám mây sẽ không bị xóa hoặc ghi đè.\n\n` +
+      `Bạn có muốn tiếp tục?`;
+    if (!window.confirm(confirmMessage)) return;
+
+    setIsResolvingAllConflicts(true);
+    try {
+      const res = await resolveAllSyncConflicts("remote");
+      success(`Đã giải quyết ${res.resolvedCount} xung đột bằng phiên bản đã sao lưu.`);
+    } catch (err: any) {
+      error(getFriendlyErrorMessage(err));
+    } finally {
+      setIsResolvingAllConflicts(false);
     }
   };
 
@@ -1275,9 +1297,22 @@ export const SettingsPage: React.FC = () => {
 
                 {syncConflicts.length > 0 && (
                   <div style={{ padding: "10px 12px", borderRadius: "var(--radius-sm)", backgroundColor: "var(--accent-zh-subtle)", border: "1px solid var(--accent-zh-border)" }} className="flex-col gap-2">
-                    <p style={{ fontSize: "var(--text-xs)", color: "var(--accent-zh-text)", margin: 0 }}>
-                      <strong>{syncConflicts.length} xung đột đồng bộ.</strong> Bản đám mây đã được áp dụng theo thứ tự máy chủ; bản cục bộ vẫn được lưu ở đây để bạn quyết định.
-                    </p>
+                    <div className="flex-row items-center justify-between gap-2" style={{ flexWrap: "wrap" }}>
+                      <p style={{ fontSize: "var(--text-xs)", color: "var(--accent-zh-text)", margin: 0, flex: 1 }}>
+                        <strong>{syncConflicts.length} xung đột đồng bộ.</strong> Bản đám mây đã được áp dụng theo thứ tự máy chủ; bản cục bộ vẫn được lưu ở đây để bạn quyết định.
+                      </p>
+                      {syncConflicts.length > 1 && (
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="sm"
+                          isLoading={isResolvingAllConflicts}
+                          onClick={() => void handleResolveAllSyncConflicts()}
+                        >
+                          Giữ tất cả phiên bản đã sao lưu
+                        </Button>
+                      )}
+                    </div>
                     {syncConflicts.slice(0, 3).map((conflict) => (
                       <div key={conflict.id} className="flex-row items-center justify-between gap-2" style={{ flexWrap: "wrap" }}>
                         <span style={{ fontSize: "var(--text-xs)", color: "var(--text-primary)" }}>
@@ -1288,7 +1323,7 @@ export const SettingsPage: React.FC = () => {
                             type="button"
                             variant="ghost"
                             size="sm"
-                            isLoading={resolvingConflictId === conflict.id}
+                            isLoading={resolvingConflictId === conflict.id || isResolvingAllConflicts}
                             onClick={() => void handleResolveSyncConflict(conflict, "remote")}
                           >
                             Phiên bản đã sao lưu
@@ -1297,7 +1332,7 @@ export const SettingsPage: React.FC = () => {
                             type="button"
                             variant="secondary"
                             size="sm"
-                            isLoading={resolvingConflictId === conflict.id}
+                            isLoading={resolvingConflictId === conflict.id || isResolvingAllConflicts}
                             onClick={() => void handleResolveSyncConflict(conflict, "local")}
                           >
                             Phiên bản trên thiết bị

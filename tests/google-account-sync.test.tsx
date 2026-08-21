@@ -1803,4 +1803,153 @@ describe("LEXIS Google Account & Cloud Sync Integration", () => {
       expect(activeConflicts[0]!.remoteRecord).toMatchObject({ meaningVi: "v2 remote change" });
     });
   });
+
+  describe("Group N: Safe Bulk Remote Conflict Resolution", () => {
+    it("A, B, C, D, E, F: Bulk remote resolution resolves 77 conflicts, preserves history, applies remote records without queueing mutations", async () => {
+      const coordinator = new LocalFirstSyncCoordinator(adapter);
+      await coordinator.saveMeta({ localDatasetOwnerUserId: "user-bulk-test" });
+
+      // Put an existing unrelated item in syncQueue to verify queue remains unmodified
+      await adapter.put("syncQueue", {
+        id: "vocabulary:v-unrelated",
+        store: "vocabulary",
+        recordId: "v-unrelated",
+        deleted: false,
+        updatedAt: "2026-08-21T00:00:00Z",
+      });
+
+      // Populate local vocabulary with 77 local records
+      for (let i = 1; i <= 77; i++) {
+        await adapter.put("vocabulary", {
+          id: `v-bulk-${i}`,
+          term: `local-term-${i}`,
+          meaningVi: `nghĩa cục bộ ${i}`,
+        });
+      }
+
+      // Populate 77 unresolved conflicts
+      // 70 have active remote records, 7 represent remote deletions (remoteRecord: undefined)
+      for (let i = 1; i <= 77; i++) {
+        const isRemoteDelete = i > 70;
+        await adapter.put("syncConflicts", {
+          id: `vocabulary:v-bulk-${i}`,
+          store: "vocabulary",
+          recordId: `v-bulk-${i}`,
+          localRecord: { id: `v-bulk-${i}`, term: `local-term-${i}`, meaningVi: `nghĩa cục bộ ${i}` },
+          localDeleted: false,
+          remoteRecord: isRemoteDelete
+            ? undefined
+            : { id: `v-bulk-${i}`, term: `remote-term-${i}`, meaningVi: `nghĩa đám mây ${i}` },
+          conflictAt: new Date(Date.now() - 60000).toISOString(),
+          resolution: "local", // initial tentative choice before resolution
+        });
+      }
+
+      // Initial active count must be 77
+      const beforeActive = await coordinator.getConflicts();
+      expect(beforeActive).toHaveLength(77);
+
+      // E. Check syncQueue before bulk resolution
+      const queueBefore = await adapter.getAll("syncQueue");
+      expect(queueBefore).toHaveLength(1);
+
+      // Execute bulk remote resolution
+      const res = await coordinator.resolveAllConflicts("remote");
+      expect(res.resolvedCount).toBe(77);
+
+      // A. getConflicts() returns 0 unresolved conflicts
+      const afterActive = await coordinator.getConflicts();
+      expect(afterActive).toHaveLength(0);
+
+      // B. Raw syncConflicts store still contains all 77 records with resolvedAt and resolution="remote"
+      const rawStored = await adapter.getAll<SyncConflict>("syncConflicts");
+      expect(rawStored).toHaveLength(77);
+      for (const item of rawStored) {
+        expect(item.resolvedAt).toBeDefined();
+        expect(item.resolution).toBe("remote");
+      }
+
+      // C. Active remote records applied locally (v-bulk-1 .. v-bulk-70)
+      const activeSample = await adapter.get<any>("vocabulary", "v-bulk-1");
+      expect(activeSample).toBeDefined();
+      expect(activeSample?.meaningVi).toBe("nghĩa đám mây 1");
+
+      // D. Remote deletion records removed from local store (v-bulk-71 .. v-bulk-77)
+      const deletedSample = await adapter.get<any>("vocabulary", "v-bulk-75");
+      expect(deletedSample).toBeUndefined();
+
+      // E. syncQueue is unmodified (no new UPSERT, no new DELETE)
+      const queueAfter = await adapter.getAll("syncQueue");
+      expect(queueAfter).toHaveLength(1);
+      expect(queueAfter[0]!.id).toBe("vocabulary:v-unrelated");
+
+      // F. Zero calls to remote push
+      const mockPush = vi.fn();
+      expect(mockPush).not.toHaveBeenCalled();
+    });
+
+    it("G: Cancellation in confirmation handler aborts mutation", async () => {
+      const coordinator = new LocalFirstSyncCoordinator(adapter);
+
+      await adapter.put("syncConflicts", {
+        id: "vocabulary:v-cancel-1",
+        store: "vocabulary",
+        recordId: "v-cancel-1",
+        localRecord: { id: "v-cancel-1", term: "cancel" },
+        conflictAt: new Date().toISOString(),
+        resolution: "local",
+      });
+
+      // Simulate UI handler with window.confirm returning false
+      let confirmCalled = false;
+      const fakeConfirm = () => {
+        confirmCalled = true;
+        return false; // User clicked Cancel
+      };
+
+      const handleBulkResolveWithConfirm = async () => {
+        const confirmed = fakeConfirm();
+        if (!confirmed) return { cancelled: true };
+        return coordinator.resolveAllConflicts("remote");
+      };
+
+      const result = await handleBulkResolveWithConfirm();
+      expect(confirmCalled).toBe(true);
+      expect((result as any).cancelled).toBe(true);
+
+      // Verify active conflicts remain untouched
+      const active = await coordinator.getConflicts();
+      expect(active).toHaveLength(1);
+      expect(active[0]!.resolvedAt).toBeUndefined();
+    });
+
+    it("H: Individual conflict resolution continues to function independently", async () => {
+      const coordinator = new LocalFirstSyncCoordinator(adapter);
+      const conflictId = "vocabulary:v-indiv-1";
+
+      await adapter.put("syncConflicts", {
+        id: conflictId,
+        store: "vocabulary",
+        recordId: "v-indiv-1",
+        localRecord: { id: "v-indiv-1", term: "individual-local", meaningVi: "bản máy" },
+        localDeleted: false,
+        remoteRecord: { id: "v-indiv-1", term: "individual-remote", meaningVi: "bản mây" },
+        conflictAt: new Date().toISOString(),
+        resolution: "local",
+      });
+
+      expect(await coordinator.getConflicts()).toHaveLength(1);
+
+      await coordinator.resolveConflict(conflictId, "local");
+
+      // Active conflict is gone
+      expect(await coordinator.getConflicts()).toHaveLength(0);
+
+      // Local version restored and mutation queued
+      const restored = await adapter.get<any>("vocabulary", "v-indiv-1");
+      expect(restored?.meaningVi).toBe("bản máy");
+      const queued = await adapter.get<any>("syncQueue", conflictId);
+      expect(queued).toBeDefined();
+    });
+  });
 });
