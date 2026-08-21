@@ -361,17 +361,10 @@ export const ReadingDetailPage: React.FC = () => {
       setPlaybackState((prev) => ({ ...prev, loading: false, status: "playing", engine: "browser" }));
     };
 
-    let nextScheduled = false;
-    utterance.onend = () => {
-      if (nextScheduled || playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId || sentencePlayAttemptRef.current !== attemptId) return;
-      nextScheduled = true;
-      scheduleNextSentence(index + 1, effectiveSpeed, sessionId);
-    };
-
     utterance.onerror = (event) => {
       if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId || sentencePlayAttemptRef.current !== attemptId) return;
       if (!["canceled", "interrupted"].includes((event as any)?.error)) {
-        setPlaybackState((prev) => ({ ...prev, status: "paused", loading: false }));
+        setPlaybackState((prev) => ({ ...prev, status: "paused", loading: false, engine: undefined }));
         isPlayingRef.current = false;
       }
     };
@@ -380,7 +373,7 @@ export const ReadingDetailPage: React.FC = () => {
       window.speechSynthesis.speak(utterance);
     } catch {
       if (!playbackCancelledRef.current && playbackSessionIdRef.current === sessionId && sentencePlayAttemptRef.current === attemptId) {
-        setPlaybackState((prev) => ({ ...prev, status: "paused", loading: false }));
+        setPlaybackState((prev) => ({ ...prev, status: "paused", loading: false, engine: undefined }));
         isPlayingRef.current = false;
       }
     }
@@ -408,6 +401,11 @@ export const ReadingDetailPage: React.FC = () => {
       preferredVoice
     );
 
+    utterance.onstart = () => {
+      if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId || sentencePlayAttemptRef.current !== attemptId) return;
+      setPlaybackState((prev) => ({ ...prev, loading: false, status: "playing", engine: "browser" }));
+    };
+
     let nextScheduled = false;
     utterance.onend = () => {
       if (nextScheduled || playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId || sentencePlayAttemptRef.current !== attemptId) return;
@@ -418,7 +416,7 @@ export const ReadingDetailPage: React.FC = () => {
     utterance.onerror = (event) => {
       if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId || sentencePlayAttemptRef.current !== attemptId) return;
       if (!["canceled", "interrupted"].includes((event as any)?.error)) {
-        setPlaybackState((prev) => ({ ...prev, status: "paused", loading: false }));
+        setPlaybackState((prev) => ({ ...prev, status: "paused", loading: false, engine: undefined }));
         isPlayingRef.current = false;
       }
     };
@@ -427,7 +425,7 @@ export const ReadingDetailPage: React.FC = () => {
       window.speechSynthesis.speak(utterance);
     } catch {
       if (!playbackCancelledRef.current && playbackSessionIdRef.current === sessionId && sentencePlayAttemptRef.current === attemptId) {
-        setPlaybackState((prev) => ({ ...prev, status: "paused", loading: false }));
+        setPlaybackState((prev) => ({ ...prev, status: "paused", loading: false, engine: undefined }));
         isPlayingRef.current = false;
       }
     }
@@ -475,13 +473,7 @@ export const ReadingDetailPage: React.FC = () => {
         currentSentenceIndex: index,
         currentSentenceId: sentence.id,
         loading: isCloudPreferred && !isSequential,
-        engine: isCloudPreferred
-          ? audioEngine === "LOCAL"
-            ? "local"
-            : audioEngine === "CLOUD"
-            ? "cloud"
-            : undefined
-          : "browser",
+        engine: isCloudPreferred ? undefined : "browser",
       }));
 
       if (isCloudPreferred) {
@@ -498,11 +490,11 @@ export const ReadingDetailPage: React.FC = () => {
 
           if (cloudFallbackMode(audioEngine) === "BROWSER") {
             safeTtsDiagnostic("tts_browser_fallback", { tts_engine_requested: "AUTO", tts_source_used: "browser" });
-            setPlaybackState((prev) => ({ ...prev, engine: "browser" }));
+            setPlaybackState((prev) => ({ ...prev, engine: undefined }));
             if (isSequential) void playBrowserSentenceSequential(index, sentence, effectiveSpeed, sessionId, attemptId);
             else void playBrowserSentence(index, sentence, effectiveSpeed, sessionId, attemptId);
           } else {
-            setPlaybackState((prev) => ({ ...prev, status: "paused", loading: false }));
+            setPlaybackState((prev) => ({ ...prev, status: "paused", loading: false, engine: undefined }));
             isPlayingRef.current = false;
             error(audioEngine === "LOCAL"
               ? "Local TTS chưa sẵn sàng. Hãy tải lại model trong Cài đặt hoặc chọn AUTO."

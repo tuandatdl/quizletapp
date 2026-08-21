@@ -146,7 +146,7 @@ export async function synthesizeCloudSpeech(options: SynthesizeCloudSpeechOption
       const internalController = new AbortController();
       const effectiveTimeout = timeoutMs ?? 15000;
       const timeoutId = setTimeout(() => {
-        internalController.abort(new Error("Cloud TTS quá thời gian chờ (15s)."));
+        internalController.abort(new Error("Cloud TTS quá thời gian chờ."));
       }, effectiveTimeout);
 
       try {

@@ -142,7 +142,7 @@ export const ReadingPlayer: React.FC<ReadingPlayerProps> = ({
           </div>
           <div className="rp-status-secondary">
             {isSpeech ? (
-              playbackState.loading && !playbackState.engine ? (
+              !playbackState.engine ? (
                 <span className="rp-engine-label-long">Đang chọn nguồn giọng đọc...</span>
               ) : playbackState.engine === "local" ? (
                 <>
@@ -154,11 +154,13 @@ export const ReadingPlayer: React.FC<ReadingPlayerProps> = ({
                   <span className="rp-engine-label-long">Cloud TTS tự nhiên</span>
                   <span className="rp-engine-label-short">Cloud TTS</span>
                 </>
-              ) : (
+              ) : playbackState.engine === "browser" ? (
                 <>
                   <span className="rp-engine-label-long">Giọng đọc của trình duyệt (SpeechSynthesis)</span>
                   <span className="rp-engine-label-short">SpeechSynthesis</span>
                 </>
+              ) : (
+                <span className="rp-engine-label-long">Đang chọn nguồn giọng đọc...</span>
               )
             ) : (
               "Tệp âm thanh gốc"

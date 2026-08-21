@@ -693,8 +693,15 @@ button:disabled {
     transform: none !important;
     width: auto !important;
     max-width: none !important;
-    justify-content: space-between;
+    flex-wrap: nowrap !important;
+    overflow-x: auto !important;
+    justify-content: flex-start !important;
+    -webkit-overflow-scrolling: touch;
     z-index: 950 !important;
+  }
+
+  .reading-selection-actions > * {
+    flex-shrink: 0;
   }
 
   /* Context dictionary popup: displayed safely above selection actions */
