@@ -63,7 +63,7 @@ export const ReadingDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { success, error, info } = useToast();
-  const { language: currentLang, settings } = useLanguage();
+  const { settings } = useLanguage();
 
   const [passage, setPassage] = useState<ReadingPassage | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
