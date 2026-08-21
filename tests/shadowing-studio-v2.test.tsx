@@ -454,7 +454,6 @@ describe("Shadowing Studio V2 - Practice Studio UX & State Architecture", () => 
 
     it("A: immediate switch to Manual after result prevents auto-advance", () => {
       const practiceModeRef = { current: "continuous" };
-      let currentPracticeIndex = 0;
       const continuousAdvanceEpochRef = { current: 0 };
       let continuousAdvanceTimer: any = null;
       let advanced = false;
@@ -489,7 +488,6 @@ describe("Shadowing Studio V2 - Practice Studio UX & State Architecture", () => 
 
     it("B: switch to Manual near timer boundary (e.g. 1950ms) prevents auto-advance", () => {
       const practiceModeRef = { current: "continuous" };
-      let currentPracticeIndex = 0;
       const continuousAdvanceEpochRef = { current: 0 };
       let continuousAdvanceTimer: any = null;
       let advanced = false;
