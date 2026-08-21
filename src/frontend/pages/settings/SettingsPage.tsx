@@ -494,13 +494,42 @@ export const SettingsPage: React.FC = () => {
 
   const handleImport = async (mode: "merge" | "replace") => {
     if (!pendingBackup) return;
-    if (mode === "replace" && !window.confirm("Thay thế sẽ xóa dữ liệu hiện tại trước khi nhập. Bạn có chắc chắn?")) return;
+    if (mode === "replace") {
+      const confirmMessage = cloudAvailable
+        ? "Thay thế sẽ xóa dữ liệu hiện tại trên thiết bị trước khi nhập.\n\nLưu ý: Thay thế dữ liệu trên thiết bị không tự động xóa dữ liệu chỉ có trên đám mây. Các dữ liệu đó có thể xuất hiện lại sau khi đồng bộ.\n\nBạn có chắc chắn muốn thay thế?"
+        : "Thay thế sẽ xóa dữ liệu hiện tại trước khi nhập. Bạn có chắc chắn?";
+      if (!window.confirm(confirmMessage)) return;
+    }
+
     try {
-      await importBackup(getIndexedDbAdapter(), pendingBackup.backup, mode);
+      const result = await importBackup(getIndexedDbAdapter(), pendingBackup.backup, mode);
+
+      // Queue all touched syncable records for cloud synchronization
+      const coordinator = getSyncCoordinator();
+      for (const touched of result.touchedRecords) {
+        await coordinator.queueLocalChange(
+          touched.store,
+          touched.record.id,
+          touched.record,
+          false
+        );
+      }
+
       setPendingBackup(null);
-      success(mode === "merge" ? "Đã gộp bản sao lưu." : "Đã thay thế dữ liệu từ bản sao lưu.");
+
+      const touchedCount = result.touchedRecords.length;
+      const pendingCountAfter = await coordinator.getPendingCount();
+
+      const modeLabel = mode === "merge" ? "Đã gộp bản sao lưu." : "Đã thay thế dữ liệu từ bản sao lưu.";
+      const queueLabel = pendingCountAfter > 0
+        ? ` Đã nhập ${touchedCount} bản ghi. ${pendingCountAfter} thay đổi đang chờ đồng bộ.`
+        : ` Đã nhập ${touchedCount} bản ghi.`;
+
+      success(`${modeLabel}${queueLabel}`);
       await refreshSettingsAfterImport();
-    } catch (caught) { error(getFriendlyErrorMessage(caught)); }
+    } catch (caught) {
+      error(getFriendlyErrorMessage(caught));
+    }
   };
 
   const refreshSettingsAfterImport = async () => {

@@ -60,17 +60,6 @@ export const CloudAccountProvider: React.FC<{ children: React.ReactNode; service
     try {
       const currentSession = await authService.getCurrentSession();
       let currentSyncStatus = authService.getSyncStatus();
-      if (!currentSession || !currentSession.user) {
-        setSession(null);
-        setUser(null);
-        currentSyncStatus = "SIGNED_OUT";
-        setSyncStatus("SIGNED_OUT");
-      } else {
-        setSession(currentSession);
-        setUser(currentSession.user);
-        setSyncStatus(currentSyncStatus);
-      }
-
       const [meta, pending, confs] = await Promise.all([
         authService.getSyncMeta(),
         authService.getPendingCount(),
@@ -79,6 +68,26 @@ export const CloudAccountProvider: React.FC<{ children: React.ReactNode; service
       setSyncMeta(meta);
       setPendingCount(pending);
       setConflicts(confs);
+
+      if (!currentSession || !currentSession.user) {
+        setSession(null);
+        setUser(null);
+        currentSyncStatus = "SIGNED_OUT";
+        setSyncStatus("SIGNED_OUT");
+      } else {
+        setSession(currentSession);
+        setUser(currentSession.user);
+        if (
+          pending > 0 &&
+          currentSyncStatus !== "SYNCING" &&
+          currentSyncStatus !== "OFFLINE" &&
+          currentSyncStatus !== "ACCOUNT_MISMATCH" &&
+          currentSyncStatus !== "MERGE_REQUIRED"
+        ) {
+          currentSyncStatus = "PENDING_CHANGES";
+        }
+        setSyncStatus(currentSyncStatus);
+      }
 
       if (currentSyncStatus === "MERGE_REQUIRED" || meta.lastSyncStatus === "MERGE_REQUIRED") {
         const preview = await authService.getMergePreview();
