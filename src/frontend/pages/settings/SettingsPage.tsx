@@ -37,7 +37,16 @@ import { getFriendlyErrorMessage } from "../../api/client";
 import type { UserSettings, VocabularyItem } from "../../types/api";
 import { isStaticRuntime } from "../../runtime/runtime";
 import { getIndexedDbAdapter } from "../../persistence/indexedDb";
-import { backupFileName, exportBackup, importBackup, previewBackup, validateBackup, type BackupPreview } from "../../persistence/backup";
+import {
+  BACKUP_IMPORT_RESULT_STORAGE_KEY,
+  backupFileName,
+  exportBackup,
+  importBackup,
+  previewBackup,
+  validateBackup,
+  type BackupImportResultMarker,
+  type BackupPreview,
+} from "../../persistence/backup";
 import type { StaticBackup } from "../../persistence/types";
 import { configureSpeechUtterance, getAvailableVoicesForLanguage } from "../../services/speech";
 import {
@@ -328,6 +337,29 @@ export const SettingsPage: React.FC = () => {
     void refreshLocalModelStatus();
   }, []);
 
+  // Display persistent backup import feedback across page reload
+  useEffect(() => {
+    try {
+      if (typeof window !== "undefined" && window.sessionStorage) {
+        const raw = window.sessionStorage.getItem(BACKUP_IMPORT_RESULT_STORAGE_KEY);
+        if (raw) {
+          window.sessionStorage.removeItem(BACKUP_IMPORT_RESULT_STORAGE_KEY);
+          const parsed = JSON.parse(raw) as Partial<BackupImportResultMarker>;
+          const imported = typeof parsed.importedCount === "number" ? parsed.importedCount : 0;
+          const pending = typeof parsed.pendingCount === "number" ? parsed.pendingCount : 0;
+
+          if (pending > 0) {
+            success(`Đã nhập ${imported} bản ghi. ${pending} thay đổi đang chờ đồng bộ.`);
+          } else {
+            success(`Đã nhập ${imported} bản ghi.`);
+          }
+        }
+      }
+    } catch {
+      // Safe fallback
+    }
+  }, []);
+
   const handleDownloadLocalModel = async () => {
     setIsManagingLocalModel(true);
     setLocalModelProgress({ phase: "download", loaded: 0, total: localModelStatus?.approximateSizeBytes });
@@ -520,12 +552,20 @@ export const SettingsPage: React.FC = () => {
       const touchedCount = result.touchedRecords.length;
       const pendingCountAfter = await coordinator.getPendingCount();
 
-      const modeLabel = mode === "merge" ? "Đã gộp bản sao lưu." : "Đã thay thế dữ liệu từ bản sao lưu.";
-      const queueLabel = pendingCountAfter > 0
-        ? ` Đã nhập ${touchedCount} bản ghi. ${pendingCountAfter} thay đổi đang chờ đồng bộ.`
-        : ` Đã nhập ${touchedCount} bản ghi.`;
+      // Persist UI marker before page reload so feedback is visible after refresh
+      try {
+        if (typeof window !== "undefined" && window.sessionStorage) {
+          const marker: BackupImportResultMarker = {
+            importedCount: touchedCount,
+            pendingCount: pendingCountAfter,
+            importedAt: new Date().toISOString(),
+          };
+          window.sessionStorage.setItem(BACKUP_IMPORT_RESULT_STORAGE_KEY, JSON.stringify(marker));
+        }
+      } catch {
+        // Safe fail-open if sessionStorage is restricted
+      }
 
-      success(`${modeLabel}${queueLabel}`);
       await refreshSettingsAfterImport();
     } catch (caught) {
       error(getFriendlyErrorMessage(caught));
@@ -973,10 +1013,10 @@ export const SettingsPage: React.FC = () => {
                 </Badge>
               ) : syncStatus === "OFFLINE" ? (
                 <Badge variant="default" size="sm">Đang ngoại tuyến</Badge>
-              ) : pendingCount > 0 ? (
-                <Badge variant="default" size="sm">
+              ) : syncStatus === "PENDING_CHANGES" || pendingCount > 0 ? (
+                <Badge variant="warning" size="sm">
                   <RefreshCw size={12} style={{ marginRight: "4px" }} />
-                  {`${pendingCount} thay đổi chưa tải lên`}
+                  {pendingCount > 0 ? `Chờ đồng bộ (${pendingCount})` : "Chờ đồng bộ"}
                 </Badge>
               ) : syncStatus === "IDLE" ? (
                 <Badge variant="en" size="sm">
