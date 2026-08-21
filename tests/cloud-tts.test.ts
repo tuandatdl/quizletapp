@@ -7,6 +7,7 @@ import {
   configureAudioElementPlaybackRate,
   getCachedAudio,
   setCachedAudio,
+  clearInFlightTtsRequestsForTesting,
   CLOUD_VOICES_EN,
   DEFAULT_CLOUD_VOICE_EN,
 } from "../src/frontend/services/cloudTts.js";
@@ -537,6 +538,199 @@ describe("Cloud TTS Service & Cache Architecture", () => {
       }
 
       expect(cancelCount).toBe(1);
+    });
+  });
+
+  describe("8. In-Flight Request Deduplication & Timeout Architecture", () => {
+    beforeEach(() => {
+      clearInFlightTtsRequestsForTesting();
+    });
+
+    it("coalesces concurrent identical synthesis into exactly ONE network fetch and both receive valid Blobs", async () => {
+      const fakeAudioBytes = new Uint8Array([1, 2, 3, 4, 5]);
+      let fetchResolve: (res: Response) => void;
+      const fetchPromise = new Promise<Response>((resolve) => {
+        fetchResolve = resolve;
+      });
+
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(() => fetchPromise);
+
+      const p1 = synthesizeCloudSpeech({
+        text: "The cat sat on the mat.",
+        language: "en",
+        voice: "aura-asteria-en",
+      });
+
+      const p2 = synthesizeCloudSpeech({
+        text: "The cat sat on the mat.",
+        language: "en",
+        voice: "aura-asteria-en",
+      });
+
+      // Wait a tick for cache check to resolve and fetch to be called
+      await new Promise((r) => setTimeout(r, 10));
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+      fetchResolve!(
+        new Response(fakeAudioBytes, {
+          status: 200,
+          headers: { "Content-Type": "audio/mpeg" },
+        })
+      );
+
+      const [b1, b2] = await Promise.all([p1, p2]);
+      expect(b1.size).toBe(5);
+      expect(b2.size).toBe(5);
+    });
+
+    it("shares one network fetch between prefetch and foreground synthesis of the same key", async () => {
+      const fakeAudioBytes = new Uint8Array([10, 20, 30]);
+      let fetchResolve: (res: Response) => void;
+      const fetchPromise = new Promise<Response>((resolve) => {
+        fetchResolve = resolve;
+      });
+
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(() => fetchPromise);
+
+      const prefetchP = prefetchCloudSpeech({
+        text: "Next sentence text",
+        language: "en",
+      });
+
+      const foregroundP = synthesizeCloudSpeech({
+        text: "Next sentence text",
+        language: "en",
+      });
+
+      // Wait a tick for cache check to resolve and fetch to be called
+      await new Promise((r) => setTimeout(r, 10));
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+      fetchResolve!(
+        new Response(fakeAudioBytes, {
+          status: 200,
+          headers: { "Content-Type": "audio/mpeg" },
+        })
+      );
+
+      const [_, blob] = await Promise.all([prefetchP, foregroundP]);
+      expect(blob.size).toBe(3);
+    });
+
+    it("dispatches separate network fetches for different cache keys", async () => {
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(() =>
+        Promise.resolve(
+          new Response(new Uint8Array([1, 2]), {
+            status: 200,
+            headers: { "Content-Type": "audio/mpeg" },
+          })
+        )
+      );
+
+      const [b1, b2] = await Promise.all([
+        synthesizeCloudSpeech({ text: "Sentence A", language: "en" }),
+        synthesizeCloudSpeech({ text: "Sentence B", language: "en" }),
+      ]);
+
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      expect(b1.size).toBe(2);
+      expect(b2.size).toBe(2);
+    });
+
+    it("aborted caller does NOT cancel the shared in-flight request for another consumer", async () => {
+      const fakeAudioBytes = new Uint8Array([7, 8, 9]);
+      let fetchResolve: (res: Response) => void;
+      const fetchPromise = new Promise<Response>((resolve) => {
+        fetchResolve = resolve;
+      });
+
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(() => fetchPromise);
+
+      const controller1 = new AbortController();
+      const p1 = synthesizeCloudSpeech({
+        text: "Shared abort test",
+        language: "en",
+        signal: controller1.signal,
+      });
+
+      const p2 = synthesizeCloudSpeech({
+        text: "Shared abort test",
+        language: "en",
+      });
+
+      // Wait a tick for cache check to resolve and fetch to be called
+      await new Promise((r) => setTimeout(r, 10));
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+      // Abort caller 1
+      controller1.abort();
+      await expect(p1).rejects.toThrow();
+
+      // Resolve the underlying network fetch
+      fetchResolve!(
+        new Response(fakeAudioBytes, {
+          status: 200,
+          headers: { "Content-Type": "audio/mpeg" },
+        })
+      );
+
+      // Caller 2 should successfully receive the blob
+      const b2 = await p2;
+      expect(b2.size).toBe(3);
+    });
+
+    it("aborts early if caller signal is already aborted before starting", async () => {
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+      const controller = new AbortController();
+      controller.abort();
+
+      await expect(
+        synthesizeCloudSpeech({
+          text: "Already aborted test",
+          language: "en",
+          signal: controller.signal,
+        })
+      ).rejects.toThrow();
+
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it("clears in-flight request on timeout and allows a later request to retry", async () => {
+      let abortedSignal: AbortSignal | undefined;
+      vi.spyOn(globalThis, "fetch").mockImplementation((_url, init) => {
+        abortedSignal = (init as any)?.signal;
+        return new Promise((_, reject) => {
+          abortedSignal?.addEventListener("abort", () => {
+            reject(new DOMException("The operation was aborted.", "AbortError"));
+          });
+        });
+      });
+
+      const p = synthesizeCloudSpeech({
+        text: "Timeout sentence",
+        language: "en",
+        timeoutMs: 40,
+      });
+
+      await expect(p).rejects.toThrow("quá thời gian");
+
+      // Verify that after failure, a subsequent request can retry and succeed
+      const fakeAudioBytes = new Uint8Array([42]);
+      vi.spyOn(globalThis, "fetch").mockImplementation(() =>
+        Promise.resolve(
+          new Response(fakeAudioBytes, {
+            status: 200,
+            headers: { "Content-Type": "audio/mpeg" },
+          })
+        )
+      );
+
+      const retryBlob = await synthesizeCloudSpeech({
+        text: "Timeout sentence",
+        language: "en",
+      });
+
+      expect(retryBlob.size).toBe(1);
     });
   });
 });

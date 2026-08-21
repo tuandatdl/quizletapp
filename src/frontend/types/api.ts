@@ -295,7 +295,7 @@ export interface SpeechSynthesisPlaybackState {
   totalSentences: number;
   speed: 0.75 | 1 | 1.25;
   loading?: boolean;
-  engine?: "cloud" | "browser";
+  engine?: "local" | "cloud" | "browser";
 }
 
 export interface AudioPlaybackState {

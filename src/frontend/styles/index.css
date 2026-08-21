@@ -683,6 +683,33 @@ button:disabled {
     font-size: 1rem !important;
     line-height: 1.85 !important;
   }
+
+  /* Reading selection actions: bottom-sheet bar above bottom navigation */
+  .reading-selection-actions {
+    left: 12px !important;
+    right: 12px !important;
+    top: auto !important;
+    bottom: calc(var(--mobile-nav-height, 60px) + env(safe-area-inset-bottom, 0px) + 12px) !important;
+    transform: none !important;
+    width: auto !important;
+    max-width: none !important;
+    justify-content: space-between;
+    z-index: 950 !important;
+  }
+
+  /* Context dictionary popup: displayed safely above selection actions */
+  .reading-context-popover {
+    left: 12px !important;
+    right: 12px !important;
+    top: auto !important;
+    bottom: calc(var(--mobile-nav-height, 60px) + env(safe-area-inset-bottom, 0px) + 68px) !important;
+    transform: none !important;
+    width: auto !important;
+    max-width: none !important;
+    max-height: 50vh !important;
+    overflow-y: auto !important;
+    z-index: 951 !important;
+  }
 }
 
 /* Ensure bottom nav safe area on all mobile widths */
