@@ -23,7 +23,27 @@ export type SyncStatus =
   | "PENDING_CHANGES"
   | "OFFLINE"
   | "ERROR"
-  | "ACCOUNT_MISMATCH";
+  | "ACCOUNT_MISMATCH"
+  | "MERGE_REQUIRED";
+
+export interface StoreRecordCounts {
+  vocabulary: number;
+  readings: number;
+  activities: number;
+  quizHistory: number;
+  collections: number;
+  settings: number;
+}
+
+export interface MergePreview {
+  localCounts: StoreRecordCounts;
+  remoteCounts: StoreRecordCounts;
+  localOnlyCount: number;
+  remoteOnlyCount: number;
+  sameIdSameContentCount: number;
+  sameIdDifferentContentCount: number;
+  canMerge: boolean;
+}
 
 export interface SyncChange {
   store: SyncableStore;
@@ -96,6 +116,8 @@ export interface SyncCoordinator {
   getPendingCount(): Promise<number>;
   getConflicts(): Promise<SyncConflict[]>;
   resolveConflict(conflictId: string, choice: "local" | "remote"): Promise<void>;
+  getMergePreview(adapter?: RemoteSyncAdapter): Promise<MergePreview | null>;
+  executeMerge(adapter?: RemoteSyncAdapter): Promise<SyncResult>;
   disconnect(): Promise<void>;
   onStatusChange(listener: (status: SyncStatus) => void): () => void;
 }

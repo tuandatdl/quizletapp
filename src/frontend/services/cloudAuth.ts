@@ -1,7 +1,7 @@
 import type { Session, User } from "@supabase/supabase-js";
 import { cloudSyncAvailable, getSupabaseClient, handleAuthRedirect } from "../persistence/supabaseClient";
 import { getSyncCoordinator, LocalFirstSyncCoordinator } from "../persistence/syncEngine";
-import type { SyncConflict, SyncMeta, SyncResult, SyncStatus } from "../persistence/sync";
+import type { MergePreview, SyncConflict, SyncMeta, SyncResult, SyncStatus } from "../persistence/sync";
 
 export interface CloudAuthState {
   available: boolean;
@@ -261,6 +261,14 @@ export class CloudAuthService {
 
   async resolveConflict(conflictId: string, choice: "local" | "remote"): Promise<void> {
     return this.coordinator.resolveConflict(conflictId, choice);
+  }
+
+  async getMergePreview(): Promise<MergePreview | null> {
+    return this.coordinator.getMergePreview();
+  }
+
+  async executeMerge(): Promise<SyncResult> {
+    return this.coordinator.executeMerge();
   }
 }
 
