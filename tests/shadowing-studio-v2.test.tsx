@@ -288,6 +288,7 @@ describe("Shadowing Studio V2 - Practice Studio UX & State Architecture", () => 
       inFlightServerAdvance.delete(advanceKey);
 
       expect(currentSession.current_sentence).toBe(1);
+      expect(currentPracticeIndex).toBe(1);
       expect(inFlightServerAdvance.size).toBe(0);
     });
 
