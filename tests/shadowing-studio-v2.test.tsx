@@ -128,7 +128,7 @@ describe("Shadowing Studio V2 - Practice Studio UX & State Architecture", () => 
     it("guards recorder.onstop against stale generation, index, and session mismatch", () => {
       expect(shadowingPageSrc).toMatch(/generation !== recordingGenerationRef\.current/);
       expect(shadowingPageSrc).toMatch(/sentenceIndex !== currentPracticeIndexRef\.current/);
-      expect(shadowingPageSrc).toMatch(/sessionId !== sessionRef\.current\?\.id/);
+      expect(shadowingPageSrc).toMatch(/targetReadingId !== sessionRef\.current\?\.reading_id/);
     });
 
     it("guards async local and server analysis against stale generation and mismatched target sentence id", () => {

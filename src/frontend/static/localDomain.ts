@@ -1,7 +1,15 @@
 import type { Language, ReadingSentence, ReviewAction, VocabularyItem } from "../types/api.js";
 
 export function createLocalId(): string {
-  return globalThis.crypto?.randomUUID?.() ?? `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  if (typeof globalThis.crypto?.getRandomValues === "function") {
+    const bytes = new Uint8Array(16);
+    globalThis.crypto.getRandomValues(bytes);
+    return `local-${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+  }
+  return `local-${Date.now()}`;
 }
 
 export function normalizeLocalTerm(value: string, language: Language): string {

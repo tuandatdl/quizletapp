@@ -373,7 +373,7 @@ export const ShadowingPage: React.FC = () => {
     const currentSent = sentences[currentPracticeIndex] || session?.currentSentenceData;
     const sentenceIndex = currentPracticeIndex;
     const sentenceId = currentSent?.id;
-    const sessionId = session?.id;
+    const targetReadingId = session?.reading_id;
 
     setRecordedAudioBlob(null);
     setAudioBase64(null);
@@ -416,7 +416,7 @@ export const ShadowingPage: React.FC = () => {
           generation !== recordingGenerationRef.current ||
           sentenceIndex !== currentPracticeIndexRef.current ||
           sentenceId !== sentencesRef.current[currentPracticeIndexRef.current]?.id ||
-          sessionId !== sessionRef.current?.id ||
+          targetReadingId !== sessionRef.current?.reading_id ||
           blob.size === 0
         ) {
           return;
