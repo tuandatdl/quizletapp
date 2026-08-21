@@ -83,8 +83,19 @@ export class LocalFirstSyncCoordinator implements SyncCoordinator {
       return;
     }
 
+    if (this.isSyncing || (this.currentStatus !== "SIGNED_OUT" && this.currentStatus !== "UNCONFIGURED" && this.currentStatus !== "IDLE")) {
+      return;
+    }
+
     const meta = await this.getMeta();
-    if (meta.lastSyncStatus === "SYNCING" || meta.lastSyncStatus === "SIGNED_OUT" || !meta.lastSyncStatus) {
+    const queueItems = await this.persistence.getAll<SyncQueueItem>("syncQueue");
+    if (this.isSyncing || (this.currentStatus !== "SIGNED_OUT" && this.currentStatus !== "UNCONFIGURED" && this.currentStatus !== "IDLE")) {
+      return;
+    }
+
+    if (queueItems.length > 0) {
+      this.setStatus("PENDING_CHANGES");
+    } else if (meta.lastSyncStatus === "SYNCING" || meta.lastSyncStatus === "SIGNED_OUT" || !meta.lastSyncStatus) {
       this.setStatus("IDLE");
     } else {
       this.setStatus(meta.lastSyncStatus);
