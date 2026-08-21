@@ -9,9 +9,18 @@ import { IconButton } from "../ui/IconButton";
 import { LanguageSelector } from "../ui/LanguageSelector";
 import { useToast } from "../../context/ToastContext";
 import { isStaticRuntime } from "../../runtime/runtime";
+import { useCloudAccount } from "../../context/CloudAccountContext";
 
 export const Header: React.FC = () => {
   const { user, logout } = useAuth();
+  const {
+    isAuthenticated: isCloudAuth,
+    displayName: cloudDisplayName,
+    avatarUrl: cloudAvatarUrl,
+    email: cloudEmail,
+    provider: cloudProvider,
+    signOut: signOutCloud,
+  } = useCloudAccount();
   const { language, setLanguage, updateSettings } = useLanguage();
   const { theme, setTheme, isDark } = useTheme();
   const navigate = useNavigate();
@@ -54,6 +63,15 @@ export const Header: React.FC = () => {
     await logout();
     navigate("/login");
   };
+
+  const effectiveName =
+    isCloudAuth && cloudDisplayName
+      ? cloudDisplayName
+      : user?.name && user.name !== "Tú Trinh" && user.name !== "Khách"
+      ? user.name
+      : "Khách";
+
+  const effectiveAvatar = isCloudAuth ? cloudAvatarUrl : null;
 
   return (
     <header
@@ -192,7 +210,7 @@ export const Header: React.FC = () => {
         </div>
 
         {/* User Profile / Menu */}
-        {user ? (
+        {user || isCloudAuth ? (
           <div style={{ position: "relative" }}>
             <button
               type="button"
@@ -207,24 +225,38 @@ export const Header: React.FC = () => {
                 backgroundColor: "var(--bg-surface)",
               }}
             >
-              <div
-                style={{
-                  width: "28px",
-                  height: "28px",
-                  borderRadius: "var(--radius-full)",
-                  backgroundColor: "var(--accent-en-subtle)",
-                  color: "var(--accent-en-text)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  fontWeight: 700,
-                  fontSize: "var(--text-xs)",
-                }}
-              >
-                {user.name.charAt(0).toUpperCase()}
-              </div>
+              {effectiveAvatar ? (
+                <img
+                  src={effectiveAvatar}
+                  alt={effectiveName}
+                  style={{
+                    width: "28px",
+                    height: "28px",
+                    borderRadius: "var(--radius-full)",
+                    objectFit: "cover",
+                  }}
+                  referrerPolicy="no-referrer"
+                />
+              ) : (
+                <div
+                  style={{
+                    width: "28px",
+                    height: "28px",
+                    borderRadius: "var(--radius-full)",
+                    backgroundColor: "var(--accent-en-subtle)",
+                    color: "var(--accent-en-text)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontWeight: 700,
+                    fontSize: "var(--text-xs)",
+                  }}
+                >
+                  {effectiveName.charAt(0).toUpperCase()}
+                </div>
+              )}
               <span className="header-user-name" style={{ fontSize: "var(--text-sm)", fontWeight: 600, maxWidth: "120px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {user.name}
+                {effectiveName}
               </span>
               <ChevronDown size={14} color="var(--text-tertiary)" />
             </button>
@@ -237,7 +269,7 @@ export const Header: React.FC = () => {
                   top: "100%",
                   right: 0,
                   marginTop: "8px",
-                  width: "200px",
+                  width: "220px",
                   backgroundColor: "var(--bg-surface)",
                   borderRadius: "var(--radius-md)",
                   boxShadow: "var(--shadow-lg)",
@@ -247,9 +279,27 @@ export const Header: React.FC = () => {
                 }}
               >
                 <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--border-subtle)", marginBottom: "4px" }}>
-                  <div style={{ fontWeight: 600, fontSize: "var(--text-sm)" }}>{user.name}</div>
-                  <div style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)", overflow: "hidden", textOverflow: "ellipsis" }}>
-                    {isStaticRuntime() ? "Dữ liệu được lưu trên thiết bị này" : user.email}
+                  <div style={{ fontWeight: 600, fontSize: "var(--text-sm)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "6px" }}>
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{effectiveName}</span>
+                    {isCloudAuth && (
+                      <span
+                        style={{
+                          fontSize: "10px",
+                          fontWeight: 700,
+                          padding: "2px 6px",
+                          borderRadius: "var(--radius-full)",
+                          backgroundColor: "var(--accent-en-subtle)",
+                          color: "var(--accent-en-primary)",
+                          textTransform: "uppercase",
+                          flexShrink: 0,
+                        }}
+                      >
+                        {cloudProvider === "google" ? "Google" : "Email"}
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)", overflow: "hidden", textOverflow: "ellipsis", marginTop: "2px" }}>
+                    {isCloudAuth ? (cloudEmail || "Tài khoản đám mây") : "Dữ liệu được lưu trên thiết bị này"}
                   </div>
                 </div>
 
@@ -270,26 +320,51 @@ export const Header: React.FC = () => {
                   <span>Cài đặt cá nhân</span>
                 </Link>
 
-                {!isStaticRuntime() && <button
-                  type="button"
-                  onClick={() => {
-                    setShowUserMenu(false);
-                    handleLogout();
-                  }}
-                  style={{
-                    width: "100%",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "8px",
-                    padding: "8px 12px",
-                    borderRadius: "var(--radius-sm)",
-                    fontSize: "var(--text-sm)",
-                    color: "var(--color-error)",
-                  }}
-                >
-                  <LogOut size={16} />
-                  <span>Đăng xuất</span>
-                </button>}
+                {isCloudAuth && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowUserMenu(false);
+                      void signOutCloud();
+                    }}
+                    style={{
+                      width: "100%",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "8px",
+                      padding: "8px 12px",
+                      borderRadius: "var(--radius-sm)",
+                      fontSize: "var(--text-sm)",
+                      color: "var(--color-error)",
+                    }}
+                  >
+                    <LogOut size={16} />
+                    <span>Đăng xuất đám mây</span>
+                  </button>
+                )}
+
+                {!isStaticRuntime() && !isCloudAuth && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowUserMenu(false);
+                      void handleLogout();
+                    }}
+                    style={{
+                      width: "100%",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "8px",
+                      padding: "8px 12px",
+                      borderRadius: "var(--radius-sm)",
+                      fontSize: "var(--text-sm)",
+                      color: "var(--color-error)",
+                    }}
+                  >
+                    <LogOut size={16} />
+                    <span>Đăng xuất</span>
+                  </button>
+                )}
               </div>
             )}
           </div>

@@ -134,7 +134,7 @@ describe("IndexedDB static persistence", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     vi.stubGlobal("indexedDB", indexedDB);
-    expect(await frontendRequest<any>("/api/me")).toEqual(expect.objectContaining({ id: "local-profile", name: "Tú Trinh" }));
+    expect(await frontendRequest<any>("/api/me")).toEqual(expect.objectContaining({ id: "local-profile", name: "Khách" }));
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

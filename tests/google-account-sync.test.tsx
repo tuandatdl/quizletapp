@@ -19,6 +19,7 @@ import { CloudAuthService } from "../src/frontend/services/cloudAuth.js";
 import { CloudAccountProvider } from "../src/frontend/context/CloudAccountContext.js";
 import { LoginPage } from "../src/frontend/pages/auth/LoginPage.js";
 import { GoogleIcon } from "../src/frontend/components/ui/GoogleIcon.js";
+import { Header } from "../src/frontend/components/layout/Header.js";
 
 // Ensure global indexedDB and React act environment are available in jsdom environment
 globalThis.indexedDB = indexedDB;
@@ -30,8 +31,8 @@ vi.mock("../src/frontend/runtime/runtime.js", () => ({
   isStaticRuntime: () => true,
   STATIC_LOCAL_USER: {
     id: "local-user",
-    name: "Học viên",
-    email: "learner@local.dev",
+    name: "Khách",
+    email: "local@device.invalid",
     role: "student",
     createdAt: "2026-08-20T00:00:00.000Z",
   },
@@ -39,7 +40,7 @@ vi.mock("../src/frontend/runtime/runtime.js", () => ({
 
 vi.mock("../src/frontend/context/AuthContext.js", () => ({
   useAuth: () => ({
-    user: { id: "local-user", name: "Học viên", email: "learner@local.dev" },
+    user: { id: "local-user", name: "Khách", email: "local@device.invalid" },
     token: "local-profile",
     isLoading: false,
     login: vi.fn(),
@@ -51,6 +52,22 @@ vi.mock("../src/frontend/context/AuthContext.js", () => ({
 
 vi.mock("../src/frontend/context/ToastContext.js", () => ({
   useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn() }),
+}));
+
+vi.mock("../src/frontend/context/LanguageContext.js", () => ({
+  useLanguage: () => ({
+    language: "en",
+    setLanguage: vi.fn(),
+    updateSettings: vi.fn(),
+  }),
+}));
+
+vi.mock("../src/frontend/context/ThemeContext.js", () => ({
+  useTheme: () => ({
+    theme: "light",
+    setTheme: vi.fn(),
+    isDark: false,
+  }),
 }));
 
 describe("LEXIS Google Account & Cloud Sync Integration", () => {
@@ -1950,6 +1967,160 @@ describe("LEXIS Google Account & Cloud Sync Integration", () => {
       expect(restored?.meaningVi).toBe("bản máy");
       const queued = await adapter.get<any>("syncQueue", conflictId);
       expect(queued).toBeDefined();
+    });
+  });
+
+  describe("Group O: Header Active Account Identity & Fallbacks", () => {
+    let container: HTMLDivElement | null = null;
+    let root: Root | null = null;
+
+    beforeEach(() => {
+      container = document.createElement("div");
+      document.body.appendChild(container);
+      root = createRoot(container);
+    });
+
+    afterEach(() => {
+      if (root && container) {
+        act(() => root?.unmount());
+        container.remove();
+      }
+      container = null;
+      root = null;
+    });
+
+    it("A & B: Cloud authenticated Google user with avatar renders cloud name and avatar image without Tú Trinh", async () => {
+      const mockSupabase = {
+        auth: {
+          getSession: vi.fn().mockResolvedValue({
+            data: {
+              session: {
+                user: {
+                  id: "google-uid-123",
+                  email: "google.user@example.com",
+                  user_metadata: {
+                    full_name: "Google Learner",
+                    avatar_url: "https://lh3.googleusercontent.com/a/sample-avatar",
+                  },
+                  app_metadata: { provider: "google" },
+                },
+              },
+            },
+          }),
+          onAuthStateChange: vi.fn(() => ({ data: { subscription: { unsubscribe: vi.fn() } } })),
+        },
+      } as any;
+      resetSupabaseClientForTesting(mockSupabase);
+
+      const authService = new CloudAuthService(adapter);
+
+      await act(async () => {
+        root!.render(
+          <MemoryRouter>
+            <CloudAccountProvider service={authService}>
+              <Header />
+            </CloudAccountProvider>
+          </MemoryRouter>,
+        );
+      });
+
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 50));
+      });
+
+      // Header must display cloud display name
+      const userNameEl = container?.querySelector(".header-user-name");
+      expect(userNameEl?.textContent).toBe("Google Learner");
+
+      // Header must render cloud avatar img
+      const avatarImg = container?.querySelector("img[src='https://lh3.googleusercontent.com/a/sample-avatar']");
+      expect(avatarImg).not.toBeNull();
+
+      // Must not contain legacy hard-coded "Tú Trinh"
+      expect(container?.textContent).not.toContain("Tú Trinh");
+    });
+
+    it("C: Cloud authenticated user without avatar renders initial circle from cloud name", async () => {
+      const mockSupabase = {
+        auth: {
+          getSession: vi.fn().mockResolvedValue({
+            data: {
+              session: {
+                user: {
+                  id: "email-uid-456",
+                  email: "alex.rivers@example.com",
+                  user_metadata: { full_name: "Alex Rivers" },
+                  app_metadata: { provider: "email" },
+                },
+              },
+            },
+          }),
+          onAuthStateChange: vi.fn(() => ({ data: { subscription: { unsubscribe: vi.fn() } } })),
+        },
+      } as any;
+      resetSupabaseClientForTesting(mockSupabase);
+
+      const authService = new CloudAuthService(adapter);
+
+      await act(async () => {
+        root!.render(
+          <MemoryRouter>
+            <CloudAccountProvider service={authService}>
+              <Header />
+            </CloudAccountProvider>
+          </MemoryRouter>,
+        );
+      });
+
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 50));
+      });
+
+      const userNameEl = container?.querySelector(".header-user-name");
+      expect(userNameEl?.textContent).toBe("Alex Rivers");
+
+      // No avatar image, but initial circle with "A"
+      const avatarImg = container?.querySelector("img");
+      expect(avatarImg).toBeNull();
+      expect(container?.textContent).toContain("A");
+      expect(container?.textContent).not.toContain("Tú Trinh");
+    });
+
+    it("D: Signed-out / Guest renders neutral local guest identity", async () => {
+      const mockSupabase = {
+        auth: {
+          getSession: vi.fn().mockResolvedValue({ data: { session: null } }),
+          onAuthStateChange: vi.fn(() => ({ data: { subscription: { unsubscribe: vi.fn() } } })),
+        },
+      } as any;
+      resetSupabaseClientForTesting(mockSupabase);
+
+      const authService = new CloudAuthService(adapter);
+
+      await act(async () => {
+        root!.render(
+          <MemoryRouter>
+            <CloudAccountProvider service={authService}>
+              <Header />
+            </CloudAccountProvider>
+          </MemoryRouter>,
+        );
+      });
+
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 50));
+      });
+
+      const userNameEl = container?.querySelector(".header-user-name");
+      expect(userNameEl?.textContent).toBe("Khách");
+      expect(container?.textContent).not.toContain("Tú Trinh");
+    });
+
+    it("E: Static runtime user definition has neutral name and does not contain Tú Trinh", async () => {
+      // Import the actual runtime constant
+      const { STATIC_LOCAL_USER } = await import("../src/frontend/runtime/runtime.js");
+      expect(STATIC_LOCAL_USER.name).toBe("Khách");
+      expect(STATIC_LOCAL_USER.name).not.toBe("Tú Trinh");
     });
   });
 });
