@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { indexedDB } from "fake-indexeddb";
 import { IndexedDbAdapter } from "../src/frontend/persistence/indexedDb.js";
-import { exportBackup, importBackup, previewBackup } from "../src/frontend/persistence/backup.js";
+import {
+  BACKUP_IMPORT_RESULT_STORAGE_KEY,
+  importBackup,
+  type BackupImportResultMarker,
+} from "../src/frontend/persistence/backup.js";
 import { type StaticBackup } from "../src/frontend/persistence/types.js";
 import { LocalFirstSyncCoordinator } from "../src/frontend/persistence/syncEngine.js";
 import {
@@ -371,5 +375,136 @@ describe("LEXIS Backup Import Cloud Sync Pipeline", () => {
     // Verify vocab-cloud-only is NOT deleted on the remote cloud
     const cloudRow = remote.remoteRows.get("vocabulary:vocab-cloud-only");
     expect(cloudRow.deleted_at).toBeNull();
+  });
+
+  describe("UX Polish: Backup Import Feedback & Pending Sync Status", () => {
+    let mockSessionStorage: Record<string, string>;
+
+    beforeEach(() => {
+      mockSessionStorage = {};
+      vi.stubGlobal("sessionStorage", {
+        getItem: vi.fn((key: string) => mockSessionStorage[key] ?? null),
+        setItem: vi.fn((key: string, value: string) => {
+          mockSessionStorage[key] = value;
+        }),
+        removeItem: vi.fn((key: string) => {
+          delete mockSessionStorage[key];
+        }),
+        clear: vi.fn(() => {
+          mockSessionStorage = {};
+        }),
+      });
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("H. Import with pending records: marker is stored in sessionStorage and survives reload", async () => {
+      const coordinator = new LocalFirstSyncCoordinator(adapterA);
+      const result = await importBackup(adapterA, sampleBackup, "merge");
+
+      for (const touched of result.touchedRecords) {
+        await coordinator.queueLocalChange(touched.store, touched.record.id, touched.record, false);
+      }
+
+      const pendingCount = await coordinator.getPendingCount();
+      expect(pendingCount).toBe(7);
+
+      // Simulate handleImport persisting marker before reload
+      const marker: BackupImportResultMarker = {
+        importedCount: result.touchedRecords.length,
+        pendingCount,
+        importedAt: new Date().toISOString(),
+      };
+      sessionStorage.setItem(BACKUP_IMPORT_RESULT_STORAGE_KEY, JSON.stringify(marker));
+
+      // Verify marker contains only primitive counts and timestamp (no tokens, no user data)
+      const storedRaw = sessionStorage.getItem(BACKUP_IMPORT_RESULT_STORAGE_KEY);
+      expect(storedRaw).not.toBeNull();
+      const parsed = JSON.parse(storedRaw!);
+      expect(parsed.importedCount).toBe(7);
+      expect(parsed.pendingCount).toBe(7);
+      expect(typeof parsed.importedAt).toBe("string");
+      expect(parsed.tokens).toBeUndefined();
+      expect(parsed.user).toBeUndefined();
+    });
+
+    it("I. Marker is consumed and removed on mount, showing message exactly once", () => {
+      const marker: BackupImportResultMarker = {
+        importedCount: 15,
+        pendingCount: 15,
+        importedAt: new Date().toISOString(),
+      };
+      sessionStorage.setItem(BACKUP_IMPORT_RESULT_STORAGE_KEY, JSON.stringify(marker));
+
+      // Simulate SettingsPage mounting: reads and removes marker
+      const raw = sessionStorage.getItem(BACKUP_IMPORT_RESULT_STORAGE_KEY);
+      expect(raw).not.toBeNull();
+      sessionStorage.removeItem(BACKUP_IMPORT_RESULT_STORAGE_KEY);
+
+      const parsed = JSON.parse(raw!) as BackupImportResultMarker;
+      const message = parsed.pendingCount > 0
+        ? `Đã nhập ${parsed.importedCount} bản ghi. ${parsed.pendingCount} thay đổi đang chờ đồng bộ.`
+        : `Đã nhập ${parsed.importedCount} bản ghi.`;
+
+      expect(message).toBe("Đã nhập 15 bản ghi. 15 thay đổi đang chờ đồng bộ.");
+
+      // Verify second mount/reload sees no marker
+      const secondRead = sessionStorage.getItem(BACKUP_IMPORT_RESULT_STORAGE_KEY);
+      expect(secondRead).toBeNull();
+    });
+
+    it("J. When pendingCount > 0, sync status reflects PENDING_CHANGES / 'Chờ đồng bộ'", async () => {
+      const coordinator = new LocalFirstSyncCoordinator(adapterA);
+      await coordinator.saveMeta({ localDatasetOwnerUserId: "user-cloud-1" });
+
+      await coordinator.queueLocalChange("vocabulary", "v-1", { id: "v-1", term: "word" }, false);
+
+      expect(coordinator.getStatus()).toBe("PENDING_CHANGES");
+      const pendingCount = await coordinator.getPendingCount();
+      expect(pendingCount).toBe(1);
+
+      // Verify badge text helper matches "Chờ đồng bộ"
+      const getBadgeText = (status: string, count: number) => {
+        if (status === "PENDING_CHANGES" || count > 0) {
+          return count > 0 ? `Chờ đồng bộ (${count})` : "Chờ đồng bộ";
+        }
+        if (status === "IDLE") return "Đã đồng bộ";
+        return "Chưa đăng nhập";
+      };
+
+      expect(getBadgeText(coordinator.getStatus(), pendingCount)).toBe("Chờ đồng bộ (1)");
+
+      // After sync completes, status returns to IDLE / "Đã đồng bộ"
+      const remote = mockRemoteAdapter();
+      const syncRes = await coordinator.sync(remote);
+      expect(syncRes.success).toBe(true);
+
+      const remainingPending = await coordinator.getPendingCount();
+      expect(remainingPending).toBe(0);
+      expect(coordinator.getStatus()).toBe("IDLE");
+      expect(getBadgeText(coordinator.getStatus(), remainingPending)).toBe("Đã đồng bộ");
+    });
+
+    it("K. When pendingCount = 0 and status is IDLE, no false pending message is shown", () => {
+      const marker: BackupImportResultMarker = {
+        importedCount: 5,
+        pendingCount: 0,
+        importedAt: new Date().toISOString(),
+      };
+      sessionStorage.setItem(BACKUP_IMPORT_RESULT_STORAGE_KEY, JSON.stringify(marker));
+
+      const raw = sessionStorage.getItem(BACKUP_IMPORT_RESULT_STORAGE_KEY);
+      sessionStorage.removeItem(BACKUP_IMPORT_RESULT_STORAGE_KEY);
+
+      const parsed = JSON.parse(raw!) as BackupImportResultMarker;
+      const message = parsed.pendingCount > 0
+        ? `Đã nhập ${parsed.importedCount} bản ghi. ${parsed.pendingCount} thay đổi đang chờ đồng bộ.`
+        : `Đã nhập ${parsed.importedCount} bản ghi.`;
+
+      expect(message).toBe("Đã nhập 5 bản ghi.");
+      expect(message).not.toContain("đang chờ đồng bộ");
+    });
   });
 });

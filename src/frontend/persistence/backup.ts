@@ -13,6 +13,14 @@ import {
 
 const BACKUP_STORES = ["profile", "settings", "vocabulary", "readings", "activities", "quizHistory", "collections"] as const;
 
+export const BACKUP_IMPORT_RESULT_STORAGE_KEY = "lexis_backup_import_result";
+
+export interface BackupImportResultMarker {
+  importedCount: number;
+  pendingCount: number;
+  importedAt: string;
+}
+
 export interface BackupPreview {
   schemaVersion: number;
   counts: Record<(typeof BACKUP_STORES)[number], number>;
