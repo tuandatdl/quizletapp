@@ -5,6 +5,7 @@ import {
   Mic,
   Square,
   Volume2,
+  Pause,
   CheckCircle2,
   AlertCircle,
   XCircle,
@@ -14,7 +15,10 @@ import {
   Sparkles,
   Award,
   Loader2,
-  Flame,
+  ChevronDown,
+  Layers,
+  Check,
+  X,
 } from "lucide-react";
 import { shadowingApi } from "../../api/shadowing.api";
 import { readingApi } from "../../api/reading.api";
@@ -30,6 +34,7 @@ import { getFriendlyErrorMessage } from "../../api/client";
 import type {
   PronunciationResult,
   ReadingPassageSummary,
+  ReadingSentence,
   ShadowingSession,
 } from "../../types/api";
 import { isStaticRuntime } from "../../runtime/runtime";
@@ -37,7 +42,25 @@ import { analyzeLocalEnglishRecording, type LocalPronunciationProgress } from ".
 import { saveLocalPronunciationHistory } from "../../services/localPronunciationHistory";
 import type { LocalPronunciationAnalysis } from "../../services/localPronunciationScoring";
 
-type ShadowingPhase = "LISTEN" | "RECORD" | "EVALUATING" | "RESULT" | "COMPLETED";
+export type ShadowingPhase = "LISTEN" | "RECORD" | "EVALUATING" | "RESULT" | "COMPLETED";
+export type ShadowingPracticeMode = "manual" | "continuous";
+
+export interface SentenceAttempt {
+  id: number;
+  score: number;
+  recordedAt: string;
+  result: PronunciationResult;
+  audioBlob?: Blob;
+  audioUrl?: string;
+}
+
+export interface SentenceProgress {
+  completed: boolean;
+  bestScore?: number;
+  latestScore?: number;
+  attempts: SentenceAttempt[];
+  committed?: boolean;
+}
 
 export function formatRecordingTime(seconds: number): string {
   const safeSec = Math.max(0, Math.floor(seconds || 0));
@@ -54,12 +77,16 @@ export const ShadowingPage: React.FC = () => {
   const navigate = useNavigate();
 
   const [readings, setReadings] = useState<ReadingPassageSummary[]>([]);
-  const [selectedReadingId, setSelectedReadingId] = useState<string>(readingIdParam || "");
+  const [sentences, setSentences] = useState<ReadingSentence[]>([]);
+  const [currentPracticeIndex, setCurrentPracticeIndex] = useState<number>(0);
   const [session, setSession] = useState<ShadowingSession | null>(null);
   const [phase, setPhase] = useState<ShadowingPhase>("LISTEN");
+  const [practiceMode, setPracticeMode] = useState<ShadowingPracticeMode>("manual");
+  const [progressMap, setProgressMap] = useState<Record<number, SentenceProgress>>({});
+  const [isSentenceSelectorOpen, setIsSentenceSelectorOpen] = useState(false);
   const [lastAttemptResult, setLastAttemptResult] = useState<PronunciationResult | null>(null);
 
-  // Recorder State
+  // Recorder & Audio State
   const [isRecording, setIsRecording] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [recordedAudioBlob, setRecordedAudioBlob] = useState<Blob | null>(null);
@@ -67,6 +94,7 @@ export const ShadowingPage: React.FC = () => {
   const [audioBase64, setAudioBase64] = useState<string | null>(null);
   const [audioMimeType, setAudioMimeType] = useState<string | undefined>(undefined);
   const [analysisProgress, setAnalysisProgress] = useState<LocalPronunciationProgress | null>(null);
+  const [isPlayingUserAudio, setIsPlayingUserAudio] = useState(false);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -76,16 +104,57 @@ export const ShadowingPage: React.FC = () => {
   const autoStartedReadingRef = useRef<string | null>(null);
   const analysisGenerationRef = useRef(0);
   const analysisAbortRef = useRef<AbortController | null>(null);
+  const userAudioElRef = useRef<HTMLAudioElement | null>(null);
 
   // Fetch available readings if no session started
   useEffect(() => {
     readingApi.list(language).then(setReadings).catch(() => []);
   }, [language]);
 
-  // Start Session if readingId is passed
+  // Clean up user audio on unmount or URL change
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      analysisAbortRef.current?.abort();
+      if (recordedAudioUrl) {
+        URL.revokeObjectURL(recordedAudioUrl);
+      }
+      if (timerRef.current) clearInterval(timerRef.current);
+      if (mediaRecorderRef.current?.state !== "inactive") mediaRecorderRef.current?.stop();
+      mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+      window.speechSynthesis?.cancel();
+    };
+  }, []);
+
+  // Stop user audio when model audio or other events fire
+  const stopUserAudio = () => {
+    if (userAudioElRef.current) {
+      userAudioElRef.current.pause();
+      userAudioElRef.current.currentTime = 0;
+    }
+    setIsPlayingUserAudio(false);
+  };
+
+  const togglePlayUserAudio = () => {
+    if (!userAudioElRef.current) return;
+    if (isPlayingUserAudio) {
+      userAudioElRef.current.pause();
+      setIsPlayingUserAudio(false);
+    } else {
+      // Stop model audio first (mutual exclusivity)
+      window.speechSynthesis?.cancel();
+      userAudioElRef.current
+        .play()
+        .then(() => setIsPlayingUserAudio(true))
+        .catch(() => setIsPlayingUserAudio(false));
+    }
+  };
+
+  // Start Session with Full Passage sentences
   const handleStartSession = async (rId: string) => {
-    setSelectedReadingId(rId);
     analysisAbortRef.current?.abort();
+    stopUserAudio();
     if (recordedAudioUrl) {
       URL.revokeObjectURL(recordedAudioUrl);
       setRecordedAudioUrl(null);
@@ -94,17 +163,23 @@ export const ShadowingPage: React.FC = () => {
     setAudioBase64(null);
     setLastAttemptResult(null);
     setAnalysisProgress(null);
+    setProgressMap({});
+    setCurrentPracticeIndex(0);
 
     try {
+      const fullReading = await readingApi.get(rId);
+      if (!fullReading.sentences || fullReading.sentences.length === 0) {
+        throw new Error("Bài đọc chưa có câu để luyện shadowing.");
+      }
+      setSentences(fullReading.sentences);
+
       if (isStaticRuntime()) {
-        const reading = await readingApi.get(rId);
-        const first = reading.sentences[0];
-        if (!first) throw new Error("Bài đọc chưa có câu để luyện shadowing.");
+        const first = fullReading.sentences[0];
         setSession({
           id: `local-shadowing-${rId}`,
           user_id: "local-profile",
           reading_id: rId,
-          language: reading.language,
+          language: fullReading.language,
           current_sentence: 0,
           completed_count: 0,
           score_total: 0,
@@ -120,11 +195,10 @@ export const ShadowingPage: React.FC = () => {
             audioUrl: first.audioUrl,
           },
         });
-        setPhase("LISTEN");
-        return;
+      } else {
+        const newSession = await shadowingApi.start(rId);
+        setSession(newSession);
       }
-      const newSession = await shadowingApi.start(rId);
-      setSession(newSession);
       setPhase("LISTEN");
     } catch (err: any) {
       error(getFriendlyErrorMessage(err));
@@ -138,23 +212,92 @@ export const ShadowingPage: React.FC = () => {
     }
   }, [readingIdParam]);
 
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-      analysisAbortRef.current?.abort();
-      if (recordedAudioUrl) {
-        URL.revokeObjectURL(recordedAudioUrl);
+  // Clean transition to target sentence
+  const handleSelectSentence = (targetIndex: number) => {
+    if (targetIndex < 0 || targetIndex >= sentences.length) return;
+    if (targetIndex === currentPracticeIndex && isSentenceSelectorOpen) {
+      setIsSentenceSelectorOpen(false);
+      return;
+    }
+
+    // Invalidate and abort ongoing evaluation
+    analysisGenerationRef.current++;
+    analysisAbortRef.current?.abort();
+
+    // Stop active recording and audio
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+    }
+    if (timerRef.current) clearInterval(timerRef.current);
+    stopUserAudio();
+    window.speechSynthesis?.cancel();
+
+    // Clean up temporary recording state for previous sentence
+    if (recordedAudioUrl) {
+      URL.revokeObjectURL(recordedAudioUrl);
+      setRecordedAudioUrl(null);
+    }
+    setRecordedAudioBlob(null);
+    setAudioBase64(null);
+    setAudioMimeType(undefined);
+    setAnalysisProgress(null);
+
+    const targetSentence = sentences[targetIndex];
+    setCurrentPracticeIndex(targetIndex);
+
+    // Check if target sentence already has evaluated attempt
+    const existingProgress = progressMap[targetIndex];
+    if (existingProgress && existingProgress.attempts.length > 0) {
+      const latestAttempt = existingProgress.attempts[existingProgress.attempts.length - 1];
+      setLastAttemptResult(latestAttempt.result);
+      if (latestAttempt.audioUrl) {
+        setRecordedAudioUrl(latestAttempt.audioUrl);
       }
-      if (timerRef.current) clearInterval(timerRef.current);
-      if (mediaRecorderRef.current?.state !== "inactive") mediaRecorderRef.current?.stop();
-      mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
-    };
-  }, [recordedAudioUrl]);
+      setPhase("RESULT");
+    } else {
+      setLastAttemptResult(null);
+      setPhase("LISTEN");
+    }
+
+    if (session && targetSentence) {
+      setSession({
+        ...session,
+        current_sentence: targetIndex,
+        currentSentenceData: {
+          id: targetSentence.id,
+          order: targetSentence.order,
+          text: targetSentence.text,
+          translationVi: targetSentence.translationVi,
+          audioUrl: targetSentence.audioUrl,
+        },
+      });
+    }
+
+    setIsSentenceSelectorOpen(false);
+  };
+
+  const handlePreviousSentence = () => {
+    if (currentPracticeIndex > 0) {
+      handleSelectSentence(currentPracticeIndex - 1);
+    }
+  };
+
+  const handleNextSentence = () => {
+    if (currentPracticeIndex < sentences.length - 1) {
+      handleSelectSentence(currentPracticeIndex + 1);
+    } else if (allCompleted) {
+      setPhase("COMPLETED");
+      success("Chúc mừng bạn đã hoàn thành bài luyện Shadowing!");
+    }
+  };
 
   // Recording controls
   const startRecording = async () => {
     analysisAbortRef.current?.abort();
+    stopUserAudio();
+    window.speechSynthesis?.cancel();
+
     if (recordedAudioUrl) {
       URL.revokeObjectURL(recordedAudioUrl);
       setRecordedAudioUrl(null);
@@ -222,9 +365,71 @@ export const ShadowingPage: React.FC = () => {
     }
   };
 
+  // Helper to record attempt progress and update session stats without advancing sentence cursor
+  const recordAttemptSuccess = (res: PronunciationResult, blob: Blob | null, url: string | null) => {
+    const idx = currentPracticeIndex;
+    const prevProg = progressMap[idx] || { completed: false, attempts: [] };
+    const newAttempt: SentenceAttempt = {
+      id: prevProg.attempts.length + 1,
+      score: res.overallScore,
+      recordedAt: new Date().toISOString(),
+      result: res,
+      audioBlob: blob || undefined,
+      audioUrl: url || undefined,
+    };
+    const newBest = Math.max(prevProg.bestScore ?? 0, res.overallScore);
+    const updatedProg: SentenceProgress = {
+      completed: true,
+      bestScore: newBest,
+      latestScore: res.overallScore,
+      attempts: [...prevProg.attempts, newAttempt],
+    };
+
+    const newProgressMap = {
+      ...progressMap,
+      [idx]: updatedProg,
+    };
+    setProgressMap(newProgressMap);
+
+    const completedCount = Object.values(newProgressMap).filter((p) => p.completed).length;
+    const totalScore = Object.values(newProgressMap).reduce((sum, p) => sum + (p.bestScore ?? 0), 0);
+    const averageScore = completedCount > 0 ? Math.round(totalScore / completedCount) : 0;
+
+    if (session) {
+      setSession({
+        ...session,
+        completed_count: completedCount,
+        score_total: totalScore,
+        average_score: averageScore,
+      });
+    }
+
+    setLastAttemptResult(res);
+    setPhase("RESULT");
+
+    // In Continuous mode: auto-advance to next sentence after brief review
+    if (practiceMode === "continuous") {
+      if (idx < sentences.length - 1) {
+        setTimeout(() => {
+          if (mountedRef.current) {
+            handleSelectSentence(idx + 1);
+          }
+        }, 2200);
+      } else if (completedCount >= sentences.length) {
+        setTimeout(() => {
+          if (mountedRef.current) {
+            setPhase("COMPLETED");
+          }
+        }, 1500);
+      }
+    }
+  };
+
   // Local Free Evaluation (Static English)
   const handleLocalEvaluate = async () => {
-    if (!session || !session.currentSentenceData || !recordedAudioBlob) return;
+    const currentSent = sentences[currentPracticeIndex] || session?.currentSentenceData;
+    if (!session || !currentSent || !recordedAudioBlob) return;
+    const targetIdx = currentPracticeIndex;
     const generation = ++analysisGenerationRef.current;
     const controller = new AbortController();
     analysisAbortRef.current?.abort();
@@ -235,21 +440,26 @@ export const ShadowingPage: React.FC = () => {
     try {
       const res = await analyzeLocalEnglishRecording({
         blob: recordedAudioBlob,
-        expectedText: session.currentSentenceData.text,
+        expectedText: currentSent.text,
         signal: controller.signal,
         onProgress: (p) => {
-          if (mountedRef.current && generation === analysisGenerationRef.current) {
+          if (mountedRef.current && generation === analysisGenerationRef.current && targetIdx === currentPracticeIndex) {
             setAnalysisProgress(p);
           }
         },
       });
 
-      if (!mountedRef.current || controller.signal.aborted || generation !== analysisGenerationRef.current) return;
-      setLastAttemptResult(res);
-      setPhase("RESULT");
+      if (!mountedRef.current || controller.signal.aborted || generation !== analysisGenerationRef.current || targetIdx !== currentPracticeIndex) return;
+
+      recordAttemptSuccess(res, recordedAudioBlob, recordedAudioUrl);
+      try {
+        await saveLocalPronunciationHistory(res as LocalPronunciationAnalysis);
+      } catch {
+        // history persistence fail-open
+      }
       success("Đã hoàn thành phân tích luyện đọc trên thiết bị!");
     } catch (err: any) {
-      if (err?.name !== "AbortError") {
+      if (err?.name !== "AbortError" && generation === analysisGenerationRef.current && targetIdx === currentPracticeIndex) {
         setPhase("RECORD");
         error(getFriendlyErrorMessage(err));
       }
@@ -260,148 +470,73 @@ export const ShadowingPage: React.FC = () => {
     }
   };
 
-  // Server Evaluate & Advance (Server Mode)
+  // Server Evaluate (Server Mode - stays on same sentence in Studio V2)
   const handleEvaluateAndAdvance = async () => {
-    if (!session || !session.currentSentenceData || !audioBase64) return;
+    const currentSent = sentences[currentPracticeIndex] || session?.currentSentenceData;
+    if (!session || !currentSent || !audioBase64) return;
+    const targetIdx = currentPracticeIndex;
     setPhase("EVALUATING");
 
     try {
       const assessResult = await pronunciationApi.assess({
-        expectedText: session.currentSentenceData.text,
+        expectedText: currentSent.text,
         language: session.language,
         audioBase64,
         audioMimeType,
         readingId: session.reading_id,
-        sentenceId: session.currentSentenceData.id,
+        sentenceId: currentSent.id,
       });
 
-      setLastAttemptResult(assessResult);
-      setPhase("RESULT");
+      if (!mountedRef.current || targetIdx !== currentPracticeIndex) return;
 
-      const nextSession = await shadowingApi.advance(session.id, assessResult.attemptId);
-      setSession(nextSession);
+      recordAttemptSuccess(assessResult, recordedAudioBlob, recordedAudioUrl);
 
-      if (nextSession.status === "COMPLETED") {
-        setPhase("COMPLETED");
-        success("Chúc mừng bạn đã hoàn thành bài luyện Shadowing!");
+      // Advance server session state quietly if needed
+      if (assessResult.attemptId) {
+        shadowingApi.advance(session.id, assessResult.attemptId).then((next) => {
+          if (mountedRef.current && targetIdx === currentPracticeIndex) {
+            setSession((prev) => (prev ? { ...prev, completed_count: next.completed_count, average_score: next.average_score } : next));
+          }
+        }).catch(() => {});
       }
     } catch (err: any) {
-      setPhase("RECORD");
-      error(getFriendlyErrorMessage(err));
-    }
-  };
-
-  // Commit Score & Advance to Next Sentence (Static English Mode)
-  const handleCommitAndAdvance = async () => {
-    if (!session) return;
-    const reading = await readingApi.get(session.reading_id);
-    const nextIndex = session.current_sentence + 1;
-    const next = reading.sentences[nextIndex];
-
-    let newCompletedCount = session.completed_count;
-    let newScoreTotal = session.score_total;
-    let newAverageScore = session.average_score;
-
-    if (lastAttemptResult) {
-      newCompletedCount += 1;
-      newScoreTotal += lastAttemptResult.overallScore;
-      newAverageScore = Math.round(newScoreTotal / newCompletedCount);
-      try {
-        await saveLocalPronunciationHistory(lastAttemptResult as LocalPronunciationAnalysis);
-      } catch {
-        // history persistence fail-open
+      if (targetIdx === currentPracticeIndex) {
+        setPhase("RECORD");
+        error(getFriendlyErrorMessage(err));
       }
     }
-
-    if (recordedAudioUrl) {
-      URL.revokeObjectURL(recordedAudioUrl);
-      setRecordedAudioUrl(null);
-    }
-    setRecordedAudioBlob(null);
-    setAudioBase64(null);
-    setLastAttemptResult(null);
-
-    if (!next) {
-      setSession({
-        ...session,
-        current_sentence: nextIndex,
-        completed_count: newCompletedCount,
-        score_total: newScoreTotal,
-        average_score: newAverageScore,
-        status: "COMPLETED",
-        completed_at: new Date().toISOString(),
-        currentSentenceData: null,
-      });
-      setPhase("COMPLETED");
-      success("Chúc mừng bạn đã hoàn thành bài luyện Shadowing!");
-      return;
-    }
-
-    setSession({
-      ...session,
-      current_sentence: nextIndex,
-      completed_count: newCompletedCount,
-      score_total: newScoreTotal,
-      average_score: newAverageScore,
-      currentSentenceData: {
-        id: next.id,
-        order: next.order,
-        text: next.text,
-        translationVi: next.translationVi,
-        audioUrl: next.audioUrl,
-      },
-    });
-    setPhase("LISTEN");
   };
 
   // Advance without score (Static Chinese Mode)
-  const handleStaticAdvanceChinese = async () => {
-    if (!session) return;
-    const reading = await readingApi.get(session.reading_id);
-    const nextIndex = session.current_sentence + 1;
-    const next = reading.sentences[nextIndex];
-    const newCompletedCount = session.completed_count + 1;
+  const handleStaticAdvanceChinese = () => {
+    const idx = currentPracticeIndex;
+    const newProg: SentenceProgress = {
+      completed: true,
+      attempts: [],
+    };
+    const newProgressMap = { ...progressMap, [idx]: newProg };
+    setProgressMap(newProgressMap);
 
-    if (recordedAudioUrl) {
-      URL.revokeObjectURL(recordedAudioUrl);
-      setRecordedAudioUrl(null);
-    }
-    setRecordedAudioBlob(null);
-    setAudioBase64(null);
-    setLastAttemptResult(null);
-
-    if (!next) {
+    const completedCount = Object.values(newProgressMap).filter((p) => p.completed).length;
+    if (session) {
       setSession({
         ...session,
-        current_sentence: nextIndex,
-        completed_count: newCompletedCount,
-        status: "COMPLETED",
-        completed_at: new Date().toISOString(),
-        currentSentenceData: null,
+        completed_count: completedCount,
       });
-      setPhase("COMPLETED");
-      success("Bạn đã hoàn thành lượt shadowing tiếng Trung.");
-      return;
     }
 
-    setSession({
-      ...session,
-      current_sentence: nextIndex,
-      completed_count: newCompletedCount,
-      currentSentenceData: {
-        id: next.id,
-        order: next.order,
-        text: next.text,
-        translationVi: next.translationVi,
-        audioUrl: next.audioUrl,
-      },
-    });
-    setPhase("LISTEN");
+    if (idx < sentences.length - 1) {
+      handleSelectSentence(idx + 1);
+    } else {
+      setPhase("COMPLETED");
+      success("Bạn đã hoàn thành lượt shadowing tiếng Trung.");
+    }
   };
 
-  // Retry Current Sentence
+  // Retry Current Sentence (Preserves currentPracticeIndex)
   const handleRetryCurrentSentence = () => {
     analysisAbortRef.current?.abort();
+    stopUserAudio();
     if (recordedAudioUrl) {
       URL.revokeObjectURL(recordedAudioUrl);
       setRecordedAudioUrl(null);
@@ -412,23 +547,7 @@ export const ShadowingPage: React.FC = () => {
     setPhase("RECORD");
   };
 
-  // Server Next Sentence
-  const handleNextSentence = () => {
-    if (session?.status === "COMPLETED") {
-      setPhase("COMPLETED");
-      return;
-    }
-    if (recordedAudioUrl) {
-      URL.revokeObjectURL(recordedAudioUrl);
-      setRecordedAudioUrl(null);
-    }
-    setRecordedAudioBlob(null);
-    setAudioBase64(null);
-    setLastAttemptResult(null);
-    setPhase("LISTEN");
-  };
-
-  // If no active session, show passage selector
+  // Back to passage selector or home
   if (!session) {
     return (
       <div className="page-container flex-col gap-6 animate-fade-in" style={{ maxWidth: "780px" }}>
@@ -439,15 +558,16 @@ export const ShadowingPage: React.FC = () => {
             </Button>
           </Link>
           <div>
-            <h1 style={{ fontSize: "var(--text-2xl)", fontWeight: 800 }}>Luyện Nói Shadowing</h1>
+            <h1 style={{ fontSize: "var(--text-2xl)", fontWeight: 800 }}>Luyện Nói Shadowing Studio</h1>
             <p style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)" }}>
-              Kỹ thuật nhại giọng (Shadowing) giúp cải thiện phát âm, ngữ điệu và độ trôi chảy tự nhiên
+              Luyện phát âm, ngữ điệu và phản xạ giao tiếp tự nhiên với phòng thu câu tự do
             </p>
           </div>
         </div>
 
         <Card className="flex-col gap-4">
           <h2 style={{ fontSize: "var(--text-lg)", fontWeight: 700 }}>Chọn bài đọc để bắt đầu</h2>
+
           {readings.length > 0 ? (
             <div className="flex-col gap-3">
               {readings.map((r) => (
@@ -483,7 +603,7 @@ export const ShadowingPage: React.FC = () => {
                     onClick={() => handleStartSession(r.id)}
                     leftIcon={<Headphones size={14} />}
                   >
-                    Bắt đầu
+                    Vào phòng thu
                   </Button>
                 </div>
               ))}
@@ -498,15 +618,19 @@ export const ShadowingPage: React.FC = () => {
     );
   }
 
-  const currentSentence = session.currentSentenceData;
+  const currentSentence = sentences[currentPracticeIndex] || session.currentSentenceData;
   const isZh = session.language === "zh";
   const isLocalEnglish = isStaticRuntime() && !isZh;
   const isLocalZh = isStaticRuntime() && isZh;
+  const currentSentenceProgress = progressMap[currentPracticeIndex];
+  const attemptHistory = currentSentenceProgress?.attempts || [];
+  const completedCount = Object.values(progressMap).filter((p) => p.completed).length;
+  const allCompleted = sentences.length > 0 && completedCount >= sentences.length;
 
   // Completed Session Screen
   if (session.status === "COMPLETED" || phase === "COMPLETED") {
     return (
-      <div className="page-container flex-col items-center justify-center gap-6 animate-fade-in">
+      <div className="page-container flex-col items-center justify-center gap-6 animate-fade-in shadowing-page-container">
         <div
           className="card flex-col items-center justify-center"
           style={{
@@ -537,7 +661,7 @@ export const ShadowingPage: React.FC = () => {
             Hoàn thành bài Shadowing!
           </h2>
           <p style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)", marginBottom: isLocalZh ? "var(--space-8)" : "var(--space-4)" }}>
-            Bạn đã hoàn thành toàn bộ <strong>{session.completed_count} câu</strong>.
+            Bạn đã hoàn thành <strong>{completedCount} / {sentences.length} câu</strong>.
             {isLocalZh ? " Chấm điểm Shadowing tiếng Trung chưa được hỗ trợ." : ""}
           </p>
 
@@ -553,7 +677,7 @@ export const ShadowingPage: React.FC = () => {
                   color: "var(--accent-en-primary)",
                 }}
               >
-                {session.completed_count > 0 ? `${session.average_score} / 100` : "— / 100"}
+                {completedCount > 0 ? `${session.average_score} / 100` : "— / 100"}
               </div>
             </div>
           )}
@@ -572,25 +696,139 @@ export const ShadowingPage: React.FC = () => {
   }
 
   return (
-    <div className="page-container flex-col gap-6 animate-fade-in" style={{ maxWidth: "780px" }}>
-      {/* Distraction-Free Top Bar */}
-      <div className="flex-row justify-between items-center">
+    <div className="page-container flex-col gap-5 animate-fade-in shadowing-page-container" style={{ maxWidth: "780px" }}>
+      {/* Hidden Audio Element for User Recording Replay with full event synchronization */}
+      {recordedAudioUrl && (
+        <audio
+          ref={userAudioElRef}
+          src={recordedAudioUrl}
+          onEnded={() => setIsPlayingUserAudio(false)}
+          onPause={() => setIsPlayingUserAudio(false)}
+          onPlay={() => {
+            setIsPlayingUserAudio(true);
+            window.speechSynthesis?.cancel();
+          }}
+          style={{ display: "none" }}
+        />
+      )}
+
+      {/* Top Header: Navigation & Practice Mode Selector */}
+      <div className="flex-row justify-between items-center" style={{ flexWrap: "wrap", gap: "8px" }}>
         <Button variant="ghost" size="sm" onClick={() => setSession(null)} leftIcon={<ArrowLeft size={16} />}>
           Thoát
         </Button>
 
-        <div className="flex-row items-center gap-3">
-          <Badge variant={isZh ? "zh" : "en"}>
-            Câu {session.current_sentence + 1}
-          </Badge>
+        {/* Practice Mode Selector (Tự do / Liên tục) */}
+        <div className="flex-row items-center gap-2">
+          <span style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)", fontWeight: 600 }}>Chế độ:</span>
+          <div style={{ display: "inline-flex", borderRadius: "var(--radius-md)", backgroundColor: "var(--bg-muted)", padding: "2px", border: "1px solid var(--border-default)" }}>
+            <button
+              type="button"
+              onClick={() => setPracticeMode("manual")}
+              style={{
+                padding: "4px 10px",
+                borderRadius: "var(--radius-sm)",
+                fontSize: "var(--text-xs)",
+                fontWeight: practiceMode === "manual" ? 700 : 500,
+                backgroundColor: practiceMode === "manual" ? "var(--bg-surface)" : "transparent",
+                color: practiceMode === "manual" ? (isZh ? "var(--accent-zh-primary)" : "var(--accent-en-primary)") : "var(--text-secondary)",
+                border: "none",
+                cursor: "pointer",
+                boxShadow: practiceMode === "manual" ? "var(--shadow-xs)" : "none",
+              }}
+            >
+              Tự do
+            </button>
+            <button
+              type="button"
+              onClick={() => setPracticeMode("continuous")}
+              style={{
+                padding: "4px 10px",
+                borderRadius: "var(--radius-sm)",
+                fontSize: "var(--text-xs)",
+                fontWeight: practiceMode === "continuous" ? 700 : 500,
+                backgroundColor: practiceMode === "continuous" ? "var(--bg-surface)" : "transparent",
+                color: practiceMode === "continuous" ? (isZh ? "var(--accent-zh-primary)" : "var(--accent-en-primary)") : "var(--text-secondary)",
+                border: "none",
+                cursor: "pointer",
+                boxShadow: practiceMode === "continuous" ? "var(--shadow-xs)" : "none",
+              }}
+            >
+              Liên tục
+            </button>
+          </div>
+        </div>
+
+        {/* Session Score Pill */}
+        <div className="flex-row items-center gap-2">
           <span style={{ fontSize: "var(--text-sm)", fontWeight: 700, color: "var(--text-secondary)" }}>
-            Điểm TB: {isLocalZh ? "—" : session.completed_count > 0 ? session.average_score : "—"}
+            Điểm TB: {isLocalZh ? "—" : completedCount > 0 ? `${session.average_score}` : "—"}
           </span>
         </div>
       </div>
 
-      {/* Main Shadowing Player Studio */}
-      <Card elevated className="flex-col gap-8" style={{ padding: "var(--space-8)" }}>
+      {/* Studio Sentence Navigation Bar: [← Câu trước] [Câu X / Y ▼] [Câu sau →] */}
+      <div
+        className="flex-row justify-between items-center"
+        style={{
+          backgroundColor: "var(--bg-surface)",
+          padding: "10px 14px",
+          borderRadius: "var(--radius-xl)",
+          border: "1px solid var(--border-default)",
+          boxShadow: "var(--shadow-sm)",
+          gap: "8px",
+          flexWrap: "wrap",
+        }}
+      >
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={currentPracticeIndex === 0}
+          onClick={handlePreviousSentence}
+          leftIcon={<ArrowLeft size={15} />}
+        >
+          Câu trước
+        </Button>
+
+        {/* Sentence Selector Dropdown / Modal Trigger */}
+        <button
+          type="button"
+          onClick={() => setIsSentenceSelectorOpen(true)}
+          aria-label="Mở danh sách câu shadowing"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "8px",
+            padding: "6px 14px",
+            borderRadius: "var(--radius-full)",
+            backgroundColor: "var(--bg-muted)",
+            border: "1px solid var(--border-default)",
+            fontSize: "var(--text-sm)",
+            fontWeight: 700,
+            color: "var(--text-primary)",
+            cursor: "pointer",
+          }}
+        >
+          <Layers size={14} color={isZh ? "var(--accent-zh-primary)" : "var(--accent-en-primary)"} />
+          <span>
+            Câu {currentPracticeIndex + 1} / {sentences.length}
+          </span>
+          <ChevronDown size={14} />
+        </button>
+
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={currentPracticeIndex === sentences.length - 1 && !allCompleted}
+          onClick={handleNextSentence}
+          rightIcon={<ArrowRight size={15} />}
+        >
+          {currentPracticeIndex === sentences.length - 1 && allCompleted ? "Hoàn thành" : "Câu sau"}
+        </Button>
+      </div>
+
+      {/* Main Shadowing Player Studio Card */}
+      <Card elevated className="flex-col gap-6" style={{ padding: "var(--space-8)" }}>
         {/* Step Indicator Tabs */}
         <div
           style={{
@@ -610,7 +848,7 @@ export const ShadowingPage: React.FC = () => {
               padding: "8px",
               borderRadius: "var(--radius-md)",
               backgroundColor: phase === "LISTEN" ? "var(--bg-surface)" : "transparent",
-              color: phase === "LISTEN" ? "var(--accent-en-primary)" : "var(--text-tertiary)",
+              color: phase === "LISTEN" ? (isZh ? "var(--accent-zh-primary)" : "var(--accent-en-primary)") : "var(--text-tertiary)",
               boxShadow: phase === "LISTEN" ? "var(--shadow-xs)" : "none",
             }}
           >
@@ -621,7 +859,7 @@ export const ShadowingPage: React.FC = () => {
               padding: "8px",
               borderRadius: "var(--radius-md)",
               backgroundColor: phase === "RECORD" ? "var(--bg-surface)" : "transparent",
-              color: phase === "RECORD" ? "var(--accent-en-primary)" : "var(--text-tertiary)",
+              color: phase === "RECORD" ? (isZh ? "var(--accent-zh-primary)" : "var(--accent-en-primary)") : "var(--text-tertiary)",
               boxShadow: phase === "RECORD" ? "var(--shadow-xs)" : "none",
             }}
           >
@@ -641,7 +879,7 @@ export const ShadowingPage: React.FC = () => {
         </div>
 
         {/* Current Sentence Center Stage */}
-        <div style={{ textAlign: "center", padding: "var(--space-4) 0" }}>
+        <div style={{ textAlign: "center", padding: "var(--space-3) 0" }}>
           <div
             className={isZh ? "hanzi" : ""}
             style={{
@@ -662,7 +900,7 @@ export const ShadowingPage: React.FC = () => {
           )}
         </div>
 
-        {/* Audio Model Playback (Listen Phase) */}
+        {/* Audio Model Playback & Studio Action Container */}
         <div
           style={{
             backgroundColor: "var(--bg-muted)",
@@ -675,18 +913,22 @@ export const ShadowingPage: React.FC = () => {
             gap: "16px",
           }}
         >
+          {/* Phase 1: LISTEN */}
           {phase === "LISTEN" && (
-            <div className="flex-col items-center gap-3">
-              <AudioButton
-                text={currentSentence?.text}
-                audioUrl={currentSentence?.audioUrl}
-                language={session.language}
-                size="lg"
-                variant="subtle"
-                label="Nghe câu mẫu"
-              />
-              <span style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)" }}>
-                Nghe kỹ ngữ điệu và phát âm của người bản xứ
+            <div className="flex-col items-center gap-4" style={{ width: "100%" }}>
+              <div className="flex-row items-center justify-center gap-3" style={{ flexWrap: "wrap" }}>
+                <AudioButton
+                  text={currentSentence?.text}
+                  audioUrl={currentSentence?.audioUrl}
+                  language={session.language}
+                  size="lg"
+                  variant="subtle"
+                  label="Nghe câu mẫu"
+                />
+              </div>
+
+              <span style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)", textAlign: "center" }}>
+                Nghe kỹ ngữ điệu và phát âm chuẩn của người bản xứ
               </span>
 
               <Button
@@ -694,13 +936,14 @@ export const ShadowingPage: React.FC = () => {
                 size="lg"
                 onClick={() => setPhase("RECORD")}
                 leftIcon={<Mic size={18} />}
-                style={{ marginTop: "8px" }}
+                style={{ marginTop: "6px" }}
               >
                 Tôi đã sẵn sàng đọc
               </Button>
             </div>
           )}
 
+          {/* Phase 2: RECORD */}
           {phase === "RECORD" && (
             <div className="flex-col items-center gap-4" style={{ width: "100%" }}>
               <button
@@ -719,6 +962,7 @@ export const ShadowingPage: React.FC = () => {
                   animation: isRecording ? "pulseGlow 1.5s infinite" : "none",
                   cursor: "pointer",
                   border: "none",
+                  boxShadow: "var(--shadow-md)",
                 }}
               >
                 {isRecording ? <Square size={28} /> : <Mic size={32} />}
@@ -726,12 +970,37 @@ export const ShadowingPage: React.FC = () => {
 
               <div>
                 <div style={{ fontSize: "var(--text-base)", fontWeight: 700, textAlign: "center" }}>
-                  {isRecording ? `Đang ghi âm... ${formatRecordingTime(recordingSeconds)}` : (recordedAudioBlob || audioBase64) ? "Đã ghi âm xong!" : "Nhấn vào micro để đọc"}
+                  {isRecording
+                    ? `Đang ghi âm... ${formatRecordingTime(recordingSeconds)}`
+                    : recordedAudioBlob || audioBase64
+                    ? "Đã ghi âm xong!"
+                    : "Nhấn vào micro để bắt đầu đọc"}
                 </div>
               </div>
 
               {(recordedAudioBlob || audioBase64) && !isRecording && (
                 <div className="flex-col items-center gap-4" style={{ width: "100%" }}>
+                  {/* Model vs User A/B Comparison Buttons */}
+                  <div className="flex-row items-center justify-center gap-3" style={{ flexWrap: "wrap", width: "100%" }}>
+                    <AudioButton
+                      text={currentSentence?.text}
+                      audioUrl={currentSentence?.audioUrl}
+                      language={session.language}
+                      size="md"
+                      variant="subtle"
+                      label="🔊 Nghe câu mẫu"
+                    />
+                    <Button
+                      variant="secondary"
+                      size="md"
+                      onClick={togglePlayUserAudio}
+                      leftIcon={isPlayingUserAudio ? <Pause size={16} /> : <Volume2 size={16} />}
+                    >
+                      {isPlayingUserAudio ? "Dừng bản ghi" : "🎙️ Nghe lại bản ghi"}
+                    </Button>
+                  </div>
+
+                  {/* Standard Audio Player */}
                   <audio
                     controls
                     src={recordedAudioUrl || `data:${audioMimeType || "audio/webm"};base64,${audioBase64}`}
@@ -749,6 +1018,7 @@ export const ShadowingPage: React.FC = () => {
                     <Button variant="secondary" size="md" onClick={startRecording} leftIcon={<RotateCcw size={16} />}>
                       Ghi lại
                     </Button>
+
                     {isLocalEnglish ? (
                       <Button
                         variant="primary"
@@ -774,7 +1044,7 @@ export const ShadowingPage: React.FC = () => {
                         onClick={handleEvaluateAndAdvance}
                         rightIcon={<ArrowRight size={16} />}
                       >
-                        Gửi và chấm điểm
+                        Phân tích & chấm điểm
                       </Button>
                     )}
                   </div>
@@ -783,9 +1053,10 @@ export const ShadowingPage: React.FC = () => {
             </div>
           )}
 
+          {/* Phase 3: EVALUATING */}
           {phase === "EVALUATING" && (
             <div className="flex-col items-center gap-3" style={{ padding: "var(--space-6)" }}>
-              <Loader2 size={36} className="animate-spin" color="var(--accent-en-primary)" />
+              <Loader2 size={36} className="animate-spin" color={isZh ? "var(--accent-zh-primary)" : "var(--accent-en-primary)"} />
               <div style={{ fontSize: "var(--text-base)", fontWeight: 700 }}>
                 {analysisProgress?.phase === "download"
                   ? `Đang tải mô hình nhận dạng... ${analysisProgress.loaded && analysisProgress.total ? `${Math.round((analysisProgress.loaded / analysisProgress.total) * 100)}%` : ""}`
@@ -798,8 +1069,44 @@ export const ShadowingPage: React.FC = () => {
             </div>
           )}
 
+          {/* Phase 4: RESULT (Stays on same sentence, user can compare A/B & retry) */}
           {phase === "RESULT" && lastAttemptResult && (
             <div className="flex-col gap-6" style={{ width: "100%" }}>
+              {/* Model vs User A/B Comparison Controls in Result */}
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: "12px",
+                  flexWrap: "wrap",
+                  padding: "12px",
+                  borderRadius: "var(--radius-lg)",
+                  backgroundColor: "var(--bg-surface)",
+                  border: "1px solid var(--border-default)",
+                }}
+              >
+                <AudioButton
+                  text={currentSentence?.text}
+                  audioUrl={currentSentence?.audioUrl}
+                  language={session.language}
+                  size="md"
+                  variant="subtle"
+                  label="🔊 Nghe câu mẫu"
+                />
+                {recordedAudioUrl && (
+                  <Button
+                    variant="secondary"
+                    size="md"
+                    onClick={togglePlayUserAudio}
+                    leftIcon={isPlayingUserAudio ? <Pause size={16} /> : <Volume2 size={16} />}
+                  >
+                    {isPlayingUserAudio ? "Dừng giọng tôi" : "🎙️ Nghe giọng của tôi"}
+                  </Button>
+                )}
+              </div>
+
+              {/* Score & Metric Breakdown Card */}
               <div
                 style={{
                   padding: "var(--space-6)",
@@ -811,15 +1118,40 @@ export const ShadowingPage: React.FC = () => {
               >
                 <div className="flex-row justify-between items-center" style={{ flexWrap: "wrap", gap: "8px", marginBottom: "var(--space-4)" }}>
                   <div className="flex-row items-center gap-2">
-                    <Award size={24} color="var(--accent-en-primary)" />
+                    <Award size={24} color={isZh ? "var(--accent-zh-primary)" : "var(--accent-en-primary)"} />
                     <h3 style={{ fontSize: "var(--text-lg)", fontWeight: 700 }}>
                       {isStaticRuntime() ? "Kết quả luyện đọc" : "Kết quả đánh giá"}
                     </h3>
                   </div>
-                  <div style={{ fontSize: "var(--text-2xl)", fontWeight: 800, color: "var(--accent-en-primary)" }}>
+                  <div style={{ fontSize: "var(--text-2xl)", fontWeight: 800, color: isZh ? "var(--accent-zh-primary)" : "var(--accent-en-primary)" }}>
                     Điểm số: {lastAttemptResult.overallScore} / 100
                   </div>
                 </div>
+
+                {/* Attempt History Pills for Current Sentence */}
+                {attemptHistory.length > 1 && (
+                  <div className="flex-row items-center gap-2" style={{ marginBottom: "var(--space-4)", flexWrap: "wrap" }}>
+                    <span style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)", fontWeight: 600 }}>
+                      Lịch sử lượt đọc câu này:
+                    </span>
+                    {attemptHistory.map((att, attIdx) => (
+                      <span
+                        key={att.id || attIdx}
+                        style={{
+                          padding: "2px 8px",
+                          borderRadius: "var(--radius-full)",
+                          backgroundColor: att.score >= 80 ? "var(--color-success-bg)" : "var(--bg-muted)",
+                          border: `1px solid ${att.score >= 80 ? "var(--color-success-border)" : "var(--border-default)"}`,
+                          fontSize: "var(--text-xs)",
+                          fontWeight: 700,
+                          color: att.score >= 80 ? "var(--color-success)" : "var(--text-secondary)",
+                        }}
+                      >
+                        Lần {att.id}: {att.score}đ {att.score === currentSentenceProgress?.bestScore ? "⭐" : ""}
+                      </span>
+                    ))}
+                  </div>
+                )}
 
                 {/* Metric Bars */}
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "16px", marginBottom: "var(--space-6)" }}>
@@ -913,24 +1245,146 @@ export const ShadowingPage: React.FC = () => {
                 )}
               </div>
 
-              {/* Actions on Result */}
+              {/* Actions on Result: Retry current sentence OR Advance manually */}
               <div className="flex-row justify-center gap-3" style={{ flexWrap: "wrap", width: "100%" }}>
                 <Button variant="secondary" size="md" onClick={handleRetryCurrentSentence} leftIcon={<RotateCcw size={16} />}>
-                  Ghi lại
+                  Thử lại câu này
                 </Button>
                 <Button
                   variant={isZh ? "zh" : "primary"}
                   size="md"
-                  onClick={isStaticRuntime() ? handleCommitAndAdvance : handleNextSentence}
+                  onClick={handleNextSentence}
                   rightIcon={<ArrowRight size={16} />}
                 >
-                  Sang câu tiếp theo
+                  {currentPracticeIndex === sentences.length - 1 ? "Hoàn thành bài đọc" : "Sang câu tiếp theo"}
                 </Button>
               </div>
             </div>
           )}
         </div>
       </Card>
+
+      {/* Sentence Selector Modal / Sheet */}
+      {isSentenceSelectorOpen && (
+        <div
+          className="modal-backdrop animate-fade-in"
+          onClick={() => setIsSentenceSelectorOpen(false)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            backgroundColor: "rgba(0, 0, 0, 0.5)",
+            zIndex: 1000,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "16px",
+          }}
+        >
+          <div
+            className="modal-card animate-pop-in"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              backgroundColor: "var(--bg-surface)",
+              borderRadius: "var(--radius-xl)",
+              border: "1px solid var(--border-default)",
+              boxShadow: "var(--shadow-xl)",
+              maxWidth: "520px",
+              width: "100%",
+              maxHeight: "80vh",
+              overflowY: "auto",
+              padding: "20px",
+            }}
+          >
+            <div className="flex-row justify-between items-center" style={{ marginBottom: "16px" }}>
+              <div>
+                <h3 style={{ fontSize: "var(--text-lg)", fontWeight: 700 }}>Chọn câu luyện tập</h3>
+                <p style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)" }}>
+                  Đã hoàn thành {completedCount} / {sentences.length} câu
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsSentenceSelectorOpen(false)}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  cursor: "pointer",
+                  color: "var(--text-tertiary)",
+                  padding: "4px",
+                }}
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Grid of Sentence Badges */}
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fill, minmax(56px, 1fr))",
+                gap: "10px",
+                marginBottom: "16px",
+              }}
+            >
+              {sentences.map((sent, idx) => {
+                const isCurrent = idx === currentPracticeIndex;
+                const prog = progressMap[idx];
+                const isCompleted = prog?.completed;
+                const bestScore = prog?.bestScore;
+
+                return (
+                  <button
+                    key={sent.id || idx}
+                    type="button"
+                    onClick={() => handleSelectSentence(idx)}
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      padding: "8px 4px",
+                      borderRadius: "var(--radius-lg)",
+                      backgroundColor: isCurrent
+                        ? isZh
+                          ? "var(--accent-zh-subtle)"
+                          : "var(--accent-en-subtle)"
+                        : isCompleted
+                        ? "var(--color-success-bg)"
+                        : "var(--bg-muted)",
+                      border: isCurrent
+                        ? `2px solid ${isZh ? "var(--accent-zh-primary)" : "var(--accent-en-primary)"}`
+                        : isCompleted
+                        ? "1px solid var(--color-success-border)"
+                        : "1px solid var(--border-default)",
+                      color: isCurrent
+                        ? isZh
+                          ? "var(--accent-zh-text)"
+                          : "var(--accent-en-text)"
+                        : isCompleted
+                        ? "var(--color-success)"
+                        : "var(--text-primary)",
+                      fontWeight: 700,
+                      cursor: "pointer",
+                      transition: "all var(--transition-fast)",
+                    }}
+                  >
+                    <span style={{ fontSize: "var(--text-sm)" }}>{idx + 1}</span>
+                    <span style={{ fontSize: "10px", fontWeight: 600, opacity: 0.9 }}>
+                      {bestScore !== undefined ? `${bestScore}đ` : isCompleted ? <Check size={12} /> : "—"}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="flex-row justify-end">
+              <Button variant="secondary" size="sm" onClick={() => setIsSentenceSelectorOpen(false)}>
+                Đóng
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

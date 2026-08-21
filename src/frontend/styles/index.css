@@ -735,8 +735,9 @@ button:disabled {
 
 /* Ensure bottom nav safe area on all mobile widths */
 @media (max-width: 768px) {
-  .reading-page-container {
-    padding-bottom: calc(var(--mobile-nav-height) + env(safe-area-inset-bottom, 0px) + var(--space-4));
+  .reading-page-container,
+  .shadowing-page-container {
+    padding-bottom: calc(var(--mobile-nav-height) + env(safe-area-inset-bottom, 0px) + var(--space-6));
   }
 }
 
