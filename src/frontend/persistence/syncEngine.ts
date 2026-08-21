@@ -3,7 +3,9 @@ import { getIndexedDbAdapter } from "./indexedDb.js";
 import {
   SYNCABLE_STORES,
   isSyncableStore,
+  type MergePreview,
   type RemoteSyncAdapter,
+  type StoreRecordCounts,
   type SyncChange,
   type SyncConflict,
   type SyncCoordinator,
@@ -492,17 +494,17 @@ export class LocalFirstSyncCoordinator implements SyncCoordinator {
       if (userId && !meta.localDatasetOwnerUserId) {
         if (pullResult.changes.length > 0) {
           if (await this.hasMeaningfulLocalDataset()) {
-            this.setStatus("ACCOUNT_MISMATCH");
+            this.setStatus("MERGE_REQUIRED");
             await this.saveMeta({
-              lastSyncStatus: "ACCOUNT_MISMATCH",
-              lastSyncError: "Thiết bị đã có dữ liệu cục bộ; không tự trộn với dữ liệu đám mây của tài khoản mới.",
+              lastSyncStatus: "MERGE_REQUIRED",
+              lastSyncError: "Đã tìm thấy dữ liệu cục bộ trên thiết bị và dữ liệu sao lưu trên tài khoản. Cần xác nhận hợp nhất.",
             });
             return {
               success: false,
               pulledCount: 0,
               pushedCount: 0,
               conflictsCount: 0,
-              error: "Thiết bị đã có dữ liệu cục bộ. Hãy dùng hồ sơ trình duyệt mới hoặc xóa dữ liệu cục bộ trước khi tải dữ liệu của tài khoản này.",
+              error: "Đã tìm thấy dữ liệu cục bộ trên thiết bị và dữ liệu sao lưu trên tài khoản. Vui lòng xác nhận hợp nhất để tiếp tục đồng bộ.",
             };
           }
           await this.queueUntrackedCustomizedSettings();
@@ -586,6 +588,269 @@ export class LocalFirstSyncCoordinator implements SyncCoordinator {
     }
   }
 
+  async getMergePreview(adapter?: RemoteSyncAdapter): Promise<MergePreview | null> {
+    const supabase = getSupabaseClient();
+    let userId: string | null = null;
+    if (supabase) {
+      try {
+        const { data } = await supabase.auth.getSession();
+        userId = data.session?.user?.id ?? null;
+      } catch {
+        userId = null;
+      }
+    }
+
+    if (!adapter) {
+      if (!cloudSyncAvailable() || !supabase || !userId) {
+        return null;
+      }
+      const { data } = await supabase.auth.getSession();
+      adapter = new SupabaseRemoteSyncAdapter(supabase, data.session!.user);
+    }
+
+    const meta = await this.getMeta();
+    if (meta.localDatasetOwnerUserId && meta.localDatasetOwnerUserId !== userId) {
+      return null;
+    }
+
+    const pullResult = await this.pullAll(adapter, undefined);
+
+    const localCounts: StoreRecordCounts = {
+      vocabulary: 0,
+      readings: 0,
+      activities: 0,
+      quizHistory: 0,
+      collections: 0,
+      settings: 0,
+    };
+
+    const remoteCounts: StoreRecordCounts = {
+      vocabulary: 0,
+      readings: 0,
+      activities: 0,
+      quizHistory: 0,
+      collections: 0,
+      settings: 0,
+    };
+
+    let localOnlyCount = 0;
+    let remoteOnlyCount = 0;
+    let sameIdSameContentCount = 0;
+    let sameIdDifferentContentCount = 0;
+
+    const remoteMap = new Map<SyncableStore, Map<string, SyncChange>>();
+    for (const store of SYNCABLE_STORES) {
+      remoteMap.set(store, new Map());
+    }
+    for (const change of pullResult.changes) {
+      const storeMap = remoteMap.get(change.store);
+      if (storeMap) {
+        storeMap.set(change.id, change);
+      }
+    }
+
+    for (const store of SYNCABLE_STORES) {
+      const localRecords = await this.persistence.getAll<StoredRecord>(store);
+      const storeRemoteMap = remoteMap.get(store) ?? new Map<string, SyncChange>();
+
+      const activeLocalMap = new Map<string, StoredRecord>();
+      for (const rec of localRecords) {
+        if (rec.id) {
+          activeLocalMap.set(rec.id, rec);
+        }
+      }
+      localCounts[store] = activeLocalMap.size;
+
+      let activeRemoteCount = 0;
+      for (const change of storeRemoteMap.values()) {
+        if (!change.deleted && change.record) {
+          activeRemoteCount++;
+        }
+      }
+      remoteCounts[store] = activeRemoteCount;
+
+      for (const [id, localRec] of activeLocalMap.entries()) {
+        const remoteChange = storeRemoteMap.get(id);
+        if (!remoteChange || remoteChange.deleted || !remoteChange.record) {
+          localOnlyCount++;
+        } else {
+          if (areRecordsSemanticallyEqual(localRec, remoteChange.record)) {
+            sameIdSameContentCount++;
+          } else {
+            sameIdDifferentContentCount++;
+          }
+        }
+      }
+
+      for (const [id, remoteChange] of storeRemoteMap.entries()) {
+        if (!remoteChange.deleted && remoteChange.record) {
+          if (!activeLocalMap.has(id)) {
+            remoteOnlyCount++;
+          }
+        }
+      }
+    }
+
+    return {
+      localCounts,
+      remoteCounts,
+      localOnlyCount,
+      remoteOnlyCount,
+      sameIdSameContentCount,
+      sameIdDifferentContentCount,
+      canMerge: true,
+    };
+  }
+
+  async executeMerge(adapter?: RemoteSyncAdapter): Promise<SyncResult> {
+    const supabase = getSupabaseClient();
+    let userId: string | null = null;
+    if (supabase) {
+      try {
+        const { data } = await supabase.auth.getSession();
+        userId = data.session?.user?.id ?? null;
+      } catch {
+        userId = null;
+      }
+    }
+
+    if (!adapter) {
+      if (!cloudSyncAvailable()) {
+        return { success: false, pulledCount: 0, pushedCount: 0, conflictsCount: 0, error: "Chưa cấu hình Supabase" };
+      }
+      if (!supabase || !userId) {
+        return { success: false, pulledCount: 0, pushedCount: 0, conflictsCount: 0, error: "Chưa đăng nhập" };
+      }
+      const { data } = await supabase.auth.getSession();
+      adapter = new SupabaseRemoteSyncAdapter(supabase, data.session!.user);
+    }
+
+    const meta = await this.getMeta();
+    if (meta.localDatasetOwnerUserId && meta.localDatasetOwnerUserId !== userId) {
+      return {
+        success: false,
+        pulledCount: 0,
+        pushedCount: 0,
+        conflictsCount: 0,
+        error: "Dữ liệu trên máy này thuộc về tài khoản khác. Không thể hợp nhất.",
+      };
+    }
+
+    this.isSyncing = true;
+    this.setStatus("SYNCING");
+
+    try {
+      // 1. Pull full remote snapshot
+      const pullResult = await this.pullAll(adapter, undefined);
+
+      const remoteMap = new Map<SyncableStore, Map<string, SyncChange>>();
+      for (const store of SYNCABLE_STORES) {
+        remoteMap.set(store, new Map());
+      }
+      for (const change of pullResult.changes) {
+        const storeMap = remoteMap.get(change.store);
+        if (storeMap) {
+          storeMap.set(change.id, change);
+        }
+      }
+
+      let conflictsCount = 0;
+      let appliedRemoteCount = 0;
+
+      // 2. Deterministic merge per Store & Record ID
+      for (const store of SYNCABLE_STORES) {
+        const localRecords = await this.persistence.getAll<StoredRecord>(store);
+        const storeRemoteMap = remoteMap.get(store) ?? new Map<string, SyncChange>();
+        const localMap = new Map<string, StoredRecord>();
+
+        for (const rec of localRecords) {
+          if (rec.id) {
+            localMap.set(rec.id, rec);
+          }
+        }
+
+        // Process all local records
+        for (const [id, localRec] of localMap.entries()) {
+          const remoteChange = storeRemoteMap.get(id);
+
+          if (!remoteChange || remoteChange.deleted || !remoteChange.record) {
+            // CASE A: Local only -> keep local and ensure queued
+            await this.queueLocalChange(store, id, localRec, false);
+          } else {
+            // Both exist
+            if (areRecordsSemanticallyEqual(localRec, remoteChange.record)) {
+              // CASE C: Identical content -> keep local, no conflict
+            } else {
+              // CASE D: Different content -> create SyncConflict
+              const conflict: SyncConflict = {
+                id: syncKey(store, id),
+                store,
+                recordId: id,
+                localRecord: localRec,
+                localDeleted: false,
+                remoteRecord: remoteChange.record,
+                conflictAt: new Date().toISOString(),
+                resolution: "local",
+              };
+              await this.persistence.put("syncConflicts", conflict);
+              conflictsCount++;
+            }
+          }
+        }
+
+        // Process remote-only records
+        for (const [id, remoteChange] of storeRemoteMap.entries()) {
+          if (!remoteChange.deleted && remoteChange.record) {
+            if (!localMap.has(id)) {
+              // CASE B: Remote only -> write locally without creating new local queue item
+              await this.persistence.put(store, remoteChange.record);
+              appliedRemoteCount++;
+            }
+          }
+        }
+      }
+
+      await this.queueUntrackedCustomizedSettings();
+
+      // 3. ATOMIC OWNERSHIP COMMIT POINT
+      await this.saveMeta({
+        localDatasetOwnerUserId: userId,
+        lastCursor: pullResult.cursor ?? null,
+        lastSyncStatus: "PENDING_CHANGES",
+        lastSyncError: null,
+      });
+
+      this.isSyncing = false;
+
+      // 4. Trigger sync to push queued local mutations and finalize state
+      const syncResult = await this.sync(adapter);
+      return {
+        success: syncResult.success,
+        pulledCount: appliedRemoteCount + syncResult.pulledCount,
+        pushedCount: syncResult.pushedCount,
+        conflictsCount: conflictsCount + syncResult.conflictsCount,
+        error: syncResult.error,
+      };
+    } catch (err: any) {
+      console.error("Execute merge failed:", err);
+      const errorMessage = err?.message || "Lỗi khi hợp nhất dữ liệu";
+      await this.saveMeta({
+        lastSyncStatus: "ERROR",
+        lastSyncError: errorMessage,
+      });
+      this.setStatus("ERROR");
+      return {
+        success: false,
+        pulledCount: 0,
+        pushedCount: 0,
+        conflictsCount: 0,
+        error: errorMessage,
+      };
+    } finally {
+      this.isSyncing = false;
+    }
+  }
+
   private async recordConflict(
     store: SyncableStore,
     recordId: string,
@@ -606,6 +871,24 @@ export class LocalFirstSyncCoordinator implements SyncCoordinator {
     };
     await this.persistence.put("syncConflicts", conflict);
   }
+}
+
+function cleanRecordForComparison(record: StoredRecord | undefined): Record<string, unknown> | null {
+  if (!record || typeof record !== "object") return null;
+  const clean: Record<string, unknown> = {};
+  for (const [key, val] of Object.entries(record)) {
+    if (key === "updatedAt" || key === "changeSeq" || key === "revision" || key === "createdAt") continue;
+    clean[key] = val;
+  }
+  return clean;
+}
+
+function areRecordsSemanticallyEqual(a: StoredRecord | undefined, b: StoredRecord | undefined): boolean {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  const cleanA = cleanRecordForComparison(a);
+  const cleanB = cleanRecordForComparison(b);
+  return JSON.stringify(cleanA) === JSON.stringify(cleanB);
 }
 
 let defaultSyncCoordinator: LocalFirstSyncCoordinator | undefined;

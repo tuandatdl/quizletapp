@@ -105,6 +105,8 @@ export const SettingsPage: React.FC = () => {
     syncMeta,
     pendingCount,
     conflicts: syncConflicts,
+    mergePreview,
+    executeMerge,
     resolveConflict: resolveSyncConflict,
   } = useCloudAccount();
 
@@ -113,7 +115,24 @@ export const SettingsPage: React.FC = () => {
   const [isSendingMagicLink, setIsSendingMagicLink] = useState(false);
   const [magicLinkSent, setMagicLinkSent] = useState(false);
   const [isSyncingManual, setIsSyncingManual] = useState(false);
+  const [isMerging, setIsMerging] = useState(false);
   const [resolvingConflictId, setResolvingConflictId] = useState<string | null>(null);
+
+  const handleExecuteMerge = async () => {
+    setIsMerging(true);
+    try {
+      const res = await executeMerge();
+      if (res.success) {
+        success("Hợp nhất và đồng bộ dữ liệu thành công!");
+      } else {
+        error(res.error || "Không thể hoàn tất hợp nhất dữ liệu.");
+      }
+    } catch (err: any) {
+      error(getFriendlyErrorMessage(err));
+    } finally {
+      setIsMerging(false);
+    }
+  };
 
   const handleGoogleSignIn = async () => {
     setIsSigningInGoogle(true);
@@ -908,6 +927,11 @@ export const SettingsPage: React.FC = () => {
                   <AlertTriangle size={12} style={{ marginRight: "4px" }} />
                   Khác tài khoản
                 </Badge>
+              ) : syncStatus === "MERGE_REQUIRED" ? (
+                <Badge variant="en" size="sm">
+                  <Sparkles size={12} style={{ marginRight: "4px" }} />
+                  Cần hợp nhất dữ liệu
+                </Badge>
               ) : syncStatus === "SYNCING" ? (
                 <Badge variant="en" size="sm">
                   <Loader2 size={12} className="animate-spin" style={{ marginRight: "4px" }} />
@@ -1086,7 +1110,7 @@ export const SettingsPage: React.FC = () => {
                   </div>
                 </div>
 
-                {syncMeta?.lastSyncError && (
+                {syncMeta?.lastSyncError && syncStatus !== "MERGE_REQUIRED" && (
                   <div style={{ padding: "8px 12px", borderRadius: "var(--radius-sm)", backgroundColor: "var(--accent-zh-subtle)", border: "1px solid var(--accent-zh-border)", fontSize: "var(--text-xs)", color: "var(--accent-zh-text)" }}>
                     ⚠️ {syncMeta.lastSyncError}
                   </div>
@@ -1095,6 +1119,88 @@ export const SettingsPage: React.FC = () => {
                 {syncStatus === "ACCOUNT_MISMATCH" && (
                   <div style={{ padding: "8px 12px", borderRadius: "var(--radius-sm)", backgroundColor: "var(--accent-zh-subtle)", border: "1px solid var(--accent-zh-border)", fontSize: "var(--text-xs)", color: "var(--accent-zh-text)" }}>
                     Để tránh trộn dữ liệu giữa hai tài khoản, ứng dụng đã chặn đồng bộ. Hãy dùng hồ sơ trình duyệt mới, hoặc xuất/làm sạch dữ liệu cục bộ một cách chủ động trước khi dùng tài khoản này.
+                  </div>
+                )}
+
+                {/* MERGE REQUIRED PANEL */}
+                {syncStatus === "MERGE_REQUIRED" && (
+                  <div
+                    id="settings-merge-panel"
+                    style={{
+                      padding: "14px 16px",
+                      borderRadius: "var(--radius-md)",
+                      backgroundColor: "var(--bg-surface)",
+                      border: "1.5px solid var(--accent-en-primary)",
+                      boxShadow: "var(--shadow-sm)",
+                    }}
+                    className="flex-col gap-3"
+                  >
+                    <div className="flex-row items-center gap-2">
+                      <Sparkles size={18} color="var(--accent-en-primary)" />
+                      <strong style={{ fontSize: "var(--text-sm)", color: "var(--text-primary)" }}>
+                        Hợp nhất dữ liệu học tập giữa Thiết bị & Tài khoản
+                      </strong>
+                    </div>
+
+                    <p style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)", lineHeight: 1.5, margin: 0 }}>
+                      Đã tìm thấy dữ liệu trên thiết bị và dữ liệu sao lưu trên tài khoản. LEXIS có thể hợp nhất hai nguồn mà không xóa dữ liệu học tập của bạn.
+                    </p>
+
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))",
+                        gap: "8px",
+                        margin: "4px 0",
+                      }}
+                    >
+                      <div style={{ padding: "8px 10px", borderRadius: "var(--radius-sm)", backgroundColor: "var(--bg-muted)", border: "1px solid var(--border-default)" }}>
+                        <span style={{ fontSize: "11px", color: "var(--text-secondary)", display: "block" }}>Chỉ có trên máy</span>
+                        <strong style={{ fontSize: "var(--text-sm)", color: "var(--text-primary)" }}>{mergePreview?.localOnlyCount ?? 0} mục</strong>
+                      </div>
+                      <div style={{ padding: "8px 10px", borderRadius: "var(--radius-sm)", backgroundColor: "var(--bg-muted)", border: "1px solid var(--border-default)" }}>
+                        <span style={{ fontSize: "11px", color: "var(--text-secondary)", display: "block" }}>Chỉ có trên tài khoản</span>
+                        <strong style={{ fontSize: "var(--text-sm)", color: "var(--text-primary)" }}>{mergePreview?.remoteOnlyCount ?? 0} mục</strong>
+                      </div>
+                      <div style={{ padding: "8px 10px", borderRadius: "var(--radius-sm)", backgroundColor: "var(--bg-muted)", border: "1px solid var(--border-default)" }}>
+                        <span style={{ fontSize: "11px", color: "var(--text-secondary)", display: "block" }}>Trùng khớp</span>
+                        <strong style={{ fontSize: "var(--text-sm)", color: "var(--text-primary)" }}>{mergePreview?.sameIdSameContentCount ?? 0} mục</strong>
+                      </div>
+                      <div style={{ padding: "8px 10px", borderRadius: "var(--radius-sm)", backgroundColor: "var(--bg-muted)", border: "1px solid var(--border-default)" }}>
+                        <span style={{ fontSize: "11px", color: "var(--text-secondary)", display: "block" }}>Cần đối chiếu</span>
+                        <strong style={{ fontSize: "var(--text-sm)", color: mergePreview?.sameIdDifferentContentCount ? "var(--accent-zh-text)" : "var(--text-primary)" }}>
+                          {mergePreview?.sameIdDifferentContentCount ?? 0} mục
+                        </strong>
+                      </div>
+                    </div>
+
+                    <p style={{ fontSize: "11px", color: "var(--text-tertiary)", margin: "2px 0 0 0" }}>
+                      💡 Khuyến nghị xuất bản sao lưu JSON trước khi hợp nhất.
+                    </p>
+
+                    <div className="flex-row gap-2" style={{ flexWrap: "wrap", alignItems: "center", marginTop: "4px" }}>
+                      <Button
+                        id="settings-execute-merge-btn"
+                        type="button"
+                        variant="primary"
+                        size="sm"
+                        isLoading={isMerging}
+                        onClick={() => void handleExecuteMerge()}
+                        leftIcon={<Sparkles size={14} />}
+                      >
+                        Hợp nhất & Đồng bộ
+                      </Button>
+                      <Button
+                        id="settings-export-before-merge-btn"
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        onClick={handleExport}
+                        leftIcon={<Download size={14} />}
+                      >
+                        Xuất bản sao lưu trước
+                      </Button>
+                    </div>
                   </div>
                 )}
 
@@ -1116,7 +1222,7 @@ export const SettingsPage: React.FC = () => {
                             isLoading={resolvingConflictId === conflict.id}
                             onClick={() => void handleResolveSyncConflict(conflict, "remote")}
                           >
-                            Giữ đám mây
+                            Phiên bản đã sao lưu
                           </Button>
                           <Button
                             type="button"
@@ -1125,7 +1231,7 @@ export const SettingsPage: React.FC = () => {
                             isLoading={resolvingConflictId === conflict.id}
                             onClick={() => void handleResolveSyncConflict(conflict, "local")}
                           >
-                            Giữ cục bộ
+                            Phiên bản trên thiết bị
                           </Button>
                         </div>
                       </div>

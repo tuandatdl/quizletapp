@@ -733,4 +733,245 @@ describe("LEXIS Google Account & Cloud Sync Integration", () => {
       expect(currentSession?.user?.id).toBe("user-persisted-123");
     });
   });
+
+  // =========================================================================
+  // GROUP J: SAFE GUEST → EXISTING CLOUD MERGE INTEGRATION
+  // =========================================================================
+  describe("Group J: Safe Guest → Existing Cloud Merge Flow", () => {
+    it("detects GUEST_UNOWNED + EXISTING_CLOUD, transitions to MERGE_REQUIRED, and deletes nothing", async () => {
+      // 1. Local guest dataset (vocabulary + readings)
+      await adapter.put("vocabulary", { id: "local-v1", language: "en", term: "local term", meaningVi: "nghĩa cục bộ", updatedAt: "2026-08-20T00:00:00Z" });
+      await adapter.put("readings", { id: "local-r1", title: "Local Reading", content: "Local text", language: "en", updatedAt: "2026-08-20T00:00:00Z" });
+
+      // 2. Remote cloud has existing data
+      const mockRemoteAdapter = {
+        pull: vi.fn().mockResolvedValue({
+          changes: [
+            {
+              store: "vocabulary",
+              id: "remote-v1",
+              updatedAt: "2026-08-20T01:00:00Z",
+              deleted: false,
+              record: { id: "remote-v1", language: "en", term: "remote term", meaningVi: "nghĩa đám mây" },
+              changeSeq: "1",
+            },
+          ],
+          hasMore: false,
+          cursor: "1",
+        }),
+        push: vi.fn().mockResolvedValue({ acknowledgedKeys: [] }),
+      };
+
+      const mockSupabase = {
+        auth: {
+          getSession: vi.fn().mockResolvedValue({
+            data: { session: { user: { id: "authenticated-user-uuid" } } },
+            error: null,
+          }),
+          onAuthStateChange: vi.fn(() => ({ data: { subscription: { unsubscribe: vi.fn() } } })),
+        },
+      } as any;
+      resetSupabaseClientForTesting(mockSupabase);
+
+      const coordinator = new LocalFirstSyncCoordinator(adapter);
+      const syncRes = await coordinator.sync(mockRemoteAdapter as any);
+
+      // Verify sync requires merge
+      expect(syncRes.success).toBe(false);
+      expect(coordinator.getStatus()).toBe("MERGE_REQUIRED");
+
+      // Verify ownership remains null before merge commit point
+      const meta = await coordinator.getMeta();
+      expect(meta.localDatasetOwnerUserId).toBeNull();
+      expect(meta.lastSyncStatus).toBe("MERGE_REQUIRED");
+
+      // Verify no local record was deleted
+      const localVocabs = await adapter.getAll("vocabulary");
+      expect(localVocabs).toHaveLength(1);
+      const localReadings = await adapter.getAll("readings");
+      expect(localReadings).toHaveLength(1);
+    });
+
+    it("getMergePreview calculates local-only, remote-only, identical, and conflicting counts correctly", async () => {
+      // Local setup: 1 local-only, 1 identical, 1 conflicting
+      await adapter.put("vocabulary", { id: "v-local-only", language: "en", term: "alpha", meaningVi: "alpha vn" });
+      await adapter.put("vocabulary", { id: "v-identical", language: "en", term: "beta", meaningVi: "beta vn" });
+      await adapter.put("vocabulary", { id: "v-conflict", language: "en", term: "gamma local", meaningVi: "gamma vn" });
+
+      const mockRemoteAdapter = {
+        pull: vi.fn().mockResolvedValue({
+          changes: [
+            {
+              store: "vocabulary",
+              id: "v-remote-only",
+              updatedAt: "2026-08-20T01:00:00Z",
+              deleted: false,
+              record: { id: "v-remote-only", language: "en", term: "delta", meaningVi: "delta vn" },
+              changeSeq: "1",
+            },
+            {
+              store: "vocabulary",
+              id: "v-identical",
+              updatedAt: "2026-08-20T01:00:00Z",
+              deleted: false,
+              record: { id: "v-identical", language: "en", term: "beta", meaningVi: "beta vn" },
+              changeSeq: "2",
+            },
+            {
+              store: "vocabulary",
+              id: "v-conflict",
+              updatedAt: "2026-08-20T01:00:00Z",
+              deleted: false,
+              record: { id: "v-conflict", language: "en", term: "gamma remote edit", meaningVi: "gamma remote vn" },
+              changeSeq: "3",
+            },
+          ],
+          hasMore: false,
+          cursor: "3",
+        }),
+        push: vi.fn().mockResolvedValue({ acknowledgedKeys: [] }),
+      };
+
+      const mockSupabase = {
+        auth: {
+          getSession: vi.fn().mockResolvedValue({
+            data: { session: { user: { id: "user-123" } } },
+            error: null,
+          }),
+          onAuthStateChange: vi.fn(() => ({ data: { subscription: { unsubscribe: vi.fn() } } })),
+        },
+      } as any;
+      resetSupabaseClientForTesting(mockSupabase);
+
+      const coordinator = new LocalFirstSyncCoordinator(adapter);
+      const preview = await coordinator.getMergePreview(mockRemoteAdapter as any);
+
+      expect(preview).not.toBeNull();
+      expect(preview?.localOnlyCount).toBe(1); // v-local-only
+      expect(preview?.remoteOnlyCount).toBe(1); // v-remote-only
+      expect(preview?.sameIdSameContentCount).toBe(1); // v-identical
+      expect(preview?.sameIdDifferentContentCount).toBe(1); // v-conflict
+      expect(preview?.canMerge).toBe(true);
+    });
+
+    it("executeMerge merges records safely, assigns ownership, and preserves conflict versions", async () => {
+      // Local setup: 1 local-only, 1 identical, 1 conflict
+      await adapter.put("vocabulary", { id: "v-local-only", language: "en", term: "alpha", meaningVi: "alpha vn" });
+      await adapter.put("vocabulary", { id: "v-identical", language: "en", term: "beta", meaningVi: "beta vn" });
+      await adapter.put("vocabulary", { id: "v-conflict", language: "en", term: "gamma local", meaningVi: "gamma local vn" });
+
+      const uploadedKeys: string[] = [];
+      const mockRemoteAdapter = {
+        pull: vi.fn().mockResolvedValue({
+          changes: [
+            {
+              store: "vocabulary",
+              id: "v-remote-only",
+              updatedAt: "2026-08-20T01:00:00Z",
+              deleted: false,
+              record: { id: "v-remote-only", language: "en", term: "delta", meaningVi: "delta vn" },
+              changeSeq: "1",
+            },
+            {
+              store: "vocabulary",
+              id: "v-identical",
+              updatedAt: "2026-08-20T01:00:00Z",
+              deleted: false,
+              record: { id: "v-identical", language: "en", term: "beta", meaningVi: "beta vn" },
+              changeSeq: "2",
+            },
+            {
+              store: "vocabulary",
+              id: "v-conflict",
+              updatedAt: "2026-08-20T01:00:00Z",
+              deleted: false,
+              record: { id: "v-conflict", language: "en", term: "gamma remote", meaningVi: "gamma remote vn" },
+              changeSeq: "3",
+            },
+          ],
+          hasMore: false,
+          cursor: "3",
+        }),
+        push: vi.fn().mockImplementation(async (changes: SyncChange[]) => {
+          for (const c of changes) {
+            uploadedKeys.push(`${c.store}:${c.id}`);
+          }
+          return { acknowledgedKeys: changes.map((c) => `${c.store}:${c.id}`) };
+        }),
+      };
+
+      const userId = "target-user-uuid-999";
+      const mockSupabase = {
+        auth: {
+          getSession: vi.fn().mockResolvedValue({
+            data: { session: { user: { id: userId } } },
+            error: null,
+          }),
+          onAuthStateChange: vi.fn(() => ({ data: { subscription: { unsubscribe: vi.fn() } } })),
+        },
+      } as any;
+      resetSupabaseClientForTesting(mockSupabase);
+
+      const coordinator = new LocalFirstSyncCoordinator(adapter);
+      const mergeRes = await coordinator.executeMerge(mockRemoteAdapter as any);
+
+      expect(mergeRes.success).toBe(true);
+
+      // Verify ownership was atomically committed to userId
+      const meta = await coordinator.getMeta();
+      expect(meta.localDatasetOwnerUserId).toBe(userId);
+
+      // Verify remote-only record was written locally
+      const remoteWritten = await adapter.get("vocabulary", "v-remote-only");
+      expect(remoteWritten).not.toBeNull();
+      expect((remoteWritten as any).term).toBe("delta");
+
+      // Verify conflict was recorded with both versions intact
+      const conflicts = await coordinator.getConflicts();
+      expect(conflicts).toHaveLength(1);
+      expect(conflicts[0].recordId).toBe("v-conflict");
+      expect((conflicts[0].localRecord as any)?.term).toBe("gamma local");
+      expect((conflicts[0].remoteRecord as any)?.term).toBe("gamma remote");
+
+      // Verify local-only item was pushed
+      expect(uploadedKeys).toContain("vocabulary:v-local-only");
+    });
+
+    it("strictly preserves foreign account mismatch and disallows merge when local owner is Account A", async () => {
+      // Local dataset is owned by Account A
+      await adapter.put("meta", {
+        id: "sync-meta",
+        localDatasetOwnerUserId: "account-a-uuid",
+        lastCursor: "5",
+        lastSyncAt: "2026-08-20T00:00:00Z",
+        lastSyncStatus: "IDLE",
+        lastSyncError: null,
+      });
+
+      vi.stubEnv("VITE_SUPABASE_URL", "https://example.supabase.co");
+      vi.stubEnv("VITE_SUPABASE_ANON_KEY", "sb_test_key");
+      const mockSupabase = {
+        auth: {
+          getSession: vi.fn().mockResolvedValue({
+            data: { session: { user: { id: "account-b-uuid" } } },
+            error: null,
+          }),
+          onAuthStateChange: vi.fn(() => ({ data: { subscription: { unsubscribe: vi.fn() } } })),
+        },
+      } as any;
+      resetSupabaseClientForTesting(mockSupabase);
+
+      const coordinator = new LocalFirstSyncCoordinator(adapter);
+      const preview = await coordinator.getMergePreview();
+      expect(preview).toBeNull();
+
+      const mergeRes = await coordinator.executeMerge();
+      expect(mergeRes.success).toBe(false);
+      expect(mergeRes.error).toContain("Dữ liệu trên máy này thuộc về tài khoản khác");
+
+      // Verify Account A ownership remained strictly unchanged
+      const meta = await coordinator.getMeta();
+      expect(meta.localDatasetOwnerUserId).toBe("account-a-uuid");
+    });
+  });
 });

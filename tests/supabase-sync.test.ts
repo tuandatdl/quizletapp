@@ -575,7 +575,7 @@ describe("Supabase Local-First Cloud Sync", () => {
     const result = await coordinator.sync();
 
     expect(result.success).toBe(false);
-    expect(coordinator.getStatus()).toBe("ACCOUNT_MISMATCH");
+    expect(coordinator.getStatus()).toBe("MERGE_REQUIRED");
     expect(await adapter.get(store, localRecord.id)).toEqual(localRecord);
     expect(await adapter.get("vocabulary", cloudVocabulary.id)).toBeUndefined();
     expect((await coordinator.getMeta()).localDatasetOwnerUserId).toBeNull();
@@ -599,7 +599,7 @@ describe("Supabase Local-First Cloud Sync", () => {
     const result = await coordinator.sync();
 
     expect(result.success).toBe(false);
-    expect(coordinator.getStatus()).toBe("ACCOUNT_MISMATCH");
+    expect(coordinator.getStatus()).toBe("MERGE_REQUIRED");
     expect(await adapter.get("syncQueue", "vocabulary:deleted-local")).toBeDefined();
     expect(await adapter.get("vocabulary", cloudVocabulary.id)).toBeUndefined();
   });

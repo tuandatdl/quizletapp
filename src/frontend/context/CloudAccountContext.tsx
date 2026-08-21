@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, useMemo } from "react";
 import type { Session, User } from "@supabase/supabase-js";
 import { getCloudAuthService, CloudAuthService } from "../services/cloudAuth";
-import type { SyncConflict, SyncMeta, SyncResult, SyncStatus } from "../persistence/sync";
+import type { MergePreview, SyncConflict, SyncMeta, SyncResult, SyncStatus } from "../persistence/sync";
 
 export interface CloudAccountContextType {
   user: User | null;
@@ -21,6 +21,9 @@ export interface CloudAccountContextType {
   syncMeta: SyncMeta | null;
   pendingCount: number;
   conflicts: SyncConflict[];
+  mergePreview: MergePreview | null;
+  getMergePreview: () => Promise<MergePreview | null>;
+  executeMerge: () => Promise<SyncResult>;
   resolveConflict: (conflictId: string, choice: "local" | "remote") => Promise<void>;
   refreshAccount: () => Promise<void>;
 }
@@ -40,6 +43,7 @@ export const CloudAccountProvider: React.FC<{ children: React.ReactNode; service
   const [syncMeta, setSyncMeta] = useState<SyncMeta | null>(null);
   const [pendingCount, setPendingCount] = useState<number>(0);
   const [conflicts, setConflicts] = useState<SyncConflict[]>([]);
+  const [mergePreview, setMergePreview] = useState<MergePreview | null>(null);
 
   const cloudAvailable = authService.isAvailable();
 
@@ -48,20 +52,23 @@ export const CloudAccountProvider: React.FC<{ children: React.ReactNode; service
       setUser(null);
       setSession(null);
       setSyncStatus("UNCONFIGURED");
+      setMergePreview(null);
       setIsLoading(false);
       return;
     }
 
     try {
       const currentSession = await authService.getCurrentSession();
+      let currentSyncStatus = authService.getSyncStatus();
       if (!currentSession || !currentSession.user) {
         setSession(null);
         setUser(null);
+        currentSyncStatus = "SIGNED_OUT";
         setSyncStatus("SIGNED_OUT");
       } else {
         setSession(currentSession);
         setUser(currentSession.user);
-        setSyncStatus(authService.getSyncStatus());
+        setSyncStatus(currentSyncStatus);
       }
 
       const [meta, pending, confs] = await Promise.all([
@@ -72,6 +79,13 @@ export const CloudAccountProvider: React.FC<{ children: React.ReactNode; service
       setSyncMeta(meta);
       setPendingCount(pending);
       setConflicts(confs);
+
+      if (currentSyncStatus === "MERGE_REQUIRED" || meta.lastSyncStatus === "MERGE_REQUIRED") {
+        const preview = await authService.getMergePreview();
+        setMergePreview(preview);
+      } else {
+        setMergePreview(null);
+      }
     } catch (err) {
       console.error("Failed to load cloud account state:", err);
     } finally {
@@ -93,6 +107,11 @@ export const CloudAccountProvider: React.FC<{ children: React.ReactNode; service
       void authService.getSyncMeta().then(setSyncMeta);
       void authService.getPendingCount().then(setPendingCount);
       void authService.getConflicts().then(setConflicts);
+      if (status === "MERGE_REQUIRED") {
+        void authService.getMergePreview().then(setMergePreview);
+      } else {
+        setMergePreview(null);
+      }
     });
 
     return () => {
@@ -120,6 +139,7 @@ export const CloudAccountProvider: React.FC<{ children: React.ReactNode; service
     setUser(null);
     setSession(null);
     setSyncStatus("SIGNED_OUT");
+    setMergePreview(null);
     await refreshAccount();
   }, [authService, refreshAccount]);
 
@@ -131,6 +151,18 @@ export const CloudAccountProvider: React.FC<{ children: React.ReactNode; service
     },
     [authService, refreshAccount],
   );
+
+  const getMergePreview = useCallback(async () => {
+    const preview = await authService.getMergePreview();
+    setMergePreview(preview);
+    return preview;
+  }, [authService]);
+
+  const executeMerge = useCallback(async () => {
+    const res = await authService.executeMerge();
+    await refreshAccount();
+    return res;
+  }, [authService, refreshAccount]);
 
   const resolveConflict = useCallback(
     async (conflictId: string, choice: "local" | "remote") => {
@@ -166,6 +198,9 @@ export const CloudAccountProvider: React.FC<{ children: React.ReactNode; service
         syncMeta,
         pendingCount,
         conflicts,
+        mergePreview,
+        getMergePreview,
+        executeMerge,
         resolveConflict,
         refreshAccount,
       }}
