@@ -204,7 +204,8 @@ export class LocalFirstSyncCoordinator implements SyncCoordinator {
   }
 
   async getConflicts(): Promise<SyncConflict[]> {
-    return this.persistence.getAll<SyncConflict>("syncConflicts");
+    const conflicts = await this.persistence.getAll<SyncConflict>("syncConflicts");
+    return conflicts.filter((conflict) => !conflict.resolvedAt);
   }
 
   async resolveConflict(conflictId: string, choice: "local" | "remote"): Promise<void> {
@@ -932,6 +933,7 @@ export class LocalFirstSyncCoordinator implements SyncCoordinator {
       remoteRecord,
       conflictAt: new Date().toISOString(),
       resolution,
+      resolvedAt: undefined,
     };
     await this.persistence.put("syncConflicts", conflict);
   }

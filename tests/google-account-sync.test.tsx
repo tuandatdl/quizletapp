@@ -1645,4 +1645,162 @@ describe("LEXIS Google Account & Cloud Sync Integration", () => {
       expect(await adapter.get("vocabulary", "v-remote-new")).toBeDefined();
     });
   });
+
+  describe("Group M: Resolved Conflict Lifecycle & Active UI Visibility", () => {
+    it("A & B: Unresolved conflict is returned, resolving remote marks resolvedAt and hides it from active list", async () => {
+      const coordinator = new LocalFirstSyncCoordinator(adapter);
+      const conflictId = "vocabulary:v-active-1";
+
+      await adapter.put("syncConflicts", {
+        id: conflictId,
+        store: "vocabulary",
+        recordId: "v-active-1",
+        localRecord: { id: "v-active-1", term: "local", meaningVi: "cục bộ" },
+        localDeleted: false,
+        remoteRecord: { id: "v-active-1", term: "remote", meaningVi: "đám mây" },
+        conflictAt: new Date().toISOString(),
+        resolution: "local",
+      });
+
+      // A. Unresolved conflict is returned by getConflicts()
+      const beforeResolve = await coordinator.getConflicts();
+      expect(beforeResolve).toHaveLength(1);
+      expect(beforeResolve[0]!.id).toBe(conflictId);
+      expect(beforeResolve[0]!.resolvedAt).toBeUndefined();
+
+      // B. Resolve with remote choice
+      await coordinator.resolveConflict(conflictId, "remote");
+
+      // getConflicts() returns unresolved only (length = 0)
+      const afterResolve = await coordinator.getConflicts();
+      expect(afterResolve).toHaveLength(0);
+
+      // Verify resolved record is preserved in IndexedDB with resolvedAt and resolution
+      const rawStored = await adapter.get<SyncConflict>("syncConflicts", conflictId);
+      expect(rawStored).not.toBeNull();
+      expect(rawStored!.resolvedAt).toBeDefined();
+      expect(rawStored!.resolution).toBe("remote");
+
+      // Verify remote record was applied locally
+      const localRecord = await adapter.get<any>("vocabulary", "v-active-1");
+      expect(localRecord?.meaningVi).toBe("đám mây");
+    });
+
+    it("C: Resolve local restores local version, queues upload change, and hides conflict from active list", async () => {
+      const coordinator = new LocalFirstSyncCoordinator(adapter);
+      const conflictId = "vocabulary:v-active-2";
+
+      await adapter.put("syncConflicts", {
+        id: conflictId,
+        store: "vocabulary",
+        recordId: "v-active-2",
+        localRecord: { id: "v-active-2", term: "keeper", meaningVi: "bản cần giữ" },
+        localDeleted: false,
+        remoteRecord: { id: "v-active-2", term: "discard", meaningVi: "bản bỏ" },
+        conflictAt: new Date().toISOString(),
+        resolution: "local",
+      });
+
+      await coordinator.resolveConflict(conflictId, "local");
+
+      // Active conflict list must be empty
+      const activeConflicts = await coordinator.getConflicts();
+      expect(activeConflicts).toHaveLength(0);
+
+      // Local record must be restored
+      const restored = await adapter.get<any>("vocabulary", "v-active-2");
+      expect(restored?.meaningVi).toBe("bản cần giữ");
+
+      // Local mutation must be queued
+      const queueItem = await adapter.get<any>("syncQueue", conflictId);
+      expect(queueItem).toBeDefined();
+      expect(queueItem?.record?.meaningVi).toBe("bản cần giữ");
+    });
+
+    it("D & F: Historical resolved conflicts remain in IndexedDB but active count is 0", async () => {
+      const coordinator = new LocalFirstSyncCoordinator(adapter);
+
+      // Seed 77 resolved conflicts (simulating historical user state)
+      for (let i = 1; i <= 77; i++) {
+        await adapter.put("syncConflicts", {
+          id: `vocabulary:v-hist-${i}`,
+          store: "vocabulary",
+          recordId: `v-hist-${i}`,
+          localRecord: { id: `v-hist-${i}`, term: `term-${i}` },
+          localDeleted: false,
+          remoteRecord: { id: `v-hist-${i}`, term: `term-remote-${i}` },
+          conflictAt: new Date(Date.now() - 100000).toISOString(),
+          resolvedAt: new Date(Date.now() - 50000).toISOString(),
+          resolution: i % 2 === 0 ? "local" : "remote",
+        });
+      }
+
+      // Verify all 77 exist in raw storage for audit/history
+      const rawAll = await adapter.getAll("syncConflicts");
+      expect(rawAll).toHaveLength(77);
+
+      // Verify getConflicts() returns 0 active conflicts
+      const active = await coordinator.getConflicts();
+      expect(active).toHaveLength(0);
+    });
+
+    it("E: When a previously resolved record encounters a NEW genuine conflict later, it becomes active again", async () => {
+      const coordinator = new LocalFirstSyncCoordinator(adapter);
+      await coordinator.saveMeta({ localDatasetOwnerUserId: "user-test" });
+      const recordId = "v-recurrent";
+      const conflictId = `vocabulary:${recordId}`;
+
+      // 1. Initial resolved conflict
+      await adapter.put("syncConflicts", {
+        id: conflictId,
+        store: "vocabulary",
+        recordId,
+        localRecord: { id: recordId, term: "recurrent", meaningVi: "v1 local" },
+        localDeleted: false,
+        remoteRecord: { id: recordId, term: "recurrent", meaningVi: "v1 remote" },
+        conflictAt: new Date(Date.now() - 100000).toISOString(),
+        resolvedAt: new Date(Date.now() - 50000).toISOString(),
+        resolution: "remote",
+      });
+
+      expect(await coordinator.getConflicts()).toHaveLength(0);
+
+      // 2. User locally edits item again and queues change
+      const localV2 = { id: recordId, term: "recurrent", meaningVi: "v2 local edit", updatedAt: "2026-08-21T02:00:00Z" };
+      await adapter.put("vocabulary", localV2);
+      await coordinator.queueLocalChange("vocabulary", recordId, localV2);
+
+      // 3. Remote server receives a colliding v2 change from another device
+      const remoteV2 = { id: recordId, term: "recurrent", meaningVi: "v2 remote change", updatedAt: "2026-08-21T01:30:00Z" };
+      const mockRemote = {
+        pull: vi.fn().mockResolvedValue({
+          changes: [
+            {
+              store: "vocabulary",
+              id: recordId,
+              deleted: false,
+              record: remoteV2,
+              changeSeq: "99",
+              updatedAt: "2026-08-21T01:30:00Z",
+            },
+          ],
+          hasMore: false,
+          cursor: "99",
+        }),
+        push: vi.fn().mockResolvedValue({ acknowledgedKeys: [] }),
+      };
+
+      const syncResult = await coordinator.sync(mockRemote as any);
+      expect(syncResult.success).toBe(true);
+      expect(syncResult.conflictsCount).toBe(1);
+
+      // 4. Verify new conflict is active and returned by getConflicts()
+      const activeConflicts = await coordinator.getConflicts();
+      expect(activeConflicts).toHaveLength(1);
+      expect(activeConflicts[0]!.id).toBe(conflictId);
+      expect(activeConflicts[0]!.resolvedAt).toBeUndefined();
+      expect(activeConflicts[0]!.localRecord).toMatchObject({ meaningVi: "v2 local edit" });
+      expect(activeConflicts[0]!.remoteRecord).toMatchObject({ meaningVi: "v2 remote change" });
+    });
+  });
 });
