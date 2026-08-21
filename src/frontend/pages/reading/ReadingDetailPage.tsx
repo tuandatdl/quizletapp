@@ -52,21 +52,25 @@ import {
 import { synthesizeLocalEnglishSpeech } from "../../services/localTts";
 import { cloudFallbackMode, cloudVoiceFor, resolveAudioEngine, safeTtsDiagnostic } from "../../services/audioEnginePolicy";
 
+export interface SelectionToolbarPosition {
+  x: number;
+  y: number;
+  popoverY: number;
+  placement: "top" | "bottom";
+}
+
 export const ReadingDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { language: currentLang, settings } = useLanguage();
   const { success, error, info } = useToast();
+  const { settings } = useLanguage();
 
   const [passage, setPassage] = useState<ReadingPassage | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [translationAvailability, setTranslationAvailability] = useState<ProviderStatus>({
-    configured: false,
-    provider: null,
-  });
+  const [translationAvailability, setTranslationAvailability] = useState<{ configured: boolean; provider: string | null }>({ configured: false, provider: null });
 
-  // Reading Playback State Machine
+  // Playback state
   const [playbackState, setPlaybackState] = useState<ReadingPlaybackState>({
     mode: "speech-synthesis",
     status: "idle",
@@ -74,6 +78,8 @@ export const ReadingDetailPage: React.FC = () => {
     currentSentenceId: null,
     totalSentences: 0,
     speed: settings?.audioSpeed || 1,
+    loading: false,
+    engine: undefined,
   });
 
   // Display Modes
@@ -84,7 +90,7 @@ export const ReadingDetailPage: React.FC = () => {
 
   // Text Selection & Floating Toolbar State
   const [selectedText, setSelectedText] = useState<string>("");
-  const [toolbarCoords, setToolbarCoords] = useState<{ x: number; y: number } | null>(null);
+  const [toolbarCoords, setToolbarCoords] = useState<SelectionToolbarPosition | null>(null);
   const [translationResult, setTranslationResult] = useState<TranslationResult | null>(null);
   const [translationUnavailableNotice, setTranslationUnavailableNotice] = useState<boolean>(false);
   const [isTranslatingSelection, setIsTranslatingSelection] = useState<boolean>(false);
@@ -102,7 +108,7 @@ export const ReadingDetailPage: React.FC = () => {
   // Click-Word Popover State (Pronunciation Mode)
   const [activeToken, setActiveToken] = useState<{
     token: Token;
-    coords: { x: number; y: number };
+    coords: SelectionToolbarPosition;
   } | null>(null);
 
   const readingAreaRef = useRef<HTMLDivElement>(null);
@@ -117,6 +123,7 @@ export const ReadingDetailPage: React.FC = () => {
   const activeAudioRef = useRef<HTMLAudioElement | null>(null);
   const activeObjectUrlRef = useRef<string | null>(null);
   const cloudAbortRef = useRef<AbortController | null>(null);
+  const selectionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ---- Context capture helper ----
   function extractSentenceContext(sentences: ReadingPassage["sentences"]): VocabularyContext | null {
@@ -165,6 +172,10 @@ export const ReadingDetailPage: React.FC = () => {
   }
 
   function closeOverlays() {
+    if (selectionTimerRef.current) {
+      clearTimeout(selectionTimerRef.current);
+      selectionTimerRef.current = null;
+    }
     if (enrichAbortRef.current) { enrichAbortRef.current.abort(); enrichAbortRef.current = null; }
     setSelectedText("");
     setToolbarCoords(null);
@@ -176,10 +187,12 @@ export const ReadingDetailPage: React.FC = () => {
     setShowAllSenses(false);
     setContextEnrichError(null);
     setDuplicateContextualSense(null);
+    setActiveToken(null);
   }
 
   const triggerContextualEnrichment = (text: string, ctx: VocabularyContext | null) => {
     if (!passage || !ctx) return;
+    setActiveToken(null);
     if (enrichAbortRef.current) enrichAbortRef.current.abort();
     const controller = new AbortController();
     enrichAbortRef.current = controller;
@@ -669,6 +682,9 @@ export const ReadingDetailPage: React.FC = () => {
 
   // Click on sentence text jumps playback to that sentence
   const handleSentenceClick = (sIdx: number) => {
+    // If user has an active text selection, don't trigger sentence seek
+    const sel = window.getSelection()?.toString().trim();
+    if (sel) return;
     handleSeekSentence(sIdx);
   };
 
@@ -696,64 +712,90 @@ export const ReadingDetailPage: React.FC = () => {
 
   // Text Selection Detection
   const handleMouseUp = () => {
-    setTimeout(() => {
-      const selection = window.getSelection();
-      if (!selection || selection.isCollapsed) {
-        if (!translationResult && !translationUnavailableNotice) {
+    if (selectionTimerRef.current) {
+      clearTimeout(selectionTimerRef.current);
+    }
+    selectionTimerRef.current = setTimeout(() => {
+      requestAnimationFrame(() => {
+        const selection = window.getSelection();
+        if (!selection || selection.isCollapsed) {
+          if (!translationResult && !translationUnavailableNotice && !contextualEnrichment && !isEnrichingContext) {
+            setSelectedText("");
+            setToolbarCoords(null);
+          }
+          return;
+        }
+
+        const text = selection.toString().trim();
+        if (!text || text.length > 1000) {
           setSelectedText("");
           setToolbarCoords(null);
+          setTranslationResult(null);
+          setTranslationUnavailableNotice(false);
+          return;
         }
-        return;
-      }
 
-      const text = selection.toString().trim();
-      if (!text || text.length > 1000) {
-        setSelectedText("");
-        setToolbarCoords(null);
+        if (selection.rangeCount === 0) return;
+        const range = selection.getRangeAt(0);
+        const rect = range.getBoundingClientRect();
+
+        if (rect.width === 0 && rect.height === 0) return;
+
+        // Invariant: Clear activeToken when valid text selection is established
+        setActiveToken(null);
+
+        const viewportH = window.innerHeight;
+        const placeAbove = rect.top >= 130;
+
+        const clampedX = Math.min(window.innerWidth - 170, Math.max(170, rect.left + rect.width / 2));
+        const toolbarY = placeAbove ? Math.max(10, rect.top - 8) : Math.min(viewportH - 60, rect.bottom + 8);
+        const popoverY = placeAbove
+          ? Math.min(viewportH - 240, rect.bottom + 8)
+          : Math.min(viewportH - 240, rect.bottom + 52);
+        const placement = placeAbove ? "top" : "bottom";
+
+        // Capture surrounding sentence context via DOM lookup
+        const ctx = passage ? extractSentenceContext(passage.sentences) : null;
+
+        setSelectedText(text);
+        setSelectedContext(ctx);
+        setManualMeaningVi("");
+        setContextualEnrichment(null);
+        setContextEnrichError(null);
+        setSelectedSenseIndex(-1);
+        setShowAllSenses(false);
+        setDuplicateContextualSense(null);
+        setToolbarCoords({
+          x: clampedX,
+          y: toolbarY,
+          popoverY,
+          placement,
+        });
         setTranslationResult(null);
         setTranslationUnavailableNotice(false);
-        return;
-      }
 
-      const range = selection.getRangeAt(0);
-      const rect = range.getBoundingClientRect();
-
-      if (rect.width === 0 && rect.height === 0) return;
-
-      // Capture surrounding sentence context via DOM lookup
-      const ctx = passage ? extractSentenceContext(passage.sentences) : null;
-
-      setSelectedText(text);
-      setSelectedContext(ctx);
-      setManualMeaningVi("");
-      setContextualEnrichment(null);
-      setContextEnrichError(null);
-      setSelectedSenseIndex(-1);
-      setShowAllSenses(false);
-      setDuplicateContextualSense(null);
-      setToolbarCoords({
-        x: Math.min(window.innerWidth - 170, Math.max(170, rect.left + rect.width / 2)),
-        y: Math.max(70, rect.top - 10),
-      });
-      setTranslationResult(null);
-      setTranslationUnavailableNotice(false);
-
-      // Auto-trigger contextual enrichment for word/phrase selections
-      if (passage && ctx) {
-        const selType = classifyLocalSelection(text, passage.language);
-        if ((selType === "word" || selType === "phrase") && text.split(/\s+/).length <= 6) {
-          triggerContextualEnrichment(text, ctx);
+        // Auto-trigger contextual enrichment for word/phrase selections
+        if (passage && ctx) {
+          const selType = classifyLocalSelection(text, passage.language);
+          if ((selType === "word" || selType === "phrase") && text.split(/\s+/).length <= 6) {
+            triggerContextualEnrichment(text, ctx);
+          }
         }
-      }
-    }, 50);
+      });
+    }, 60);
   };
 
-  // Selection Translation Action
-  const handleTranslateSelection = async () => {
-    if (!selectedText || !passage) return;
-    const isWordOrPhrase = selectedContext && (classifyLocalSelection(selectedText, passage.language) !== "sentence") && selectedText.split(/\s+/).length <= 6;
+  // Selection Translation Action (supports direct token translation to avoid async state lag)
+  const handleTranslateSelection = async (overrideText?: string) => {
+    const textToTranslate = overrideText || selectedText;
+    if (!textToTranslate || !passage) return;
+
+    // Invariant: Ensure activeToken is cleared when opening translation
+    setActiveToken(null);
+
+    const isWordOrPhrase = selectedContext && (classifyLocalSelection(textToTranslate, passage.language) !== "sentence") && textToTranslate.split(/\s+/).length <= 6;
     if (isWordOrPhrase) {
-      triggerContextualEnrichment(selectedText, selectedContext);
+      triggerContextualEnrichment(textToTranslate, selectedContext);
       return;
     }
     if (!translationAvailability.configured) {
@@ -764,7 +806,7 @@ export const ReadingDetailPage: React.FC = () => {
     setIsTranslatingSelection(true);
     try {
       const res = await readingApi.translateSelection({
-        text: selectedText,
+        text: textToTranslate,
         sourceLanguage: passage.language,
         targetLanguage: "vi",
         readingId: passage.id,
@@ -843,12 +885,21 @@ export const ReadingDetailPage: React.FC = () => {
   const handleTokenClick = (token: Token, e: React.MouseEvent) => {
     if (!pronunciationMode || !token.clickable) return;
     e.stopPropagation();
+
+    // Invariant: Close any active selection toolbar, dictionary, or translation popup
+    closeOverlays();
+
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const viewportH = window.innerHeight;
+    const placeAbove = rect.top >= 70;
+
     setActiveToken({
       token,
       coords: {
         x: Math.min(window.innerWidth - 160, Math.max(160, rect.left + rect.width / 2)),
-        y: Math.max(60, rect.top - 8),
+        y: placeAbove ? Math.max(10, rect.top - 8) : Math.min(viewportH - 60, rect.bottom + 8),
+        popoverY: placeAbove ? Math.min(viewportH - 240, rect.bottom + 8) : Math.min(viewportH - 240, rect.bottom + 52),
+        placement: placeAbove ? "top" : "bottom",
       },
     });
   };
@@ -868,6 +919,7 @@ export const ReadingDetailPage: React.FC = () => {
     document.addEventListener("mousedown", handleDocumentClick);
     return () => {
       document.removeEventListener("mousedown", handleDocumentClick);
+      if (selectionTimerRef.current) clearTimeout(selectionTimerRef.current);
       stopAllAudio();
       if (enrichAbortRef.current) enrichAbortRef.current.abort();
     };
@@ -893,6 +945,13 @@ export const ReadingDetailPage: React.FC = () => {
   }
 
   const isZh = passage.language === "zh";
+
+  const isContextPopoverOpen = Boolean(
+    toolbarCoords && selectedText && (isEnrichingContext || contextualEnrichment || contextEnrichError || duplicateContextualSense)
+  );
+  const isTranslationPopoverOpen = Boolean(
+    (translationResult || translationUnavailableNotice) && toolbarCoords && !selectedContext && !contextualEnrichment && !isEnrichingContext
+  );
 
   return (
     <div className="page-container reading-page-container flex-col gap-6 animate-fade-in" style={{ maxWidth: "var(--reading-max-width)" }}>
@@ -1127,15 +1186,15 @@ export const ReadingDetailPage: React.FC = () => {
         </div>
 
         {/* ================= FLOATING SELECTION TOOLBAR ================= */}
-        {toolbarCoords && selectedText && (
+        {toolbarCoords && selectedText && !isContextPopoverOpen && !isTranslationPopoverOpen && (
           <div
             className="floating-selection-toolbar reading-selection-actions animate-pop-in"
             style={{
               position: "fixed",
               left: `${toolbarCoords.x}px`,
               top: `${toolbarCoords.y}px`,
-              transform: "translate(-50%, -100%)",
-              zIndex: 900,
+              transform: toolbarCoords.placement === "top" ? "translate(-50%, -100%)" : "translate(-50%, 0)",
+              zIndex: 950,
               backgroundColor: "var(--bg-surface)",
               borderRadius: "var(--radius-xl)",
               padding: "6px 8px",
@@ -1147,10 +1206,12 @@ export const ReadingDetailPage: React.FC = () => {
               maxWidth: "calc(100vw - 16px)",
               flexWrap: "wrap",
             }}
+            onMouseDown={(e) => e.stopPropagation()}
+            onTouchStart={(e) => e.stopPropagation()}
           >
             <button
               type="button"
-              onClick={handleTranslateSelection}
+              onClick={() => handleTranslateSelection()}
               disabled={isTranslatingSelection}
               style={{
                 display: "flex",
@@ -1225,24 +1286,28 @@ export const ReadingDetailPage: React.FC = () => {
         )}
 
         {/* ================= CONTEXTUAL DICTIONARY POPUP ================= */}
-        {toolbarCoords && selectedText && (isEnrichingContext || contextualEnrichment || contextEnrichError || duplicateContextualSense) && (
+        {isContextPopoverOpen && toolbarCoords && selectedText && (
           <div
             className="floating-selection-toolbar reading-context-popover animate-pop-in"
             style={{
               position: "fixed",
               left: `${toolbarCoords.x}px`,
-              top: `${toolbarCoords.y + 46}px`,
+              top: `${toolbarCoords.popoverY}px`,
               transform: "translateX(-50%)",
-              zIndex: 901,
+              zIndex: 951,
               backgroundColor: "var(--bg-surface)",
               borderRadius: "var(--radius-xl)",
               padding: "14px 16px",
               boxShadow: "var(--shadow-float)",
               border: "1px solid var(--border-default)",
-              maxWidth: "340px",
+              maxWidth: "360px",
               width: "88vw",
               minWidth: "220px",
+              maxHeight: `min(440px, calc(100vh - ${toolbarCoords.popoverY + 16}px))`,
+              overflowY: "auto",
             }}
+            onMouseDown={(e) => e.stopPropagation()}
+            onTouchStart={(e) => e.stopPropagation()}
           >
             {/* Header */}
             <div className="flex-row justify-between items-center" style={{ marginBottom: "8px" }}>
@@ -1359,16 +1424,15 @@ export const ReadingDetailPage: React.FC = () => {
         )}
 
         {/* ================= CLASSIC TRANSLATION POPOVER (long selections / no word context) ================= */}
-        {(translationResult || translationUnavailableNotice) && toolbarCoords && !selectedContext && !contextualEnrichment && !isEnrichingContext && (
-
+        {isTranslationPopoverOpen && toolbarCoords && (
           <div
-            className="floating-selection-toolbar animate-pop-in"
+            className="floating-selection-toolbar reading-context-popover animate-pop-in"
             style={{
               position: "fixed",
               left: `${toolbarCoords.x}px`,
-              top: `${toolbarCoords.y + 40}px`,
+              top: `${toolbarCoords.popoverY}px`,
               transform: "translateX(-50%)",
-              zIndex: 901,
+              zIndex: 951,
               backgroundColor: "var(--bg-surface)",
               borderRadius: "var(--radius-xl)",
               padding: "16px 18px",
@@ -1376,7 +1440,11 @@ export const ReadingDetailPage: React.FC = () => {
               border: "1px solid var(--border-default)",
               maxWidth: "380px",
               width: "90vw",
+              maxHeight: `min(440px, calc(100vh - ${toolbarCoords.popoverY + 16}px))`,
+              overflowY: "auto",
             }}
+            onMouseDown={(e) => e.stopPropagation()}
+            onTouchStart={(e) => e.stopPropagation()}
           >
             <div className="flex-row justify-between items-center" style={{ marginBottom: "8px" }}>
               <Badge variant={isZh ? "zh" : "en"} size="sm">
@@ -1476,15 +1544,15 @@ export const ReadingDetailPage: React.FC = () => {
         )}
 
         {/* ================= TOKEN CLICK POPOVER (PRONUNCIATION MODE) ================= */}
-        {activeToken && (
+        {activeToken && !toolbarCoords && !isContextPopoverOpen && !isTranslationPopoverOpen && (
           <div
             className="token-popover animate-pop-in"
             style={{
               position: "fixed",
               left: `${activeToken.coords.x}px`,
               top: `${activeToken.coords.y}px`,
-              transform: "translate(-50%, -100%)",
-              zIndex: 910,
+              transform: activeToken.coords.placement === "top" ? "translate(-50%, -100%)" : "translate(-50%, 0)",
+              zIndex: 950,
               backgroundColor: "var(--bg-surface)",
               borderRadius: "var(--radius-lg)",
               padding: "10px 14px",
@@ -1494,6 +1562,8 @@ export const ReadingDetailPage: React.FC = () => {
               alignItems: "center",
               gap: "10px",
             }}
+            onMouseDown={(e) => e.stopPropagation()}
+            onTouchStart={(e) => e.stopPropagation()}
           >
             <span
               className={isZh ? "hanzi" : ""}
@@ -1512,11 +1582,13 @@ export const ReadingDetailPage: React.FC = () => {
               type="button"
               onClick={() => {
                 const text = activeToken.token.text;
-                setSelectedText(text);
-                setToolbarCoords(activeToken.coords);
+                const coords = activeToken.coords;
                 setActiveToken(null);
+                setSelectedText(text);
+                setSelectedContext(null);
+                setToolbarCoords(coords);
                 if (translationAvailability.configured) {
-                  handleTranslateSelection();
+                  handleTranslateSelection(text);
                 } else {
                   setTranslationUnavailableNotice(true);
                 }

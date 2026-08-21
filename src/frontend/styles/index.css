@@ -704,18 +704,32 @@ button:disabled {
     flex-shrink: 0;
   }
 
-  /* Context dictionary popup: displayed safely above selection actions */
+  /* Context dictionary popup & translation popup: unified bottom sheet above bottom nav */
   .reading-context-popover {
     left: 12px !important;
     right: 12px !important;
     top: auto !important;
-    bottom: calc(var(--mobile-nav-height, 60px) + env(safe-area-inset-bottom, 0px) + 68px) !important;
+    bottom: calc(var(--mobile-nav-height, 60px) + env(safe-area-inset-bottom, 0px) + 12px) !important;
     transform: none !important;
     width: auto !important;
     max-width: none !important;
     max-height: 50vh !important;
     overflow-y: auto !important;
+    overscroll-behavior: contain !important;
+    -webkit-overflow-scrolling: touch;
     z-index: 951 !important;
+  }
+
+  /* Token click popover on mobile */
+  .token-popover {
+    left: 12px !important;
+    right: 12px !important;
+    top: auto !important;
+    bottom: calc(var(--mobile-nav-height, 60px) + env(safe-area-inset-bottom, 0px) + 12px) !important;
+    transform: none !important;
+    width: auto !important;
+    max-width: none !important;
+    z-index: 950 !important;
   }
 }
 
@@ -735,7 +749,21 @@ button:disabled {
   box-sizing: border-box;
   overflow-wrap: break-word;
   word-break: break-word;
-  transition: opacity var(--transition-fast), transform var(--transition-fast);
+  transition: opacity var(--transition-fast) ease-out;
+}
+
+.floating-selection-toolbar.animate-pop-in,
+.token-popover.animate-pop-in {
+  animation: floatPopoverFadeIn var(--transition-fast) ease-out forwards;
+}
+
+@keyframes floatPopoverFadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 .token-popover {
