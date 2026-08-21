@@ -671,8 +671,12 @@ export class LocalFirstSyncCoordinator implements SyncCoordinator {
 
       for (const [id, localRec] of activeLocalMap.entries()) {
         const remoteChange = storeRemoteMap.get(id);
-        if (!remoteChange || remoteChange.deleted || !remoteChange.record) {
+        if (!remoteChange) {
+          // Case A: Remote truly absent -> local only
           localOnlyCount++;
+        } else if (remoteChange.deleted || !remoteChange.record) {
+          // Case C2: Remote tombstone + local active -> Conflict (not local-only)
+          sameIdDifferentContentCount++;
         } else {
           if (areRecordsSemanticallyEqual(localRec, remoteChange.record)) {
             sameIdSameContentCount++;
@@ -757,7 +761,40 @@ export class LocalFirstSyncCoordinator implements SyncCoordinator {
       let conflictsCount = 0;
       let appliedRemoteCount = 0;
 
-      // 2. Deterministic merge per Store & Record ID
+      // 2. Sanitize existing guest syncQueue: guest unowned deletes MUST NOT automatically push to existing cloud account
+      const existingQueue = await this.persistence.getAll<SyncQueueItem>("syncQueue");
+      for (const qItem of existingQueue) {
+        if (qItem.deleted) {
+          const storeRemoteMap = remoteMap.get(qItem.store);
+          const remoteChange = storeRemoteMap?.get(qItem.recordId);
+          if (remoteChange && !remoteChange.deleted && remoteChange.record) {
+            // Case 1: Local guest delete vs Remote active record -> record explicit conflict, drop delete from queue, apply remote
+            const conflict: SyncConflict = {
+              id: qItem.id,
+              store: qItem.store,
+              recordId: qItem.recordId,
+              localRecord: undefined,
+              localDeleted: true,
+              remoteRecord: remoteChange.record,
+              conflictAt: new Date().toISOString(),
+              resolution: "remote",
+            };
+            await this.persistence.put("syncConflicts", conflict);
+            await this.persistence.delete("syncQueue", qItem.id);
+            await this.persistence.put(qItem.store, remoteChange.record);
+            appliedRemoteCount++;
+            conflictsCount++;
+          } else if (remoteChange && remoteChange.deleted) {
+            // Case 2: Remote is already a tombstone -> drop from queue (no-op)
+            await this.persistence.delete("syncQueue", qItem.id);
+          } else {
+            // Case 3: Remote is absent -> drop from queue to prevent creating orphan cloud tombstones during first account adoption
+            await this.persistence.delete("syncQueue", qItem.id);
+          }
+        }
+      }
+
+      // 3. Deterministic merge per Store & Record ID
       for (const store of SYNCABLE_STORES) {
         const localRecords = await this.persistence.getAll<StoredRecord>(store);
         const storeRemoteMap = remoteMap.get(store) ?? new Map<string, SyncChange>();
@@ -773,15 +810,30 @@ export class LocalFirstSyncCoordinator implements SyncCoordinator {
         for (const [id, localRec] of localMap.entries()) {
           const remoteChange = storeRemoteMap.get(id);
 
-          if (!remoteChange || remoteChange.deleted || !remoteChange.record) {
-            // CASE A: Local only -> keep local and ensure queued
+          if (!remoteChange) {
+            // Case A: Remote truly absent -> local only -> keep local and queue for upload
             await this.queueLocalChange(store, id, localRec, false);
+          } else if (remoteChange.deleted || !remoteChange.record) {
+            // Case C2: Remote tombstone + local active -> Explicit conflict
+            // Do NOT automatically upload local. Record conflict preserving both sides.
+            const conflict: SyncConflict = {
+              id: syncKey(store, id),
+              store,
+              recordId: id,
+              localRecord: localRec,
+              localDeleted: false,
+              remoteRecord: undefined,
+              conflictAt: new Date().toISOString(),
+              resolution: "local",
+            };
+            await this.persistence.put("syncConflicts", conflict);
+            conflictsCount++;
           } else {
-            // Both exist
+            // Both exist and remote is active
             if (areRecordsSemanticallyEqual(localRec, remoteChange.record)) {
-              // CASE C: Identical content -> keep local, no conflict
+              // Case C: Identical content -> keep local, no conflict
             } else {
-              // CASE D: Different content -> create SyncConflict
+              // Case D: Different content -> create SyncConflict
               const conflict: SyncConflict = {
                 id: syncKey(store, id),
                 store,
@@ -802,11 +854,12 @@ export class LocalFirstSyncCoordinator implements SyncCoordinator {
         for (const [id, remoteChange] of storeRemoteMap.entries()) {
           if (!remoteChange.deleted && remoteChange.record) {
             if (!localMap.has(id)) {
-              // CASE B: Remote only -> write locally without creating new local queue item
+              // Case B: Remote only -> write locally without creating new local queue item
               await this.persistence.put(store, remoteChange.record);
               appliedRemoteCount++;
             }
           }
+          // Note: If remote is deleted and local absent -> respect tombstone, do not resurrect
         }
       }
 
