@@ -15,7 +15,7 @@ export function getLanguageApiUrl(): string {
 
 export const STATIC_LOCAL_USER = {
   id: "local-profile",
-  name: "Tú Trinh",
+  name: "Khách",
   email: "local@device.invalid",
   avatar: null,
 } as const;
