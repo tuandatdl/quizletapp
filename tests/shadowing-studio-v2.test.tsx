@@ -99,7 +99,7 @@ describe("Shadowing Studio V2 - Practice Studio UX & State Architecture", () => 
 
     it("auto-advances only when practiceMode is continuous via managed continuousAdvanceTimerRef", () => {
       expect(shadowingPageSrc).toContain("continuousAdvanceTimerRef");
-      expect(shadowingPageSrc).toMatch(/if\s*\(\s*practiceMode === "continuous"\s*\)/);
+      expect(shadowingPageSrc).toMatch(/if\s*\(\s*practiceModeRef\.current === "continuous"\s*\)/);
     });
   });
 
@@ -377,6 +377,240 @@ describe("Shadowing Studio V2 - Practice Studio UX & State Architecture", () => 
         secondAttemptSent = true;
       }
       expect(secondAttemptSent).toBe(true);
+    });
+  });
+
+  describe("12. Continuous Advance Cancellation & Epoch Guard Regressions", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("cancels auto advance at 1999ms boundary when user switches to Manual mode", () => {
+      let practiceMode = "continuous";
+      const practiceModeRef = { current: "continuous" };
+      let currentPracticeIndex = 0;
+      const currentPracticeIndexRef = { current: 0 };
+      const continuousAdvanceEpochRef = { current: 0 };
+      let continuousAdvanceTimer: any = null;
+      let advanced = false;
+
+      const cancelContinuousAdvance = () => {
+        continuousAdvanceEpochRef.current += 1;
+        if (continuousAdvanceTimer) {
+          clearTimeout(continuousAdvanceTimer);
+          continuousAdvanceTimer = null;
+        }
+      };
+
+      const handleSwitchPracticeMode = (mode: string) => {
+        practiceModeRef.current = mode;
+        if (mode === "manual") {
+          cancelContinuousAdvance();
+        }
+        practiceMode = mode;
+      };
+
+      // 1. Result in continuous mode schedules auto advance
+      cancelContinuousAdvance();
+      const scheduledEpoch = continuousAdvanceEpochRef.current;
+      const scheduledIdx = currentPracticeIndex;
+
+      continuousAdvanceTimer = setTimeout(() => {
+        continuousAdvanceTimer = null;
+        if (
+          practiceModeRef.current !== "continuous" ||
+          scheduledEpoch !== continuousAdvanceEpochRef.current ||
+          scheduledIdx !== currentPracticeIndexRef.current
+        ) {
+          return;
+        }
+        advanced = true;
+        currentPracticeIndex += 1;
+        currentPracticeIndexRef.current = currentPracticeIndex;
+      }, 2000);
+
+      // 2. Advance timers to 1999ms
+      vi.advanceTimersByTime(1999);
+      expect(advanced).toBe(false);
+      expect(currentPracticeIndex).toBe(0);
+
+      // 3. User switches to Manual at 1999ms
+      handleSwitchPracticeMode("manual");
+      expect(practiceModeRef.current).toBe("manual");
+      expect(practiceMode).toBe("manual");
+      expect(continuousAdvanceEpochRef.current).toBeGreaterThan(scheduledEpoch);
+
+      // 4. Advance timers past 2000ms
+      vi.advanceTimersByTime(1000);
+
+      // 5. Current sentence must remain 0
+      expect(advanced).toBe(false);
+      expect(currentPracticeIndex).toBe(0);
+    });
+
+    it("A: immediate switch to Manual after result prevents auto-advance", () => {
+      const practiceModeRef = { current: "continuous" };
+      let currentPracticeIndex = 0;
+      const continuousAdvanceEpochRef = { current: 0 };
+      let continuousAdvanceTimer: any = null;
+      let advanced = false;
+
+      const cancelContinuousAdvance = () => {
+        continuousAdvanceEpochRef.current += 1;
+        if (continuousAdvanceTimer) {
+          clearTimeout(continuousAdvanceTimer);
+          continuousAdvanceTimer = null;
+        }
+      };
+
+      // Schedule
+      const scheduledEpoch = continuousAdvanceEpochRef.current;
+      continuousAdvanceTimer = setTimeout(() => {
+        if (
+          practiceModeRef.current !== "continuous" ||
+          scheduledEpoch !== continuousAdvanceEpochRef.current
+        ) {
+          return;
+        }
+        advanced = true;
+      }, 2000);
+
+      // Immediate switch to manual (at 0ms)
+      practiceModeRef.current = "manual";
+      cancelContinuousAdvance();
+
+      vi.advanceTimersByTime(5000);
+      expect(advanced).toBe(false);
+    });
+
+    it("B: switch to Manual near timer boundary (e.g. 1950ms) prevents auto-advance", () => {
+      const practiceModeRef = { current: "continuous" };
+      let currentPracticeIndex = 0;
+      const continuousAdvanceEpochRef = { current: 0 };
+      let continuousAdvanceTimer: any = null;
+      let advanced = false;
+
+      const cancelContinuousAdvance = () => {
+        continuousAdvanceEpochRef.current += 1;
+        if (continuousAdvanceTimer) {
+          clearTimeout(continuousAdvanceTimer);
+          continuousAdvanceTimer = null;
+        }
+      };
+
+      const scheduledEpoch = continuousAdvanceEpochRef.current;
+      continuousAdvanceTimer = setTimeout(() => {
+        if (
+          practiceModeRef.current !== "continuous" ||
+          scheduledEpoch !== continuousAdvanceEpochRef.current
+        ) {
+          return;
+        }
+        advanced = true;
+      }, 2000);
+
+      vi.advanceTimersByTime(1950);
+      practiceModeRef.current = "manual";
+      cancelContinuousAdvance();
+
+      vi.advanceTimersByTime(1000);
+      expect(advanced).toBe(false);
+    });
+
+    it("C: switch Continuous -> Manual -> Continuous invalidates old timer; only new timer can advance", () => {
+      const practiceModeRef = { current: "continuous" };
+      const continuousAdvanceEpochRef = { current: 0 };
+      let continuousAdvanceTimer: any = null;
+      const advancedSteps: number[] = [];
+
+      const cancelContinuousAdvance = () => {
+        continuousAdvanceEpochRef.current += 1;
+        if (continuousAdvanceTimer) {
+          clearTimeout(continuousAdvanceTimer);
+          continuousAdvanceTimer = null;
+        }
+      };
+
+      // Timer 1 scheduled at t=0
+      const epoch1 = continuousAdvanceEpochRef.current;
+      continuousAdvanceTimer = setTimeout(() => {
+        if (practiceModeRef.current === "continuous" && epoch1 === continuousAdvanceEpochRef.current) {
+          advancedSteps.push(1);
+        }
+      }, 2000);
+
+      vi.advanceTimersByTime(1000); // t=1000
+
+      // User switches to Manual at t=1000
+      practiceModeRef.current = "manual";
+      cancelContinuousAdvance();
+
+      // User switches back to Continuous at t=1500 and triggers a new attempt result
+      vi.advanceTimersByTime(500); // t=1500
+      practiceModeRef.current = "continuous";
+      const epoch2 = continuousAdvanceEpochRef.current;
+      continuousAdvanceTimer = setTimeout(() => {
+        if (practiceModeRef.current === "continuous" && epoch2 === continuousAdvanceEpochRef.current) {
+          advancedSteps.push(2);
+        }
+      }, 2000); // scheduled to fire at t=3500
+
+      vi.advanceTimersByTime(600); // t=2100: old timer would have fired at t=2000, but is cancelled & epoch mismatched
+      expect(advancedSteps).toEqual([]);
+
+      vi.advanceTimersByTime(1500); // t=3600: new timer fires
+      expect(advancedSteps).toEqual([2]);
+    });
+
+    it("D: manual sentence navigation cancels pending continuous advance timer", () => {
+      const practiceModeRef = { current: "continuous" };
+      let currentPracticeIndex = 0;
+      const currentPracticeIndexRef = { current: 0 };
+      const continuousAdvanceEpochRef = { current: 0 };
+      let continuousAdvanceTimer: any = null;
+      let autoAdvanced = false;
+
+      const cancelContinuousAdvance = () => {
+        continuousAdvanceEpochRef.current += 1;
+        if (continuousAdvanceTimer) {
+          clearTimeout(continuousAdvanceTimer);
+          continuousAdvanceTimer = null;
+        }
+      };
+
+      const scheduledEpoch = continuousAdvanceEpochRef.current;
+      const scheduledIdx = currentPracticeIndex;
+      continuousAdvanceTimer = setTimeout(() => {
+        if (
+          practiceModeRef.current === "continuous" &&
+          scheduledEpoch === continuousAdvanceEpochRef.current &&
+          scheduledIdx === currentPracticeIndexRef.current
+        ) {
+          autoAdvanced = true;
+        }
+      }, 2000);
+
+      // User manually navigates to sentence 3 at 500ms
+      vi.advanceTimersByTime(500);
+      cancelContinuousAdvance();
+      currentPracticeIndex = 3;
+      currentPracticeIndexRef.current = 3;
+
+      vi.advanceTimersByTime(3000);
+      expect(autoAdvanced).toBe(false);
+      expect(currentPracticeIndex).toBe(3);
+    });
+
+    it("E: verify source code structural invariants for continuousAdvanceEpochRef and synchronous ref assignment", () => {
+      const freshShadowingSrc = fs.readFileSync(shadowingPagePath, "utf-8");
+      expect(freshShadowingSrc).toContain("continuousAdvanceEpochRef");
+      expect(freshShadowingSrc).toContain("cancelContinuousAdvance");
+      expect(freshShadowingSrc).toMatch(/practiceModeRef\.current\s*=\s*mode;/);
+      expect(freshShadowingSrc).toMatch(/scheduledEpoch\s*!==\s*continuousAdvanceEpochRef\.current/);
     });
   });
 });

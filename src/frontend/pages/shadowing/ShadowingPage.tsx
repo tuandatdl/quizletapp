@@ -117,10 +117,20 @@ export const ShadowingPage: React.FC = () => {
   const analysisGenerationRef = useRef(0);
   const serverAssessmentGenerationRef = useRef(0);
   const continuousAdvanceTimerRef = useRef<any>(null);
+  const continuousAdvanceEpochRef = useRef(0);
   const analysisAbortRef = useRef<AbortController | null>(null);
   const userAudioElRef = useRef<HTMLAudioElement | null>(null);
   const recordedAudioUrlRef = useRef<string | null>(null);
   const inFlightServerAdvanceRef = useRef<Set<string>>(new Set());
+
+  // Continuous auto-advance cancellation
+  const cancelContinuousAdvance = useCallback(() => {
+    continuousAdvanceEpochRef.current += 1;
+    if (continuousAdvanceTimerRef.current) {
+      clearTimeout(continuousAdvanceTimerRef.current);
+      continuousAdvanceTimerRef.current = null;
+    }
+  }, []);
 
   // User audio controls
   const stopUserAudio = useCallback(() => {
@@ -163,15 +173,12 @@ export const ShadowingPage: React.FC = () => {
     analysisAbortRef.current?.abort();
     analysisAbortRef.current = null;
 
-    // Clear timers
+    // Clear timers & continuous advance epoch
     if (timerRef.current) {
       clearInterval(timerRef.current);
       timerRef.current = null;
     }
-    if (continuousAdvanceTimerRef.current) {
-      clearTimeout(continuousAdvanceTimerRef.current);
-      continuousAdvanceTimerRef.current = null;
-    }
+    cancelContinuousAdvance();
 
     // Stop MediaRecorder safely
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
@@ -529,10 +536,9 @@ export const ShadowingPage: React.FC = () => {
     setPhase("RESULT");
 
     // In Continuous mode: schedule managed auto-advance
-    if (practiceMode === "continuous") {
-      if (continuousAdvanceTimerRef.current) {
-        clearTimeout(continuousAdvanceTimerRef.current);
-      }
+    if (practiceModeRef.current === "continuous") {
+      cancelContinuousAdvance();
+      const scheduledEpoch = continuousAdvanceEpochRef.current;
       const timerGen = recordingGenerationRef.current;
       const timerIdx = idx;
       continuousAdvanceTimerRef.current = setTimeout(() => {
@@ -540,6 +546,7 @@ export const ShadowingPage: React.FC = () => {
         if (
           !mountedRef.current ||
           practiceModeRef.current !== "continuous" ||
+          scheduledEpoch !== continuousAdvanceEpochRef.current ||
           timerIdx !== currentPracticeIndexRef.current ||
           timerGen !== recordingGenerationRef.current
         ) {
@@ -726,10 +733,12 @@ export const ShadowingPage: React.FC = () => {
 
   // Practice Mode Switch Handler
   const handleSwitchPracticeMode = (mode: ShadowingPracticeMode) => {
-    if (mode === "manual" && continuousAdvanceTimerRef.current) {
-      clearTimeout(continuousAdvanceTimerRef.current);
-      continuousAdvanceTimerRef.current = null;
+    practiceModeRef.current = mode; // synchronous source of truth
+
+    if (mode === "manual") {
+      cancelContinuousAdvance();
     }
+
     setPracticeMode(mode);
   };
 
