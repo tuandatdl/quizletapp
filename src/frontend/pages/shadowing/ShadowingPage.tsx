@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useState, useRef, useCallback } from "react";
 import { useSearchParams, Link, useNavigate } from "react-router-dom";
 import {
   Headphones,
@@ -28,7 +28,7 @@ import { useToast } from "../../context/ToastContext";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { Badge } from "../../components/ui/Badge";
-import { AudioButton } from "../../components/ui/AudioButton";
+import { AudioButton, stopAllGlobalAudio } from "../../components/ui/AudioButton";
 import { ProgressBar } from "../../components/ui/ProgressBar";
 import { getFriendlyErrorMessage } from "../../api/client";
 import type {
@@ -50,16 +50,14 @@ export interface SentenceAttempt {
   score: number;
   recordedAt: string;
   result: PronunciationResult;
-  audioBlob?: Blob;
-  audioUrl?: string;
 }
 
 export interface SentenceProgress {
   completed: boolean;
   bestScore?: number;
   latestScore?: number;
+  latestAudioBlob?: Blob;
   attempts: SentenceAttempt[];
-  committed?: boolean;
 }
 
 export function formatRecordingTime(seconds: number): string {
@@ -96,45 +94,44 @@ export const ShadowingPage: React.FC = () => {
   const [analysisProgress, setAnalysisProgress] = useState<LocalPronunciationProgress | null>(null);
   const [isPlayingUserAudio, setIsPlayingUserAudio] = useState(false);
 
+  // Refs for race condition & generation safety
+  const currentPracticeIndexRef = useRef(0);
+  currentPracticeIndexRef.current = currentPracticeIndex;
+
+  const practiceModeRef = useRef<ShadowingPracticeMode>("manual");
+  practiceModeRef.current = practiceMode;
+
+  const sessionRef = useRef<ShadowingSession | null>(null);
+  sessionRef.current = session;
+
+  const sentencesRef = useRef<ReadingSentence[]>([]);
+  sentencesRef.current = sentences;
+
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<any>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const mountedRef = useRef(true);
   const autoStartedReadingRef = useRef<string | null>(null);
+
+  const recordingGenerationRef = useRef(0);
   const analysisGenerationRef = useRef(0);
+  const serverAssessmentGenerationRef = useRef(0);
+  const continuousAdvanceTimerRef = useRef<any>(null);
   const analysisAbortRef = useRef<AbortController | null>(null);
   const userAudioElRef = useRef<HTMLAudioElement | null>(null);
+  const recordedAudioUrlRef = useRef<string | null>(null);
 
-  // Fetch available readings if no session started
-  useEffect(() => {
-    readingApi.list(language).then(setReadings).catch(() => []);
-  }, [language]);
-
-  // Clean up user audio on unmount or URL change
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-      analysisAbortRef.current?.abort();
-      if (recordedAudioUrl) {
-        URL.revokeObjectURL(recordedAudioUrl);
-      }
-      if (timerRef.current) clearInterval(timerRef.current);
-      if (mediaRecorderRef.current?.state !== "inactive") mediaRecorderRef.current?.stop();
-      mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
-      window.speechSynthesis?.cancel();
-    };
-  }, []);
-
-  // Stop user audio when model audio or other events fire
-  const stopUserAudio = () => {
+  // User audio controls
+  const stopUserAudio = useCallback(() => {
     if (userAudioElRef.current) {
-      userAudioElRef.current.pause();
-      userAudioElRef.current.currentTime = 0;
+      try {
+        userAudioElRef.current.pause();
+        userAudioElRef.current.currentTime = 0;
+      } catch {}
     }
     setIsPlayingUserAudio(false);
-  };
+  }, []);
 
   const togglePlayUserAudio = () => {
     if (!userAudioElRef.current) return;
@@ -142,25 +139,106 @@ export const ShadowingPage: React.FC = () => {
       userAudioElRef.current.pause();
       setIsPlayingUserAudio(false);
     } else {
-      // Stop model audio first (mutual exclusivity)
-      window.speechSynthesis?.cancel();
+      // Mutual Exclusivity: Stop model audio before playing user recording
+      stopAllGlobalAudio();
       userAudioElRef.current
         .play()
-        .then(() => setIsPlayingUserAudio(true))
-        .catch(() => setIsPlayingUserAudio(false));
+        .then(() => {
+          if (mountedRef.current) setIsPlayingUserAudio(true);
+        })
+        .catch(() => {
+          if (mountedRef.current) setIsPlayingUserAudio(false);
+        });
     }
+  };
+
+  // Centralized Runtime Cleanup
+  const performFullRuntimeCleanup = useCallback(() => {
+    // Invalidate generations
+    recordingGenerationRef.current++;
+    analysisGenerationRef.current++;
+    serverAssessmentGenerationRef.current++;
+
+    // Abort in-flight analysis
+    analysisAbortRef.current?.abort();
+    analysisAbortRef.current = null;
+
+    // Clear timers
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    if (continuousAdvanceTimerRef.current) {
+      clearTimeout(continuousAdvanceTimerRef.current);
+      continuousAdvanceTimerRef.current = null;
+    }
+
+    // Stop MediaRecorder safely
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      try {
+        mediaRecorderRef.current.stop();
+      } catch {}
+    }
+    mediaRecorderRef.current = null;
+
+    // Stop MediaStream tracks
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((track) => {
+        try {
+          track.stop();
+        } catch {}
+      });
+      mediaStreamRef.current = null;
+    }
+
+    // Stop audios
+    stopUserAudio();
+    stopAllGlobalAudio();
+
+    // Revoke object URL
+    if (recordedAudioUrlRef.current) {
+      try {
+        URL.revokeObjectURL(recordedAudioUrlRef.current);
+      } catch {}
+      recordedAudioUrlRef.current = null;
+      setRecordedAudioUrl(null);
+    }
+
+    setIsRecording(false);
+  }, [stopUserAudio]);
+
+  // Fetch available readings if no session started
+  useEffect(() => {
+    readingApi.list(language).then(setReadings).catch(() => []);
+  }, [language]);
+
+  // Clean unmount
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      performFullRuntimeCleanup();
+    };
+  }, [performFullRuntimeCleanup]);
+
+  // Exit Shadowing Studio safely
+  const handleExitShadowing = () => {
+    performFullRuntimeCleanup();
+    setSession(null);
+    setSentences([]);
+    setProgressMap({});
+    setLastAttemptResult(null);
+    setRecordedAudioBlob(null);
+    setAudioBase64(null);
+    setAudioMimeType(undefined);
   };
 
   // Start Session with Full Passage sentences
   const handleStartSession = async (rId: string) => {
-    analysisAbortRef.current?.abort();
-    stopUserAudio();
-    if (recordedAudioUrl) {
-      URL.revokeObjectURL(recordedAudioUrl);
-      setRecordedAudioUrl(null);
-    }
+    performFullRuntimeCleanup();
     setRecordedAudioBlob(null);
     setAudioBase64(null);
+    setAudioMimeType(undefined);
     setLastAttemptResult(null);
     setAnalysisProgress(null);
     setProgressMap({});
@@ -220,24 +298,8 @@ export const ShadowingPage: React.FC = () => {
       return;
     }
 
-    // Invalidate and abort ongoing evaluation
-    analysisGenerationRef.current++;
-    analysisAbortRef.current?.abort();
+    performFullRuntimeCleanup();
 
-    // Stop active recording and audio
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-      mediaRecorderRef.current.stop();
-      setIsRecording(false);
-    }
-    if (timerRef.current) clearInterval(timerRef.current);
-    stopUserAudio();
-    window.speechSynthesis?.cancel();
-
-    // Clean up temporary recording state for previous sentence
-    if (recordedAudioUrl) {
-      URL.revokeObjectURL(recordedAudioUrl);
-      setRecordedAudioUrl(null);
-    }
     setRecordedAudioBlob(null);
     setAudioBase64(null);
     setAudioMimeType(undefined);
@@ -246,13 +308,19 @@ export const ShadowingPage: React.FC = () => {
     const targetSentence = sentences[targetIndex];
     setCurrentPracticeIndex(targetIndex);
 
-    // Check if target sentence already has evaluated attempt
+    // Check if target sentence already has evaluated attempt with retained audio blob
     const existingProgress = progressMap[targetIndex];
     if (existingProgress && existingProgress.attempts.length > 0) {
       const latestAttempt = existingProgress.attempts[existingProgress.attempts.length - 1];
       setLastAttemptResult(latestAttempt.result);
-      if (latestAttempt.audioUrl) {
-        setRecordedAudioUrl(latestAttempt.audioUrl);
+
+      if (existingProgress.latestAudioBlob) {
+        setRecordedAudioBlob(existingProgress.latestAudioBlob);
+        try {
+          const freshUrl = URL.createObjectURL(existingProgress.latestAudioBlob);
+          recordedAudioUrlRef.current = freshUrl;
+          setRecordedAudioUrl(freshUrl);
+        } catch {}
       }
       setPhase("RESULT");
     } else {
@@ -261,17 +329,21 @@ export const ShadowingPage: React.FC = () => {
     }
 
     if (session && targetSentence) {
-      setSession({
-        ...session,
-        current_sentence: targetIndex,
-        currentSentenceData: {
-          id: targetSentence.id,
-          order: targetSentence.order,
-          text: targetSentence.text,
-          translationVi: targetSentence.translationVi,
-          audioUrl: targetSentence.audioUrl,
-        },
-      });
+      setSession((prev) =>
+        prev
+          ? {
+              ...prev,
+              current_sentence: targetIndex,
+              currentSentenceData: {
+                id: targetSentence.id,
+                order: targetSentence.order,
+                text: targetSentence.text,
+                translationVi: targetSentence.translationVi,
+                audioUrl: targetSentence.audioUrl,
+              },
+            }
+          : null
+      );
     }
 
     setIsSentenceSelectorOpen(false);
@@ -284,9 +356,10 @@ export const ShadowingPage: React.FC = () => {
   };
 
   const handleNextSentence = () => {
+    const allDone = sentences.length > 0 && Object.values(progressMap).filter((p) => p.completed).length >= sentences.length;
     if (currentPracticeIndex < sentences.length - 1) {
       handleSelectSentence(currentPracticeIndex + 1);
-    } else if (allCompleted) {
+    } else if (allDone) {
       setPhase("COMPLETED");
       success("Chúc mừng bạn đã hoàn thành bài luyện Shadowing!");
     }
@@ -294,14 +367,14 @@ export const ShadowingPage: React.FC = () => {
 
   // Recording controls
   const startRecording = async () => {
-    analysisAbortRef.current?.abort();
-    stopUserAudio();
-    window.speechSynthesis?.cancel();
+    performFullRuntimeCleanup();
 
-    if (recordedAudioUrl) {
-      URL.revokeObjectURL(recordedAudioUrl);
-      setRecordedAudioUrl(null);
-    }
+    const generation = recordingGenerationRef.current;
+    const currentSent = sentences[currentPracticeIndex] || session?.currentSentenceData;
+    const sentenceIndex = currentPracticeIndex;
+    const sentenceId = currentSent?.id;
+    const sessionId = session?.id;
+
     setRecordedAudioBlob(null);
     setAudioBase64(null);
     setAudioMimeType(undefined);
@@ -314,6 +387,11 @@ export const ShadowingPage: React.FC = () => {
         return;
       }
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (!mountedRef.current || generation !== recordingGenerationRef.current || sentenceIndex !== currentPracticeIndexRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+
       mediaStreamRef.current = stream;
       const recorder = new MediaRecorder(stream);
       mediaRecorderRef.current = recorder;
@@ -325,13 +403,37 @@ export const ShadowingPage: React.FC = () => {
 
       recorder.onstop = () => {
         const blob = new Blob(audioChunksRef.current, { type: recorder.mimeType || "audio/webm" });
-        stream.getTracks().forEach((track) => track.stop());
+        stream.getTracks().forEach((track) => {
+          try {
+            track.stop();
+          } catch {}
+        });
         mediaStreamRef.current = null;
-        if (!mountedRef.current || blob.size === 0) return;
 
-        const url = URL.createObjectURL(blob);
+        // Blocker 1 Guard: Verify active recording generation and sentence before touching React state
+        if (
+          !mountedRef.current ||
+          generation !== recordingGenerationRef.current ||
+          sentenceIndex !== currentPracticeIndexRef.current ||
+          sentenceId !== sentencesRef.current[currentPracticeIndexRef.current]?.id ||
+          sessionId !== sessionRef.current?.id ||
+          blob.size === 0
+        ) {
+          return;
+        }
+
+        // Revoke any previous URL
+        if (recordedAudioUrlRef.current) {
+          try {
+            URL.revokeObjectURL(recordedAudioUrlRef.current);
+          } catch {}
+          recordedAudioUrlRef.current = null;
+        }
+
+        const freshUrl = URL.createObjectURL(blob);
+        recordedAudioUrlRef.current = freshUrl;
         setRecordedAudioBlob(blob);
-        setRecordedAudioUrl(url);
+        setRecordedAudioUrl(freshUrl);
         setAudioMimeType(blob.type || "audio/webm");
 
         if (!isStaticRuntime()) {
@@ -339,7 +441,12 @@ export const ShadowingPage: React.FC = () => {
           reader.readAsDataURL(blob);
           reader.onloadend = () => {
             const b64 = (reader.result as string).split(",")[1];
-            if (b64 && mountedRef.current) {
+            if (
+              b64 &&
+              mountedRef.current &&
+              generation === recordingGenerationRef.current &&
+              sentenceIndex === currentPracticeIndexRef.current
+            ) {
               setAudioBase64(b64);
             }
           };
@@ -361,12 +468,15 @@ export const ShadowingPage: React.FC = () => {
     if (mediaRecorderRef.current && isRecording) {
       mediaRecorderRef.current.stop();
       setIsRecording(false);
-      if (timerRef.current) clearInterval(timerRef.current);
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
     }
   };
 
   // Helper to record attempt progress and update session stats without advancing sentence cursor
-  const recordAttemptSuccess = (res: PronunciationResult, blob: Blob | null, url: string | null) => {
+  const recordAttemptSuccess = (res: PronunciationResult, blob: Blob | null) => {
     const idx = currentPracticeIndex;
     const prevProg = progressMap[idx] || { completed: false, attempts: [] };
     const newAttempt: SentenceAttempt = {
@@ -374,14 +484,13 @@ export const ShadowingPage: React.FC = () => {
       score: res.overallScore,
       recordedAt: new Date().toISOString(),
       result: res,
-      audioBlob: blob || undefined,
-      audioUrl: url || undefined,
     };
     const newBest = Math.max(prevProg.bestScore ?? 0, res.overallScore);
     const updatedProg: SentenceProgress = {
       completed: true,
       bestScore: newBest,
       latestScore: res.overallScore,
+      latestAudioBlob: blob || prevProg.latestAudioBlob,
       attempts: [...prevProg.attempts, newAttempt],
     };
 
@@ -395,33 +504,44 @@ export const ShadowingPage: React.FC = () => {
     const totalScore = Object.values(newProgressMap).reduce((sum, p) => sum + (p.bestScore ?? 0), 0);
     const averageScore = completedCount > 0 ? Math.round(totalScore / completedCount) : 0;
 
-    if (session) {
-      setSession({
-        ...session,
-        completed_count: completedCount,
-        score_total: totalScore,
-        average_score: averageScore,
-      });
-    }
+    // Use functional state update to prevent stale closures from reverting stats
+    setSession((prev) =>
+      prev
+        ? {
+            ...prev,
+            completed_count: completedCount,
+            score_total: totalScore,
+            average_score: averageScore,
+          }
+        : null
+    );
 
     setLastAttemptResult(res);
     setPhase("RESULT");
 
-    // In Continuous mode: auto-advance to next sentence after brief review
+    // In Continuous mode: schedule managed auto-advance
     if (practiceMode === "continuous") {
-      if (idx < sentences.length - 1) {
-        setTimeout(() => {
-          if (mountedRef.current) {
-            handleSelectSentence(idx + 1);
-          }
-        }, 2200);
-      } else if (completedCount >= sentences.length) {
-        setTimeout(() => {
-          if (mountedRef.current) {
-            setPhase("COMPLETED");
-          }
-        }, 1500);
+      if (continuousAdvanceTimerRef.current) {
+        clearTimeout(continuousAdvanceTimerRef.current);
       }
+      const timerGen = recordingGenerationRef.current;
+      const timerIdx = idx;
+      continuousAdvanceTimerRef.current = setTimeout(() => {
+        continuousAdvanceTimerRef.current = null;
+        if (
+          !mountedRef.current ||
+          practiceModeRef.current !== "continuous" ||
+          timerIdx !== currentPracticeIndexRef.current ||
+          timerGen !== recordingGenerationRef.current
+        ) {
+          return;
+        }
+        if (timerIdx < sentencesRef.current.length - 1) {
+          handleSelectSentence(timerIdx + 1);
+        } else if (completedCount >= sentencesRef.current.length) {
+          setPhase("COMPLETED");
+        }
+      }, 2000);
     }
   };
 
@@ -429,7 +549,9 @@ export const ShadowingPage: React.FC = () => {
   const handleLocalEvaluate = async () => {
     const currentSent = sentences[currentPracticeIndex] || session?.currentSentenceData;
     if (!session || !currentSent || !recordedAudioBlob) return;
+
     const targetIdx = currentPracticeIndex;
+    const targetSentenceId = currentSent.id;
     const generation = ++analysisGenerationRef.current;
     const controller = new AbortController();
     analysisAbortRef.current?.abort();
@@ -443,15 +565,28 @@ export const ShadowingPage: React.FC = () => {
         expectedText: currentSent.text,
         signal: controller.signal,
         onProgress: (p) => {
-          if (mountedRef.current && generation === analysisGenerationRef.current && targetIdx === currentPracticeIndex) {
+          if (
+            mountedRef.current &&
+            generation === analysisGenerationRef.current &&
+            targetIdx === currentPracticeIndexRef.current &&
+            targetSentenceId === sentencesRef.current[currentPracticeIndexRef.current]?.id
+          ) {
             setAnalysisProgress(p);
           }
         },
       });
 
-      if (!mountedRef.current || controller.signal.aborted || generation !== analysisGenerationRef.current || targetIdx !== currentPracticeIndex) return;
+      if (
+        !mountedRef.current ||
+        controller.signal.aborted ||
+        generation !== analysisGenerationRef.current ||
+        targetIdx !== currentPracticeIndexRef.current ||
+        targetSentenceId !== sentencesRef.current[currentPracticeIndexRef.current]?.id
+      ) {
+        return;
+      }
 
-      recordAttemptSuccess(res, recordedAudioBlob, recordedAudioUrl);
+      recordAttemptSuccess(res, recordedAudioBlob);
       try {
         await saveLocalPronunciationHistory(res as LocalPronunciationAnalysis);
       } catch {
@@ -459,7 +594,11 @@ export const ShadowingPage: React.FC = () => {
       }
       success("Đã hoàn thành phân tích luyện đọc trên thiết bị!");
     } catch (err: any) {
-      if (err?.name !== "AbortError" && generation === analysisGenerationRef.current && targetIdx === currentPracticeIndex) {
+      if (
+        err?.name !== "AbortError" &&
+        generation === analysisGenerationRef.current &&
+        targetIdx === currentPracticeIndexRef.current
+      ) {
         setPhase("RECORD");
         error(getFriendlyErrorMessage(err));
       }
@@ -470,11 +609,14 @@ export const ShadowingPage: React.FC = () => {
     }
   };
 
-  // Server Evaluate (Server Mode - stays on same sentence in Studio V2)
+  // Server Evaluate (Server Mode)
   const handleEvaluateAndAdvance = async () => {
     const currentSent = sentences[currentPracticeIndex] || session?.currentSentenceData;
     if (!session || !currentSent || !audioBase64) return;
+
     const targetIdx = currentPracticeIndex;
+    const targetSentenceId = currentSent.id;
+    const generation = ++serverAssessmentGenerationRef.current;
     setPhase("EVALUATING");
 
     try {
@@ -487,20 +629,46 @@ export const ShadowingPage: React.FC = () => {
         sentenceId: currentSent.id,
       });
 
-      if (!mountedRef.current || targetIdx !== currentPracticeIndex) return;
+      if (
+        !mountedRef.current ||
+        generation !== serverAssessmentGenerationRef.current ||
+        targetIdx !== currentPracticeIndexRef.current ||
+        targetSentenceId !== sentencesRef.current[currentPracticeIndexRef.current]?.id
+      ) {
+        return;
+      }
 
-      recordAttemptSuccess(assessResult, recordedAudioBlob, recordedAudioUrl);
+      recordAttemptSuccess(assessResult, recordedAudioBlob);
 
-      // Advance server session state quietly if needed
-      if (assessResult.attemptId) {
-        shadowingApi.advance(session.id, assessResult.attemptId).then((next) => {
-          if (mountedRef.current && targetIdx === currentPracticeIndex) {
-            setSession((prev) => (prev ? { ...prev, completed_count: next.completed_count, average_score: next.average_score } : next));
-          }
-        }).catch(() => {});
+      // Blocker 5 Safety Guard: Only advance server cursor if practicing server's current sentence
+      if (
+        assessResult.attemptId &&
+        targetIdx === session.current_sentence &&
+        targetSentenceId === session.currentSentenceData?.id
+      ) {
+        shadowingApi
+          .advance(session.id, assessResult.attemptId)
+          .then((next) => {
+            if (
+              mountedRef.current &&
+              generation === serverAssessmentGenerationRef.current &&
+              targetIdx === currentPracticeIndexRef.current
+            ) {
+              setSession((prev) =>
+                prev
+                  ? {
+                      ...prev,
+                      completed_count: next.completed_count,
+                      average_score: next.average_score,
+                    }
+                  : next
+              );
+            }
+          })
+          .catch(() => {});
       }
     } catch (err: any) {
-      if (targetIdx === currentPracticeIndex) {
+      if (generation === serverAssessmentGenerationRef.current && targetIdx === currentPracticeIndexRef.current) {
         setPhase("RECORD");
         error(getFriendlyErrorMessage(err));
       }
@@ -518,12 +686,14 @@ export const ShadowingPage: React.FC = () => {
     setProgressMap(newProgressMap);
 
     const completedCount = Object.values(newProgressMap).filter((p) => p.completed).length;
-    if (session) {
-      setSession({
-        ...session,
-        completed_count: completedCount,
-      });
-    }
+    setSession((prev) =>
+      prev
+        ? {
+            ...prev,
+            completed_count: completedCount,
+          }
+        : null
+    );
 
     if (idx < sentences.length - 1) {
       handleSelectSentence(idx + 1);
@@ -535,16 +705,21 @@ export const ShadowingPage: React.FC = () => {
 
   // Retry Current Sentence (Preserves currentPracticeIndex)
   const handleRetryCurrentSentence = () => {
-    analysisAbortRef.current?.abort();
-    stopUserAudio();
-    if (recordedAudioUrl) {
-      URL.revokeObjectURL(recordedAudioUrl);
-      setRecordedAudioUrl(null);
-    }
+    performFullRuntimeCleanup();
     setRecordedAudioBlob(null);
     setAudioBase64(null);
+    setAudioMimeType(undefined);
     setLastAttemptResult(null);
     setPhase("RECORD");
+  };
+
+  // Practice Mode Switch Handler
+  const handleSwitchPracticeMode = (mode: ShadowingPracticeMode) => {
+    if (mode === "manual" && continuousAdvanceTimerRef.current) {
+      clearTimeout(continuousAdvanceTimerRef.current);
+      continuousAdvanceTimerRef.current = null;
+    }
+    setPracticeMode(mode);
   };
 
   // Back to passage selector or home
@@ -697,24 +872,9 @@ export const ShadowingPage: React.FC = () => {
 
   return (
     <div className="page-container flex-col gap-5 animate-fade-in shadowing-page-container" style={{ maxWidth: "780px" }}>
-      {/* Hidden Audio Element for User Recording Replay with full event synchronization */}
-      {recordedAudioUrl && (
-        <audio
-          ref={userAudioElRef}
-          src={recordedAudioUrl}
-          onEnded={() => setIsPlayingUserAudio(false)}
-          onPause={() => setIsPlayingUserAudio(false)}
-          onPlay={() => {
-            setIsPlayingUserAudio(true);
-            window.speechSynthesis?.cancel();
-          }}
-          style={{ display: "none" }}
-        />
-      )}
-
       {/* Top Header: Navigation & Practice Mode Selector */}
       <div className="flex-row justify-between items-center" style={{ flexWrap: "wrap", gap: "8px" }}>
-        <Button variant="ghost" size="sm" onClick={() => setSession(null)} leftIcon={<ArrowLeft size={16} />}>
+        <Button variant="ghost" size="sm" onClick={handleExitShadowing} leftIcon={<ArrowLeft size={16} />}>
           Thoát
         </Button>
 
@@ -724,7 +884,7 @@ export const ShadowingPage: React.FC = () => {
           <div style={{ display: "inline-flex", borderRadius: "var(--radius-md)", backgroundColor: "var(--bg-muted)", padding: "2px", border: "1px solid var(--border-default)" }}>
             <button
               type="button"
-              onClick={() => setPracticeMode("manual")}
+              onClick={() => handleSwitchPracticeMode("manual")}
               style={{
                 padding: "4px 10px",
                 borderRadius: "var(--radius-sm)",
@@ -741,7 +901,7 @@ export const ShadowingPage: React.FC = () => {
             </button>
             <button
               type="button"
-              onClick={() => setPracticeMode("continuous")}
+              onClick={() => handleSwitchPracticeMode("continuous")}
               style={{
                 padding: "4px 10px",
                 borderRadius: "var(--radius-sm)",
@@ -924,6 +1084,7 @@ export const ShadowingPage: React.FC = () => {
                   size="lg"
                   variant="subtle"
                   label="Nghe câu mẫu"
+                  onPlayStart={stopUserAudio}
                 />
               </div>
 
@@ -989,6 +1150,7 @@ export const ShadowingPage: React.FC = () => {
                       size="md"
                       variant="subtle"
                       label="🔊 Nghe câu mẫu"
+                      onPlayStart={stopUserAudio}
                     />
                     <Button
                       variant="secondary"
@@ -1002,10 +1164,17 @@ export const ShadowingPage: React.FC = () => {
 
                   {/* Standard Audio Player */}
                   <audio
-                    controls
-                    src={recordedAudioUrl || `data:${audioMimeType || "audio/webm"};base64,${audioBase64}`}
-                    style={{ width: "100%", maxWidth: "440px" }}
                     aria-label="Nghe lại bản ghi shadowing"
+                    ref={userAudioElRef}
+                    controls
+                    src={recordedAudioUrl || undefined}
+                    onEnded={() => setIsPlayingUserAudio(false)}
+                    onPause={() => setIsPlayingUserAudio(false)}
+                    onPlay={() => {
+                      setIsPlayingUserAudio(true);
+                      stopAllGlobalAudio();
+                    }}
+                    style={{ width: "100%", maxWidth: "440px" }}
                   />
 
                   {isLocalZh && (
@@ -1093,6 +1262,7 @@ export const ShadowingPage: React.FC = () => {
                   size="md"
                   variant="subtle"
                   label="🔊 Nghe câu mẫu"
+                  onPlayStart={stopUserAudio}
                 />
                 {recordedAudioUrl && (
                   <Button

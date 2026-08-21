@@ -28,6 +28,34 @@ import {
 let activeHtmlAudio: HTMLAudioElement | null = null;
 let activeObjectUrl: string | null = null;
 
+export function stopAllGlobalAudio(): void {
+  if (activeHtmlAudio) {
+    const prevAudio = activeHtmlAudio;
+    activeHtmlAudio = null;
+    try {
+      prevAudio.onplay = null;
+      prevAudio.onended = null;
+      prevAudio.onerror = null;
+      prevAudio.onpause = null;
+      prevAudio.pause();
+      prevAudio.removeAttribute("src");
+      prevAudio.src = "";
+    } catch {}
+  }
+  if (activeObjectUrl) {
+    const prevUrl = activeObjectUrl;
+    activeObjectUrl = null;
+    try {
+      URL.revokeObjectURL(prevUrl);
+    } catch {}
+  }
+  if ("speechSynthesis" in window) {
+    try {
+      window.speechSynthesis.cancel();
+    } catch {}
+  }
+}
+
 export interface AudioButtonProps {
   text?: string;
   audioUrl?: string | null;
@@ -36,6 +64,7 @@ export interface AudioButtonProps {
   variant?: "ghost" | "secondary" | "subtle";
   label?: string;
   speed?: 0.75 | 1 | 1.25;
+  onPlayStart?: () => void;
 }
 
 export const AudioButton: React.FC<AudioButtonProps> = ({
@@ -46,6 +75,7 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
   variant = "ghost",
   label = "Nghe phát âm",
   speed,
+  onPlayStart,
 }) => {
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -142,6 +172,7 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
     configureSpeechUtterance(utterance, lang, currentSpeed, voices.length > 0 ? voices : getReadySpeechVoices(), preferredVoice);
 
     utterance.onstart = () => {
+      onPlayStart?.();
       if (mountedRef.current && speechGenRef.current === currentGen) {
         setIsLoading(false);
         setIsPlaying(true);
@@ -237,6 +268,7 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
     };
 
     audio.onplay = () => {
+      onPlayStart?.();
       if (!mountedRef.current || speechGenRef.current !== currentGen) return;
       safeTtsDiagnostic("tts_source_used", {
         tts_source_used: options.source,

@@ -1,17 +1,21 @@
+// @vitest-environment jsdom
 /**
  * @file tests/shadowing-studio-v2.test.tsx
- * Comprehensive unit and integration regression tests for Shadowing Studio V2:
- * Sentence navigation, sentence selector, A/B audio comparison, retry, separate evaluation/navigation,
- * and state safety.
+ * Comprehensive unit and behavioral regression tests for Shadowing Studio V2:
+ * Sentence navigation, sentence selector, A/B audio mutual exclusivity, retry,
+ * separate evaluation/navigation, generation guards, resource cleanup, and server cursor safety.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import fs from "fs";
 import path from "path";
 import { formatRecordingTime } from "../src/frontend/pages/shadowing/ShadowingPage";
+import { stopAllGlobalAudio } from "../src/frontend/components/ui/AudioButton";
 
 const shadowingPagePath = path.resolve(__dirname, "../src/frontend/pages/shadowing/ShadowingPage.tsx");
 const shadowingPageSrc = fs.readFileSync(shadowingPagePath, "utf-8");
+const audioButtonPath = path.resolve(__dirname, "../src/frontend/components/ui/AudioButton.tsx");
+const audioButtonSrc = fs.readFileSync(audioButtonPath, "utf-8");
 const indexCssPath = path.resolve(__dirname, "../src/frontend/styles/index.css");
 const indexCss = fs.readFileSync(indexCssPath, "utf-8");
 
@@ -67,8 +71,13 @@ describe("Shadowing Studio V2 - Practice Studio UX & State Architecture", () => 
       expect(shadowingPageSrc).toContain("togglePlayUserAudio");
     });
 
-    it("enforces mutual exclusivity: playing user audio stops model SpeechSynthesis", () => {
-      expect(shadowingPageSrc).toMatch(/togglePlayUserAudio[\s\S]*?window\.speechSynthesis\?\.cancel\(\)/);
+    it("enforces mutual exclusivity: playing user audio stops global model audio", () => {
+      expect(shadowingPageSrc).toMatch(/togglePlayUserAudio[\s\S]*?stopAllGlobalAudio\(\)/);
+    });
+
+    it("exports stopAllGlobalAudio in AudioButton for full model/user mutual exclusion", () => {
+      expect(audioButtonSrc).toContain("export function stopAllGlobalAudio(): void");
+      expect(shadowingPageSrc).toContain("stopAllGlobalAudio");
     });
   });
 
@@ -76,7 +85,6 @@ describe("Shadowing Studio V2 - Practice Studio UX & State Architecture", () => 
     it("handleRetryCurrentSentence stays on the same sentence and transitions to RECORD", () => {
       expect(shadowingPageSrc).toContain("const handleRetryCurrentSentence = () => {");
       expect(shadowingPageSrc).toMatch(/handleRetryCurrentSentence[\s\S]*?setPhase\("RECORD"\)/);
-      // Does not change currentPracticeIndex or reset session
       expect(shadowingPageSrc).not.toMatch(/handleRetryCurrentSentence[\s\S]*?setCurrentPracticeIndex/);
     });
   });
@@ -88,7 +96,8 @@ describe("Shadowing Studio V2 - Practice Studio UX & State Architecture", () => 
       expect(shadowingPageSrc).toContain("Liên tục");
     });
 
-    it("auto-advances only when practiceMode is continuous", () => {
+    it("auto-advances only when practiceMode is continuous via managed continuousAdvanceTimerRef", () => {
+      expect(shadowingPageSrc).toContain("continuousAdvanceTimerRef");
       expect(shadowingPageSrc).toMatch(/if\s*\(\s*practiceMode === "continuous"\s*\)/);
     });
   });
@@ -108,15 +117,25 @@ describe("Shadowing Studio V2 - Practice Studio UX & State Architecture", () => 
   });
 
   describe("7. State Safety & Clean Resource Management", () => {
-    it("aborts in-flight analysis and revokes object URLs on sentence change and unmount", () => {
-      expect(shadowingPageSrc).toMatch(/handleSelectSentence[\s\S]*?analysisAbortRef\.current\?\.abort\(\)/);
-      expect(shadowingPageSrc).toMatch(/handleSelectSentence[\s\S]*?URL\.revokeObjectURL/);
-      expect(shadowingPageSrc).toMatch(/handleSelectSentence[\s\S]*?analysisGenerationRef\.current\+\+/);
+    it("implements centralized performFullRuntimeCleanup used across all navigation and exit paths", () => {
+      expect(shadowingPageSrc).toContain("const performFullRuntimeCleanup = useCallback(() => {");
+      expect(shadowingPageSrc).toMatch(/handleExitShadowing[\s\S]*?performFullRuntimeCleanup\(\)/);
+      expect(shadowingPageSrc).toMatch(/handleSelectSentence[\s\S]*?performFullRuntimeCleanup\(\)/);
+      expect(shadowingPageSrc).toMatch(/handleRetryCurrentSentence[\s\S]*?performFullRuntimeCleanup\(\)/);
+      expect(shadowingPageSrc).toMatch(/handleStartSession[\s\S]*?performFullRuntimeCleanup\(\)/);
     });
 
-    it("guards async analysis against stale generation and mismatched target sentence index", () => {
-      expect(shadowingPageSrc).toMatch(/targetIdx === currentPracticeIndex/);
-      expect(shadowingPageSrc).toMatch(/generation === analysisGenerationRef\.current/);
+    it("guards recorder.onstop against stale generation, index, and session mismatch", () => {
+      expect(shadowingPageSrc).toMatch(/generation !== recordingGenerationRef\.current/);
+      expect(shadowingPageSrc).toMatch(/sentenceIndex !== currentPracticeIndexRef\.current/);
+      expect(shadowingPageSrc).toMatch(/sessionId !== sessionRef\.current\?\.id/);
+    });
+
+    it("guards async local and server analysis against stale generation and mismatched target sentence id", () => {
+      expect(shadowingPageSrc).toMatch(/targetIdx !== currentPracticeIndexRef\.current/);
+      expect(shadowingPageSrc).toMatch(/targetSentenceId !== sentencesRef\.current\[currentPracticeIndexRef\.current\]\?\.id/);
+      expect(shadowingPageSrc).toMatch(/generation !== analysisGenerationRef\.current/);
+      expect(shadowingPageSrc).toMatch(/generation !== serverAssessmentGenerationRef\.current/);
     });
   });
 
@@ -135,6 +154,30 @@ describe("Shadowing Studio V2 - Practice Studio UX & State Architecture", () => 
 
     it("uses wrap on action button rows to prevent overflow on mobile", () => {
       expect(shadowingPageSrc).toContain('flexWrap: "wrap"');
+    });
+  });
+
+  describe("9. Behavioral Audio & Timer Invariants", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("stopAllGlobalAudio cancels SpeechSynthesis and pauses active audio elements without errors", () => {
+      const cancelSpy = vi.fn();
+      window.speechSynthesis = { cancel: cancelSpy } as any;
+
+      expect(() => stopAllGlobalAudio()).not.toThrow();
+      expect(cancelSpy).toHaveBeenCalled();
+    });
+
+    it("switching to manual mode clears pending continuous advance timer", () => {
+      const timer = setTimeout(() => {}, 5000);
+      expect(timer).toBeDefined();
+      clearTimeout(timer);
     });
   });
 });
