@@ -11,6 +11,7 @@ import fs from "fs";
 import path from "path";
 import { formatRecordingTime } from "../src/frontend/pages/shadowing/ShadowingPage";
 import { stopAllGlobalAudio } from "../src/frontend/components/ui/AudioButton";
+import { createLocalId } from "../src/frontend/static/localDomain";
 
 const shadowingPagePath = path.resolve(__dirname, "../src/frontend/pages/shadowing/ShadowingPage.tsx");
 const shadowingPageSrc = fs.readFileSync(shadowingPagePath, "utf-8");
@@ -125,6 +126,12 @@ describe("Shadowing Studio V2 - Practice Studio UX & State Architecture", () => 
       expect(shadowingPageSrc).toMatch(/handleStartSession[\s\S]*?performFullRuntimeCleanup\(\)/);
     });
 
+    it("uses closure-owned chunks per recorder generation and checks stream ref identity", () => {
+      expect(shadowingPageSrc).toMatch(/const chunks:\s*Blob\[\]\s*=\s*\[\];/);
+      expect(shadowingPageSrc).toMatch(/if\s*\(\s*mediaStreamRef\.current === stream\s*\)\s*\{\s*mediaStreamRef\.current = null;\s*\}/);
+      expect(shadowingPageSrc).toMatch(/if\s*\(\s*mediaRecorderRef\.current === recorder\s*\)\s*\{\s*mediaRecorderRef\.current = null;\s*\}/);
+    });
+
     it("guards recorder.onstop against stale generation, index, and session mismatch", () => {
       expect(shadowingPageSrc).toMatch(/generation !== recordingGenerationRef\.current/);
       expect(shadowingPageSrc).toMatch(/sentenceIndex !== currentPracticeIndexRef\.current/);
@@ -139,7 +146,21 @@ describe("Shadowing Studio V2 - Practice Studio UX & State Architecture", () => 
     });
   });
 
-  describe("8. Mobile UX & Responsiveness", () => {
+  describe("8. Server Cursor Authoritativeness & Advance Guards", () => {
+    it("does not mutate server session cursor during free UI navigation", () => {
+      expect(shadowingPageSrc).toMatch(/if\s*\(\s*session\s*&&\s*targetSentence\s*&&\s*isStaticRuntime\(\)\s*\)/);
+    });
+
+    it("calls shadowingApi.advance only when evaluating authoritative server sentence", () => {
+      expect(shadowingPageSrc).toMatch(/!isStaticRuntime\(\)\s*&&\s*assessResult\.attemptId\s*&&\s*session\s*&&\s*targetIdx === session\.current_sentence\s*&&\s*targetSentenceId === session\.currentSentenceData\?\.id/);
+    });
+
+    it("surfaces non-destructive warning if server advance fails rather than swallowing error", () => {
+      expect(shadowingPageSrc).toMatch(/warning\("Không thể đồng bộ tiến độ phiên học với máy chủ/);
+    });
+  });
+
+  describe("9. Mobile UX & Responsiveness", () => {
     it("formats recording time with mm:ss helper", () => {
       expect(formatRecordingTime(0)).toBe("00:00");
       expect(formatRecordingTime(9)).toBe("00:09");
@@ -157,7 +178,7 @@ describe("Shadowing Studio V2 - Practice Studio UX & State Architecture", () => 
     });
   });
 
-  describe("9. Behavioral Audio & Timer Invariants", () => {
+  describe("10. Behavioral Audio, Timer & Local ID Invariants", () => {
     beforeEach(() => {
       vi.useFakeTimers();
     });
@@ -178,6 +199,22 @@ describe("Shadowing Studio V2 - Practice Studio UX & State Architecture", () => 
       const timer = setTimeout(() => {}, 5000);
       expect(timer).toBeDefined();
       clearTimeout(timer);
+    });
+
+    it("createLocalId generates strictly unique IDs even when Web Crypto is unavailable", () => {
+      const originalCrypto = globalThis.crypto;
+      try {
+        // @ts-expect-error force test fallback
+        delete globalThis.crypto;
+        const id1 = createLocalId();
+        const id2 = createLocalId();
+        const id3 = createLocalId();
+        expect(id1).not.toBe(id2);
+        expect(id2).not.toBe(id3);
+        expect(id1).not.toBe(id3);
+      } finally {
+        globalThis.crypto = originalCrypto;
+      }
     });
   });
 });

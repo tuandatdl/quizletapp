@@ -25,10 +25,19 @@ import {
   type TtsSource,
 } from "../../services/audioEnginePolicy";
 
+type GlobalPlaybackOwner = () => void;
+let activeOwnerStop: GlobalPlaybackOwner | null = null;
 let activeHtmlAudio: HTMLAudioElement | null = null;
 let activeObjectUrl: string | null = null;
 
 export function stopAllGlobalAudio(): void {
+  if (activeOwnerStop) {
+    const ownerStop = activeOwnerStop;
+    activeOwnerStop = null;
+    try {
+      ownerStop();
+    } catch {}
+  }
   if (activeHtmlAudio) {
     const prevAudio = activeHtmlAudio;
     activeHtmlAudio = null;
@@ -49,7 +58,7 @@ export function stopAllGlobalAudio(): void {
       URL.revokeObjectURL(prevUrl);
     } catch {}
   }
-  if ("speechSynthesis" in window) {
+  if (typeof window !== "undefined" && "speechSynthesis" in window) {
     try {
       window.speechSynthesis.cancel();
     } catch {}
@@ -126,11 +135,14 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
   };
 
   const stopCurrent = () => {
+    if (activeOwnerStop === stopCurrent) {
+      activeOwnerStop = null;
+    }
     speechGenRef.current += 1;
     abortRef.current?.abort();
     abortRef.current = null;
     cleanupAudio();
-    if (utteranceRef.current && "speechSynthesis" in window) {
+    if (utteranceRef.current && typeof window !== "undefined" && "speechSynthesis" in window) {
       try {
         window.speechSynthesis.cancel();
       } catch {}
@@ -139,6 +151,7 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
     if (mountedRef.current) {
       setIsPlaying(false);
       setIsLoading(false);
+      setLocalLoading(false);
     }
   };
 
@@ -173,12 +186,19 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
 
     utterance.onstart = () => {
       onPlayStart?.();
+      if (activeOwnerStop && activeOwnerStop !== stopCurrent) {
+        stopAllGlobalAudio();
+      }
+      activeOwnerStop = stopCurrent;
       if (mountedRef.current && speechGenRef.current === currentGen) {
         setIsLoading(false);
         setIsPlaying(true);
       }
     };
     utterance.onend = () => {
+      if (activeOwnerStop === stopCurrent) {
+        activeOwnerStop = null;
+      }
       if (utteranceRef.current === utterance) utteranceRef.current = null;
       if (mountedRef.current && speechGenRef.current === currentGen) {
         setIsLoading(false);
@@ -186,6 +206,9 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
       }
     };
     utterance.onerror = (event) => {
+      if (activeOwnerStop === stopCurrent) {
+        activeOwnerStop = null;
+      }
       if (utteranceRef.current === utterance) utteranceRef.current = null;
       if (mountedRef.current && speechGenRef.current === currentGen) {
         setIsLoading(false);
@@ -234,7 +257,7 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
         URL.revokeObjectURL(prevUrl);
       } catch {}
     }
-    if ("speechSynthesis" in window) {
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
       try {
         window.speechSynthesis.cancel();
       } catch {}
@@ -256,6 +279,9 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
       fallbackTriggered = true;
 
       cleanupAudio();
+      if (activeOwnerStop === stopCurrent) {
+        activeOwnerStop = null;
+      }
       if (!mountedRef.current || speechGenRef.current !== currentGen) return;
       setIsLoading(false);
       setIsPlaying(false);
@@ -269,6 +295,10 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
 
     audio.onplay = () => {
       onPlayStart?.();
+      if (activeOwnerStop && activeOwnerStop !== stopCurrent) {
+        stopAllGlobalAudio();
+      }
+      activeOwnerStop = stopCurrent;
       if (!mountedRef.current || speechGenRef.current !== currentGen) return;
       safeTtsDiagnostic("tts_source_used", {
         tts_source_used: options.source,
@@ -279,6 +309,9 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
     };
     audio.onended = () => {
       cleanupAudio();
+      if (activeOwnerStop === stopCurrent) {
+        activeOwnerStop = null;
+      }
       if (mountedRef.current && speechGenRef.current === currentGen) {
         setIsPlaying(false);
         setIsLoading(false);
@@ -302,6 +335,12 @@ export const AudioButton: React.FC<AudioButtonProps> = ({
       stopCurrent();
       return;
     }
+
+    onPlayStart?.();
+    if (activeOwnerStop && activeOwnerStop !== stopCurrent) {
+      stopAllGlobalAudio();
+    }
+    activeOwnerStop = stopCurrent;
 
     const requestedEngine = resolveAudioEngine(settings?.audioEngine);
     // Chinese is intentionally not part of this English-only local-model phase.

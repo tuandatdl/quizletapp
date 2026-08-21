@@ -71,7 +71,7 @@ export const ShadowingPage: React.FC = () => {
   const [searchParams] = useSearchParams();
   const readingIdParam = searchParams.get("readingId");
   const { language } = useLanguage();
-  const { success, error } = useToast();
+  const { success, error, warning } = useToast();
   const navigate = useNavigate();
 
   const [readings, setReadings] = useState<ReadingPassageSummary[]>([]);
@@ -108,7 +108,6 @@ export const ShadowingPage: React.FC = () => {
   sentencesRef.current = sentences;
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<any>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const mountedRef = useRef(true);
@@ -328,7 +327,8 @@ export const ShadowingPage: React.FC = () => {
       setPhase("LISTEN");
     }
 
-    if (session && targetSentence) {
+    // In Static mode only: update synthetic local session state
+    if (session && targetSentence && isStaticRuntime()) {
       setSession((prev) =>
         prev
           ? {
@@ -395,22 +395,27 @@ export const ShadowingPage: React.FC = () => {
       mediaStreamRef.current = stream;
       const recorder = new MediaRecorder(stream);
       mediaRecorderRef.current = recorder;
-      audioChunksRef.current = [];
+      const chunks: Blob[] = [];
 
       recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+        if (e.data.size > 0) chunks.push(e.data);
       };
 
       recorder.onstop = () => {
-        const blob = new Blob(audioChunksRef.current, { type: recorder.mimeType || "audio/webm" });
+        const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
         stream.getTracks().forEach((track) => {
           try {
             track.stop();
           } catch {}
         });
-        mediaStreamRef.current = null;
+        if (mediaStreamRef.current === stream) {
+          mediaStreamRef.current = null;
+        }
+        if (mediaRecorderRef.current === recorder) {
+          mediaRecorderRef.current = null;
+        }
 
-        // Blocker 1 Guard: Verify active recording generation and sentence before touching React state
+        // Blocker B Guard: Verify active recording generation and sentence before touching React state
         if (
           !mountedRef.current ||
           generation !== recordingGenerationRef.current ||
@@ -504,17 +509,19 @@ export const ShadowingPage: React.FC = () => {
     const totalScore = Object.values(newProgressMap).reduce((sum, p) => sum + (p.bestScore ?? 0), 0);
     const averageScore = completedCount > 0 ? Math.round(totalScore / completedCount) : 0;
 
-    // Use functional state update to prevent stale closures from reverting stats
-    setSession((prev) =>
-      prev
-        ? {
-            ...prev,
-            completed_count: completedCount,
-            score_total: totalScore,
-            average_score: averageScore,
-          }
-        : null
-    );
+    // In Static mode only: update synthetic local session stats
+    if (isStaticRuntime()) {
+      setSession((prev) =>
+        prev
+          ? {
+              ...prev,
+              completed_count: completedCount,
+              score_total: totalScore,
+              average_score: averageScore,
+            }
+          : null
+      );
+    }
 
     setLastAttemptResult(res);
     setPhase("RESULT");
@@ -640,32 +647,27 @@ export const ShadowingPage: React.FC = () => {
 
       recordAttemptSuccess(assessResult, recordedAudioBlob);
 
-      // Blocker 5 Safety Guard: Only advance server cursor if practicing server's current sentence
+      // Blocker A Safety Guard: Only advance server cursor if practicing server's authoritative current sentence
       if (
+        !isStaticRuntime() &&
         assessResult.attemptId &&
+        session &&
         targetIdx === session.current_sentence &&
         targetSentenceId === session.currentSentenceData?.id
       ) {
-        shadowingApi
-          .advance(session.id, assessResult.attemptId)
-          .then((next) => {
-            if (
-              mountedRef.current &&
-              generation === serverAssessmentGenerationRef.current &&
-              targetIdx === currentPracticeIndexRef.current
-            ) {
-              setSession((prev) =>
-                prev
-                  ? {
-                      ...prev,
-                      completed_count: next.completed_count,
-                      average_score: next.average_score,
-                    }
-                  : next
-              );
-            }
-          })
-          .catch(() => {});
+        try {
+          const next = await shadowingApi.advance(session.id, assessResult.attemptId);
+          if (
+            mountedRef.current &&
+            generation === serverAssessmentGenerationRef.current &&
+            targetIdx === currentPracticeIndexRef.current
+          ) {
+            setSession(next);
+          }
+        } catch {
+          // Assessment score is preserved in progressMap and RESULT phase; surface visible warning for server sync failure
+          warning("Không thể đồng bộ tiến độ phiên học với máy chủ. Điểm đánh giá vẫn được lưu.");
+        }
       }
     } catch (err: any) {
       if (generation === serverAssessmentGenerationRef.current && targetIdx === currentPracticeIndexRef.current) {

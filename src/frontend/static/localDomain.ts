@@ -1,5 +1,7 @@
 import type { Language, ReadingSentence, ReviewAction, VocabularyItem } from "../types/api.js";
 
+let localIdFallbackSeq = 0;
+
 export function createLocalId(): string {
   if (typeof globalThis.crypto?.randomUUID === "function") {
     return globalThis.crypto.randomUUID();
@@ -9,7 +11,7 @@ export function createLocalId(): string {
     globalThis.crypto.getRandomValues(bytes);
     return `local-${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
   }
-  return `local-${Date.now()}`;
+  return `local-${Date.now()}-${++localIdFallbackSeq}`;
 }
 
 export function normalizeLocalTerm(value: string, language: Language): string {
