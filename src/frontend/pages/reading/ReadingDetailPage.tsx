@@ -187,10 +187,12 @@ export const ReadingDetailPage: React.FC = () => {
     setShowAllSenses(false);
     setContextEnrichError(null);
     setDuplicateContextualSense(null);
+    setActiveToken(null);
   }
 
   const triggerContextualEnrichment = (text: string, ctx: VocabularyContext | null) => {
     if (!passage || !ctx) return;
+    setActiveToken(null);
     if (enrichAbortRef.current) enrichAbortRef.current.abort();
     const controller = new AbortController();
     enrichAbortRef.current = controller;
@@ -739,6 +741,9 @@ export const ReadingDetailPage: React.FC = () => {
 
         if (rect.width === 0 && rect.height === 0) return;
 
+        // Invariant: Clear activeToken when valid text selection is established
+        setActiveToken(null);
+
         const viewportH = window.innerHeight;
         const placeAbove = rect.top >= 130;
 
@@ -780,12 +785,17 @@ export const ReadingDetailPage: React.FC = () => {
     }, 60);
   };
 
-  // Selection Translation Action
-  const handleTranslateSelection = async () => {
-    if (!selectedText || !passage) return;
-    const isWordOrPhrase = selectedContext && (classifyLocalSelection(selectedText, passage.language) !== "sentence") && selectedText.split(/\s+/).length <= 6;
+  // Selection Translation Action (supports direct token translation to avoid async state lag)
+  const handleTranslateSelection = async (overrideText?: string) => {
+    const textToTranslate = overrideText || selectedText;
+    if (!textToTranslate || !passage) return;
+
+    // Invariant: Ensure activeToken is cleared when opening translation
+    setActiveToken(null);
+
+    const isWordOrPhrase = selectedContext && (classifyLocalSelection(textToTranslate, passage.language) !== "sentence") && textToTranslate.split(/\s+/).length <= 6;
     if (isWordOrPhrase) {
-      triggerContextualEnrichment(selectedText, selectedContext);
+      triggerContextualEnrichment(textToTranslate, selectedContext);
       return;
     }
     if (!translationAvailability.configured) {
@@ -796,7 +806,7 @@ export const ReadingDetailPage: React.FC = () => {
     setIsTranslatingSelection(true);
     try {
       const res = await readingApi.translateSelection({
-        text: selectedText,
+        text: textToTranslate,
         sourceLanguage: passage.language,
         targetLanguage: "vi",
         readingId: passage.id,
@@ -875,6 +885,10 @@ export const ReadingDetailPage: React.FC = () => {
   const handleTokenClick = (token: Token, e: React.MouseEvent) => {
     if (!pronunciationMode || !token.clickable) return;
     e.stopPropagation();
+
+    // Invariant: Close any active selection toolbar, dictionary, or translation popup
+    closeOverlays();
+
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const viewportH = window.innerHeight;
     const placeAbove = rect.top >= 70;
@@ -1197,7 +1211,7 @@ export const ReadingDetailPage: React.FC = () => {
           >
             <button
               type="button"
-              onClick={handleTranslateSelection}
+              onClick={() => handleTranslateSelection()}
               disabled={isTranslatingSelection}
               style={{
                 display: "flex",
@@ -1530,7 +1544,7 @@ export const ReadingDetailPage: React.FC = () => {
         )}
 
         {/* ================= TOKEN CLICK POPOVER (PRONUNCIATION MODE) ================= */}
-        {activeToken && (
+        {activeToken && !toolbarCoords && !isContextPopoverOpen && !isTranslationPopoverOpen && (
           <div
             className="token-popover animate-pop-in"
             style={{
@@ -1568,11 +1582,13 @@ export const ReadingDetailPage: React.FC = () => {
               type="button"
               onClick={() => {
                 const text = activeToken.token.text;
-                setSelectedText(text);
-                setToolbarCoords(activeToken.coords);
+                const coords = activeToken.coords;
                 setActiveToken(null);
+                setSelectedText(text);
+                setSelectedContext(null);
+                setToolbarCoords(coords);
                 if (translationAvailability.configured) {
-                  handleTranslateSelection();
+                  handleTranslateSelection(text);
                 } else {
                   setTranslationUnavailableNotice(true);
                 }

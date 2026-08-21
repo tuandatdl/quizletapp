@@ -1,7 +1,7 @@
 /**
  * @file tests/reading-mobile-selection-ux.test.tsx
  * Comprehensive unit and integration regression tests for mobile reading UI/UX stability,
- * layout shift elimination, popover non-collision, and touch selection isolation.
+ * layout shift elimination, popover non-collision, single-overlay invariant, and touch selection isolation.
  */
 
 import { describe, it, expect } from "vitest";
@@ -103,6 +103,38 @@ describe("Reading Mobile Selection UI/UX & Layout Stability", () => {
     it("clamps horizontal coordinates cleanly within viewport bounds", () => {
       expect(readingDetailSrc).toContain("Math.min(window.innerWidth - 170, Math.max(170,");
       expect(readingDetailSrc).toContain("Math.min(window.innerWidth - 160, Math.max(160,");
+    });
+  });
+
+  describe("6. Single Overlay State Invariant & Direct Token Translation", () => {
+    it("A: token click invokes closeOverlays() first to abort enrichment and clear previous popovers before setting activeToken", () => {
+      expect(readingDetailSrc).toMatch(/handleTokenClick\s*=\s*\([^)]*\)\s*=>\s*\{[\s\S]*?closeOverlays\(\);[\s\S]*?setActiveToken\(/);
+    });
+
+    it("B: handleMouseUp clears activeToken when a valid text selection is made", () => {
+      expect(readingDetailSrc).toMatch(/handleMouseUp[\s\S]*?setActiveToken\(null\);[\s\S]*?setSelectedText\(text\);/);
+    });
+
+    it("C: closeOverlays() clears activeToken along with selection and context states", () => {
+      expect(readingDetailSrc).toMatch(/function closeOverlays\(\)\s*\{[\s\S]*?setActiveToken\(null\);[\s\S]*?\}/);
+    });
+
+    it("D: triggerContextualEnrichment clears activeToken when contextual lookup starts", () => {
+      expect(readingDetailSrc).toMatch(/triggerContextualEnrichment[\s\S]*?setActiveToken\(null\);/);
+    });
+
+    it("E: handleTranslateSelection accepts direct overrideText and clears activeToken", () => {
+      expect(readingDetailSrc).toMatch(/handleTranslateSelection\s*=\s*async\s*\(\s*overrideText\?: string\s*\)\s*=>\s*\{/);
+      expect(readingDetailSrc).toContain("const textToTranslate = overrideText || selectedText;");
+      expect(readingDetailSrc).toContain("setActiveToken(null);");
+    });
+
+    it("F: token Translate button passes token text directly to handleTranslateSelection (avoids async state lag)", () => {
+      expect(readingDetailSrc).toMatch(/handleTranslateSelection\(text\)/);
+    });
+
+    it("G: token popover rendering condition strictly enforces mutual exclusivity with selection and context popovers", () => {
+      expect(readingDetailSrc).toContain("activeToken && !toolbarCoords && !isContextPopoverOpen && !isTranslationPopoverOpen");
     });
   });
 });
