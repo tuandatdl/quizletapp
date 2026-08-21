@@ -358,7 +358,7 @@ export const ReadingDetailPage: React.FC = () => {
 
     utterance.onstart = () => {
       if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId || sentencePlayAttemptRef.current !== attemptId) return;
-      setPlaybackState((prev) => ({ ...prev, loading: false, status: "playing" }));
+      setPlaybackState((prev) => ({ ...prev, loading: false, status: "playing", engine: "browser" }));
     };
 
     let nextScheduled = false;
@@ -371,7 +371,7 @@ export const ReadingDetailPage: React.FC = () => {
     utterance.onerror = (event) => {
       if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId || sentencePlayAttemptRef.current !== attemptId) return;
       if (!["canceled", "interrupted"].includes((event as any)?.error)) {
-        setPlaybackState((prev) => ({ ...prev, status: "paused", loading: false }));
+        setPlaybackState((prev) => ({ ...prev, status: "paused", loading: false, engine: undefined }));
         isPlayingRef.current = false;
       }
     };
@@ -380,7 +380,7 @@ export const ReadingDetailPage: React.FC = () => {
       window.speechSynthesis.speak(utterance);
     } catch {
       if (!playbackCancelledRef.current && playbackSessionIdRef.current === sessionId && sentencePlayAttemptRef.current === attemptId) {
-        setPlaybackState((prev) => ({ ...prev, status: "paused", loading: false }));
+        setPlaybackState((prev) => ({ ...prev, status: "paused", loading: false, engine: undefined }));
         isPlayingRef.current = false;
       }
     }
@@ -408,6 +408,11 @@ export const ReadingDetailPage: React.FC = () => {
       preferredVoice
     );
 
+    utterance.onstart = () => {
+      if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId || sentencePlayAttemptRef.current !== attemptId) return;
+      setPlaybackState((prev) => ({ ...prev, loading: false, status: "playing", engine: "browser" }));
+    };
+
     let nextScheduled = false;
     utterance.onend = () => {
       if (nextScheduled || playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId || sentencePlayAttemptRef.current !== attemptId) return;
@@ -418,7 +423,7 @@ export const ReadingDetailPage: React.FC = () => {
     utterance.onerror = (event) => {
       if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId || sentencePlayAttemptRef.current !== attemptId) return;
       if (!["canceled", "interrupted"].includes((event as any)?.error)) {
-        setPlaybackState((prev) => ({ ...prev, status: "paused", loading: false }));
+        setPlaybackState((prev) => ({ ...prev, status: "paused", loading: false, engine: undefined }));
         isPlayingRef.current = false;
       }
     };
@@ -427,7 +432,7 @@ export const ReadingDetailPage: React.FC = () => {
       window.speechSynthesis.speak(utterance);
     } catch {
       if (!playbackCancelledRef.current && playbackSessionIdRef.current === sessionId && sentencePlayAttemptRef.current === attemptId) {
-        setPlaybackState((prev) => ({ ...prev, status: "paused", loading: false }));
+        setPlaybackState((prev) => ({ ...prev, status: "paused", loading: false, engine: undefined }));
         isPlayingRef.current = false;
       }
     }
@@ -475,7 +480,7 @@ export const ReadingDetailPage: React.FC = () => {
         currentSentenceIndex: index,
         currentSentenceId: sentence.id,
         loading: isCloudPreferred && !isSequential,
-        engine: isCloudPreferred ? "cloud" : "browser",
+        engine: isCloudPreferred ? undefined : "browser",
       }));
 
       if (isCloudPreferred) {
@@ -492,10 +497,11 @@ export const ReadingDetailPage: React.FC = () => {
 
           if (cloudFallbackMode(audioEngine) === "BROWSER") {
             safeTtsDiagnostic("tts_browser_fallback", { tts_engine_requested: "AUTO", tts_source_used: "browser" });
+            setPlaybackState((prev) => ({ ...prev, engine: undefined }));
             if (isSequential) void playBrowserSentenceSequential(index, sentence, effectiveSpeed, sessionId, attemptId);
             else void playBrowserSentence(index, sentence, effectiveSpeed, sessionId, attemptId);
           } else {
-            setPlaybackState((prev) => ({ ...prev, status: "paused", loading: false }));
+            setPlaybackState((prev) => ({ ...prev, status: "paused", loading: false, engine: undefined }));
             isPlayingRef.current = false;
             error(audioEngine === "LOCAL"
               ? "Local TTS chưa sẵn sàng. Hãy tải lại model trong Cài đặt hoặc chọn AUTO."
@@ -558,7 +564,7 @@ export const ReadingDetailPage: React.FC = () => {
           audio.onplay = () => {
             if (playbackCancelledRef.current || playbackSessionIdRef.current !== sessionId || sentencePlayAttemptRef.current !== attemptId) return;
             safeTtsDiagnostic("tts_source_used", { tts_source_used: source, cloud_voice: source === "cloud" ? voice : undefined });
-            setPlaybackState((prev) => ({ ...prev, loading: false, status: "playing" }));
+            setPlaybackState((prev) => ({ ...prev, loading: false, status: "playing", engine: source }));
           };
 
           let nextScheduled = false;
@@ -1123,7 +1129,7 @@ export const ReadingDetailPage: React.FC = () => {
         {/* ================= FLOATING SELECTION TOOLBAR ================= */}
         {toolbarCoords && selectedText && (
           <div
-            className="floating-selection-toolbar animate-pop-in"
+            className="floating-selection-toolbar reading-selection-actions animate-pop-in"
             style={{
               position: "fixed",
               left: `${toolbarCoords.x}px`,
@@ -1221,7 +1227,7 @@ export const ReadingDetailPage: React.FC = () => {
         {/* ================= CONTEXTUAL DICTIONARY POPUP ================= */}
         {toolbarCoords && selectedText && (isEnrichingContext || contextualEnrichment || contextEnrichError || duplicateContextualSense) && (
           <div
-            className="floating-selection-toolbar animate-pop-in"
+            className="floating-selection-toolbar reading-context-popover animate-pop-in"
             style={{
               position: "fixed",
               left: `${toolbarCoords.x}px`,

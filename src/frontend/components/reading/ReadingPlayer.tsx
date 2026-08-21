@@ -141,11 +141,30 @@ export const ReadingPlayer: React.FC<ReadingPlayerProps> = ({
             )}
           </div>
           <div className="rp-status-secondary">
-            {isSpeech
-              ? playbackState.engine === "cloud"
-                ? <><span className="rp-engine-label-long">Chế độ phát âm Cloud TTS tự nhiên</span><span className="rp-engine-label-short">Cloud TTS tự nhiên</span></>
-                : <><span className="rp-engine-label-long">Chế độ phát âm từng câu (SpeechSynthesis)</span><span className="rp-engine-label-short">SpeechSynthesis</span></>
-              : "Tệp âm thanh gốc"}
+            {isSpeech ? (
+              !playbackState.engine ? (
+                <span className="rp-engine-label-long">Đang chọn nguồn giọng đọc...</span>
+              ) : playbackState.engine === "local" ? (
+                <>
+                  <span className="rp-engine-label-long">Local TTS trên thiết bị</span>
+                  <span className="rp-engine-label-short">Local TTS</span>
+                </>
+              ) : playbackState.engine === "cloud" ? (
+                <>
+                  <span className="rp-engine-label-long">Cloud TTS tự nhiên</span>
+                  <span className="rp-engine-label-short">Cloud TTS</span>
+                </>
+              ) : playbackState.engine === "browser" ? (
+                <>
+                  <span className="rp-engine-label-long">Giọng đọc của trình duyệt (SpeechSynthesis)</span>
+                  <span className="rp-engine-label-short">SpeechSynthesis</span>
+                </>
+              ) : (
+                <span className="rp-engine-label-long">Đang chọn nguồn giọng đọc...</span>
+              )
+            ) : (
+              "Tệp âm thanh gốc"
+            )}
           </div>
         </div>
       </div>

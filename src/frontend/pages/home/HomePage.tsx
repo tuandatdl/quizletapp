@@ -14,6 +14,7 @@ import {
   BookOpen,
 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
+import { useCloudAccount } from "../../context/CloudAccountContext";
 import { useLanguage } from "../../context/LanguageContext";
 import { progressApi } from "../../api/progress.api";
 import { readingApi } from "../../api/reading.api";
@@ -26,7 +27,16 @@ import type { Dashboard, ReadingPassageSummary, TodayPlan } from "../../types/ap
 
 export const HomePage: React.FC = () => {
   const { user } = useAuth();
+  const {
+    isAuthenticated: isCloudAuth,
+    displayName: cloudDisplayName,
+  } = useCloudAccount();
   const { language } = useLanguage();
+
+  const effectiveName =
+    isCloudAuth && cloudDisplayName?.trim()
+      ? cloudDisplayName.trim()
+      : user?.name?.trim() || "bạn";
 
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [todayPlan, setTodayPlan] = useState<TodayPlan | null>(null);
@@ -61,7 +71,7 @@ export const HomePage: React.FC = () => {
     let timeGreeting = "Chào buổi sáng";
     if (hour >= 12 && hour < 18) timeGreeting = "Chào buổi chiều";
     else if (hour >= 18) timeGreeting = "Chào buổi tối";
-    return `${timeGreeting}, ${user?.name || "bạn"}`;
+    return `${timeGreeting}, ${effectiveName}`;
   };
 
   const currentLangProgress = isEn ? dashboard?.languages.en : dashboard?.languages.zh;

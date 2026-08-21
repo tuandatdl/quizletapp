@@ -106,83 +106,145 @@ export async function setCachedAudio(key: string, blob: Blob): Promise<void> {
   } catch {}
 }
 
+const inFlightRequests = new Map<string, Promise<Blob>>();
+
+export function clearInFlightTtsRequestsForTesting(): void {
+  inFlightRequests.clear();
+}
+
+export function getInFlightTtsRequestCountForTesting(): number {
+  return inFlightRequests.size;
+}
+
 export interface SynthesizeCloudSpeechOptions {
   text: string;
   language: Language;
   voice?: string;
   signal?: AbortSignal;
+  timeoutMs?: number;
 }
 
 export async function synthesizeCloudSpeech(options: SynthesizeCloudSpeechOptions): Promise<Blob> {
-  const { text, language, voice, signal } = options;
+  const { text, language, voice, signal, timeoutMs } = options;
   const trimmed = text.trim();
   if (!trimmed) {
     throw new TypeError("Văn bản phát âm không được để trống.");
   }
+
+  if (signal?.aborted) {
+    throw signal.reason || new DOMException("Aborted", "AbortError");
+  }
+
   const effectiveVoice = voice || (language === "en" ? DEFAULT_CLOUD_VOICE_EN : undefined);
-
-  // 1. Check local audio cache
   const cacheKey = computeTtsCacheKey(language, trimmed, effectiveVoice);
-  const cached = await getCachedAudio(cacheKey);
-  if (cached) {
-    return cached;
+
+  // Check in-flight coalesced request first
+  let requestPromise = inFlightRequests.get(cacheKey);
+
+  if (!requestPromise) {
+    requestPromise = (async () => {
+      const internalController = new AbortController();
+      const effectiveTimeout = timeoutMs ?? 15000;
+      const timeoutId = setTimeout(() => {
+        internalController.abort(new Error("Cloud TTS quá thời gian chờ."));
+      }, effectiveTimeout);
+
+      try {
+        // 1. Check local audio cache
+        const cached = await getCachedAudio(cacheKey);
+        if (cached) {
+          return cached;
+        }
+
+        // 2. Fetch from Cloudflare Worker
+        const baseUrl = getLanguageApiUrl();
+        if (!baseUrl) {
+          throw new Error("Dịch vụ Cloud TTS chưa được cấu hình (thiếu VITE_LANGUAGE_API_URL).");
+        }
+
+        if (typeof navigator !== "undefined" && navigator.onLine === false) {
+          throw new Error("Không có kết nối mạng để sử dụng Cloud TTS.");
+        }
+
+        const endpoint = `${baseUrl}/v1/tts`;
+        let response: Response;
+        try {
+          response = await fetch(endpoint, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              text: trimmed,
+              language,
+              voice: effectiveVoice,
+            }),
+            signal: internalController.signal,
+          });
+        } catch (error: any) {
+          if (internalController.signal.aborted) {
+            const abortReason = internalController.signal.reason;
+            if (abortReason instanceof Error && abortReason.message.includes("quá thời gian")) {
+              throw abortReason;
+            }
+          }
+          throw new Error("Không thể kết nối đến máy chủ Cloud TTS.", { cause: error });
+        }
+
+        if (!response.ok) {
+          let errorDetail = "";
+          try {
+            const errJson = await response.json();
+            errorDetail = errJson?.error?.message || errJson?.error?.code || "";
+          } catch {}
+          throw new Error(`Máy chủ Cloud TTS phản hồi lỗi (${response.status}): ${errorDetail || "Yêu cầu thất bại."}`);
+        }
+
+        const contentType = response.headers.get("Content-Type") || "";
+        if (!contentType.toLowerCase().startsWith("audio/")) {
+          throw new TypeError(`Máy chủ trả về định dạng không phải audio: ${contentType}`);
+        }
+
+        const blob = await response.blob();
+        if (!blob || blob.size === 0) {
+          throw new TypeError("Dữ liệu âm thanh từ máy chủ bị rỗng.");
+        }
+
+        // Cache blob
+        await setCachedAudio(cacheKey, blob);
+
+        return blob;
+      } finally {
+        clearTimeout(timeoutId);
+        inFlightRequests.delete(cacheKey);
+      }
+    })();
+
+    inFlightRequests.set(cacheKey, requestPromise);
   }
 
-  // 2. Fetch from Cloudflare Worker
-  const baseUrl = getLanguageApiUrl();
-  if (!baseUrl) {
-    throw new Error("Dịch vụ Cloud TTS chưa được cấu hình (thiếu VITE_LANGUAGE_API_URL).");
+  // 3. Return promise with per-caller AbortSignal support
+  if (!signal) {
+    return await requestPromise;
   }
 
-  if (typeof navigator !== "undefined" && navigator.onLine === false) {
-    throw new Error("Không có kết nối mạng để sử dụng Cloud TTS.");
-  }
+  return await new Promise<Blob>((resolve, reject) => {
+    const onAbort = () => {
+      reject(signal.reason || new DOMException("Aborted", "AbortError"));
+    };
 
-  const endpoint = `${baseUrl}/v1/tts`;
-  let response: Response;
-  try {
-    response = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        text: trimmed,
-        language,
-        voice: effectiveVoice,
-      }),
-      signal,
-    });
-  } catch (error) {
-    if (signal?.aborted) {
-      throw error;
-    }
-    throw new Error("Không thể kết nối đến máy chủ Cloud TTS.", { cause: error });
-  }
+    signal.addEventListener("abort", onAbort, { once: true });
 
-  if (!response.ok) {
-    let errorDetail = "";
-    try {
-      const errJson = await response.json();
-      errorDetail = errJson?.error?.message || errJson?.error?.code || "";
-    } catch {}
-    throw new Error(`Máy chủ Cloud TTS phản hồi lỗi (${response.status}): ${errorDetail || "Yêu cầu thất bại."}`);
-  }
-
-  const contentType = response.headers.get("Content-Type") || "";
-  if (!contentType.toLowerCase().startsWith("audio/")) {
-    throw new TypeError(`Máy chủ trả về định dạng không phải audio: ${contentType}`);
-  }
-
-  const blob = await response.blob();
-  if (!blob || blob.size === 0) {
-    throw new TypeError("Dữ liệu âm thanh từ máy chủ bị rỗng.");
-  }
-
-  // 3. Cache blob
-  await setCachedAudio(cacheKey, blob);
-
-  return blob;
+    requestPromise
+      .then((blob) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(blob);
+      })
+      .catch((err) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(err);
+      });
+  });
 }
 
 export async function prefetchCloudSpeech(options: SynthesizeCloudSpeechOptions): Promise<void> {

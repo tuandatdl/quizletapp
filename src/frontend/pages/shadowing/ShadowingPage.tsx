@@ -39,6 +39,13 @@ import type { LocalPronunciationAnalysis } from "../../services/localPronunciati
 
 type ShadowingPhase = "LISTEN" | "RECORD" | "EVALUATING" | "RESULT" | "COMPLETED";
 
+export function formatRecordingTime(seconds: number): string {
+  const safeSec = Math.max(0, Math.floor(seconds || 0));
+  const mins = Math.floor(safeSec / 60);
+  const secs = safeSec % 60;
+  return `${mins < 10 ? "0" : ""}${mins}:${secs < 10 ? "0" : ""}${secs}`;
+}
+
 export const ShadowingPage: React.FC = () => {
   const [searchParams] = useSearchParams();
   const readingIdParam = searchParams.get("readingId");
@@ -450,14 +457,16 @@ export const ShadowingPage: React.FC = () => {
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "space-between",
+                    gap: "12px",
+                    flexWrap: "wrap",
                     padding: "14px 18px",
                     borderRadius: "var(--radius-lg)",
                     backgroundColor: "var(--bg-muted)",
                     border: "1px solid var(--border-default)",
                   }}
                 >
-                  <div>
-                    <div className="flex-row items-center gap-2" style={{ marginBottom: "4px" }}>
+                  <div style={{ minWidth: 0, flex: "1 1 auto" }}>
+                    <div className="flex-row items-center gap-2" style={{ marginBottom: "4px", flexWrap: "wrap" }}>
                       <span style={{ fontWeight: 700, fontSize: "var(--text-base)" }}>{r.title}</span>
                       <Badge variant={r.language === "zh" ? "zh" : "en"} size="sm">
                         {r.language === "zh" ? "🇨🇳 Trung" : "🇬🇧 Anh"}
@@ -549,7 +558,7 @@ export const ShadowingPage: React.FC = () => {
             </div>
           )}
 
-          <div className="flex-row gap-3">
+          <div className="flex-row gap-3" style={{ flexWrap: "wrap", justifyContent: "center", width: "100%" }}>
             <Button variant="secondary" onClick={() => handleStartSession(session.reading_id)}>
               Luyện lại bài này
             </Button>
@@ -693,7 +702,7 @@ export const ShadowingPage: React.FC = () => {
           )}
 
           {phase === "RECORD" && (
-            <div className="flex-col items-center gap-4">
+            <div className="flex-col items-center gap-4" style={{ width: "100%" }}>
               <button
                 type="button"
                 onClick={isRecording ? stopRecording : startRecording}
@@ -716,14 +725,19 @@ export const ShadowingPage: React.FC = () => {
               </button>
 
               <div>
-                <div style={{ fontSize: "var(--text-base)", fontWeight: 700 }}>
-                  {isRecording ? `Đang ghi âm... 00:${recordingSeconds < 10 ? `0${recordingSeconds}` : recordingSeconds}` : (recordedAudioBlob || audioBase64) ? "Đã ghi âm xong!" : "Nhấn vào micro để đọc"}
+                <div style={{ fontSize: "var(--text-base)", fontWeight: 700, textAlign: "center" }}>
+                  {isRecording ? `Đang ghi âm... ${formatRecordingTime(recordingSeconds)}` : (recordedAudioBlob || audioBase64) ? "Đã ghi âm xong!" : "Nhấn vào micro để đọc"}
                 </div>
               </div>
 
               {(recordedAudioBlob || audioBase64) && !isRecording && (
                 <div className="flex-col items-center gap-4" style={{ width: "100%" }}>
-                  <audio controls src={recordedAudioUrl || `data:${audioMimeType || "audio/webm"};base64,${audioBase64}`} aria-label="Nghe lại bản ghi shadowing" />
+                  <audio
+                    controls
+                    src={recordedAudioUrl || `data:${audioMimeType || "audio/webm"};base64,${audioBase64}`}
+                    style={{ width: "100%", maxWidth: "440px" }}
+                    aria-label="Nghe lại bản ghi shadowing"
+                  />
 
                   {isLocalZh && (
                     <div style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)", textAlign: "center" }}>
@@ -731,7 +745,7 @@ export const ShadowingPage: React.FC = () => {
                     </div>
                   )}
 
-                  <div className="flex-row gap-3">
+                  <div className="flex-row gap-3" style={{ flexWrap: "wrap", justifyContent: "center", width: "100%" }}>
                     <Button variant="secondary" size="md" onClick={startRecording} leftIcon={<RotateCcw size={16} />}>
                       Ghi lại
                     </Button>
@@ -795,7 +809,7 @@ export const ShadowingPage: React.FC = () => {
                   boxShadow: "var(--shadow-md)",
                 }}
               >
-                <div className="flex-row justify-between items-center" style={{ marginBottom: "var(--space-4)" }}>
+                <div className="flex-row justify-between items-center" style={{ flexWrap: "wrap", gap: "8px", marginBottom: "var(--space-4)" }}>
                   <div className="flex-row items-center gap-2">
                     <Award size={24} color="var(--accent-en-primary)" />
                     <h3 style={{ fontSize: "var(--text-lg)", fontWeight: 700 }}>
@@ -900,7 +914,7 @@ export const ShadowingPage: React.FC = () => {
               </div>
 
               {/* Actions on Result */}
-              <div className="flex-row justify-center gap-3">
+              <div className="flex-row justify-center gap-3" style={{ flexWrap: "wrap", width: "100%" }}>
                 <Button variant="secondary" size="md" onClick={handleRetryCurrentSentence} leftIcon={<RotateCcw size={16} />}>
                   Ghi lại
                 </Button>
