@@ -2012,7 +2012,8 @@ describe("LEXIS Google Account & Cloud Sync Integration", () => {
       } as any;
       resetSupabaseClientForTesting(mockSupabase);
 
-      const authService = new CloudAuthService(adapter);
+      const authService = new CloudAuthService();
+      vi.spyOn(authService, "isAvailable").mockReturnValue(true);
 
       await act(async () => {
         root!.render(
@@ -2060,7 +2061,8 @@ describe("LEXIS Google Account & Cloud Sync Integration", () => {
       } as any;
       resetSupabaseClientForTesting(mockSupabase);
 
-      const authService = new CloudAuthService(adapter);
+      const authService = new CloudAuthService();
+      vi.spyOn(authService, "isAvailable").mockReturnValue(true);
 
       await act(async () => {
         root!.render(
@@ -2095,7 +2097,8 @@ describe("LEXIS Google Account & Cloud Sync Integration", () => {
       } as any;
       resetSupabaseClientForTesting(mockSupabase);
 
-      const authService = new CloudAuthService(adapter);
+      const authService = new CloudAuthService();
+      vi.spyOn(authService, "isAvailable").mockReturnValue(true);
 
       await act(async () => {
         root!.render(

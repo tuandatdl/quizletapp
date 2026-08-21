@@ -17,7 +17,7 @@ export function getSupabaseAnonKey(): string | undefined {
 }
 
 export function cloudSyncAvailable(): boolean {
-  return Boolean((getSupabaseUrl() && getSupabaseAnonKey()) || clientInstance);
+  return Boolean(getSupabaseUrl() && getSupabaseAnonKey());
 }
 
 export function getSupabaseClient(): SupabaseClient | null {

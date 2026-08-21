@@ -67,9 +67,7 @@ export const Header: React.FC = () => {
   const effectiveName =
     isCloudAuth && cloudDisplayName
       ? cloudDisplayName
-      : user?.name && user.name !== "Tú Trinh" && user.name !== "Khách"
-      ? user.name
-      : "Khách";
+      : user?.name?.trim() || "Khách";
 
   const effectiveAvatar = isCloudAuth ? cloudAvatarUrl : null;
 
