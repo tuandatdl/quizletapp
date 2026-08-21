@@ -235,6 +235,24 @@ export class LocalFirstSyncCoordinator implements SyncCoordinator {
     await this.persistence.put("syncConflicts", conflict);
   }
 
+  async resolveAllConflicts(choice: "remote"): Promise<{ resolvedCount: number }> {
+    const unresolved = await this.getConflicts();
+    const now = new Date().toISOString();
+    for (const conflict of unresolved) {
+      if (choice === "remote") {
+        if (conflict.remoteRecord) {
+          await this.persistence.put(conflict.store, conflict.remoteRecord);
+        } else {
+          await this.persistence.delete(conflict.store, conflict.recordId);
+        }
+        conflict.resolvedAt = now;
+        conflict.resolution = choice;
+        await this.persistence.put("syncConflicts", conflict);
+      }
+    }
+    return { resolvedCount: unresolved.length };
+  }
+
   async disconnect(): Promise<void> {
     // Keep ownership and cursor. Clearing them made a later sign-in with a
     // different account look like a safe first-device seed.

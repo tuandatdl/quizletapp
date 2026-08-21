@@ -263,6 +263,10 @@ export class CloudAuthService {
     return this.coordinator.resolveConflict(conflictId, choice);
   }
 
+  async resolveAllConflicts(choice: "remote"): Promise<{ resolvedCount: number }> {
+    return this.coordinator.resolveAllConflicts(choice);
+  }
+
   async getMergePreview(): Promise<MergePreview | null> {
     return this.coordinator.getMergePreview();
   }

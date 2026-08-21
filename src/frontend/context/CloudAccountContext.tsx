@@ -25,6 +25,7 @@ export interface CloudAccountContextType {
   getMergePreview: () => Promise<MergePreview | null>;
   executeMerge: () => Promise<SyncResult>;
   resolveConflict: (conflictId: string, choice: "local" | "remote") => Promise<void>;
+  resolveAllConflicts: (choice: "remote") => Promise<{ resolvedCount: number }>;
   refreshAccount: () => Promise<void>;
 }
 
@@ -181,6 +182,15 @@ export const CloudAccountProvider: React.FC<{ children: React.ReactNode; service
     [authService, refreshAccount],
   );
 
+  const resolveAllConflicts = useCallback(
+    async (choice: "remote") => {
+      const res = await authService.resolveAllConflicts(choice);
+      await refreshAccount();
+      return res;
+    },
+    [authService, refreshAccount],
+  );
+
   const displayName = authService.getUserDisplayName(user);
   const avatarUrl = authService.getUserAvatarUrl(user);
   const provider = authService.getUserProvider(user);
@@ -211,6 +221,7 @@ export const CloudAccountProvider: React.FC<{ children: React.ReactNode; service
         getMergePreview,
         executeMerge,
         resolveConflict,
+        resolveAllConflicts,
         refreshAccount,
       }}
     >

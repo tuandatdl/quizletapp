@@ -116,6 +116,7 @@ export interface SyncCoordinator {
   getPendingCount(): Promise<number>;
   getConflicts(): Promise<SyncConflict[]>;
   resolveConflict(conflictId: string, choice: "local" | "remote"): Promise<void>;
+  resolveAllConflicts(choice: "remote"): Promise<{ resolvedCount: number }>;
   getMergePreview(adapter?: RemoteSyncAdapter): Promise<MergePreview | null>;
   executeMerge(adapter?: RemoteSyncAdapter): Promise<SyncResult>;
   disconnect(): Promise<void>;
