@@ -120,6 +120,7 @@ export const ShadowingPage: React.FC = () => {
   const analysisAbortRef = useRef<AbortController | null>(null);
   const userAudioElRef = useRef<HTMLAudioElement | null>(null);
   const recordedAudioUrlRef = useRef<string | null>(null);
+  const inFlightServerAdvanceRef = useRef<Set<string>>(new Set());
 
   // User audio controls
   const stopUserAudio = useCallback(() => {
@@ -235,6 +236,7 @@ export const ShadowingPage: React.FC = () => {
   // Start Session with Full Passage sentences
   const handleStartSession = async (rId: string) => {
     performFullRuntimeCleanup();
+    inFlightServerAdvanceRef.current.clear();
     setRecordedAudioBlob(null);
     setAudioBase64(null);
     setAudioMimeType(undefined);
@@ -624,6 +626,12 @@ export const ShadowingPage: React.FC = () => {
     const targetIdx = currentPracticeIndex;
     const targetSentenceId = currentSent.id;
     const generation = ++serverAssessmentGenerationRef.current;
+    const serverSessionId = session.id;
+    const isAuthoritativeSentence =
+      targetIdx === session.current_sentence &&
+      targetSentenceId === session.currentSentenceData?.id;
+    const attemptAudioBlob = recordedAudioBlob;
+
     setPhase("EVALUATING");
 
     try {
@@ -645,27 +653,29 @@ export const ShadowingPage: React.FC = () => {
         return;
       }
 
-      recordAttemptSuccess(assessResult, recordedAudioBlob);
+      recordAttemptSuccess(assessResult, attemptAudioBlob);
 
-      // Blocker A Safety Guard: Only advance server cursor if practicing server's authoritative current sentence
+      // Server Advance Mutation (only when scoring authoritative server sentence)
       if (
         !isStaticRuntime() &&
         assessResult.attemptId &&
-        targetIdx === session.current_sentence &&
-        targetSentenceId === session.currentSentenceData?.id
+        isAuthoritativeSentence
       ) {
-        try {
-          const next = await shadowingApi.advance(session.id, assessResult.attemptId);
-          if (
-            mountedRef.current &&
-            generation === serverAssessmentGenerationRef.current &&
-            targetIdx === currentPracticeIndexRef.current
-          ) {
-            setSession(next);
+        const advanceKey = `${serverSessionId}:${targetIdx}`;
+        if (!inFlightServerAdvanceRef.current.has(advanceKey)) {
+          inFlightServerAdvanceRef.current.add(advanceKey);
+          try {
+            const next = await shadowingApi.advance(serverSessionId, assessResult.attemptId);
+            // Authoritative server mutation ack survives UI navigation as long as this is still the same session
+            if (mountedRef.current && sessionRef.current?.id === serverSessionId) {
+              setSession(next);
+            }
+          } catch {
+            // Assessment score is preserved in progressMap and RESULT phase; surface visible warning for server sync failure
+            warning("Không thể đồng bộ tiến độ phiên học với máy chủ. Điểm đánh giá vẫn được lưu.");
+          } finally {
+            inFlightServerAdvanceRef.current.delete(advanceKey);
           }
-        } catch {
-          // Assessment score is preserved in progressMap and RESULT phase; surface visible warning for server sync failure
-          warning("Không thể đồng bộ tiến độ phiên học với máy chủ. Điểm đánh giá vẫn được lưu.");
         }
       }
     } catch (err: any) {

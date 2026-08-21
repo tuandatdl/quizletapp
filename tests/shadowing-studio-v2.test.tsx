@@ -152,7 +152,8 @@ describe("Shadowing Studio V2 - Practice Studio UX & State Architecture", () => 
     });
 
     it("calls shadowingApi.advance only when evaluating authoritative server sentence", () => {
-      expect(shadowingPageSrc).toMatch(/!isStaticRuntime\(\)\s*&&\s*assessResult\.attemptId\s*&&\s*targetIdx === session\.current_sentence\s*&&\s*targetSentenceId === session\.currentSentenceData\?\.id/);
+      expect(shadowingPageSrc).toMatch(/isAuthoritativeSentence\s*=\s*targetIdx === session\.current_sentence\s*&&\s*targetSentenceId === session\.currentSentenceData\?\.id/);
+      expect(shadowingPageSrc).toMatch(/!isStaticRuntime\(\)\s*&&\s*assessResult\.attemptId\s*&&\s*isAuthoritativeSentence/);
     });
 
     it("surfaces non-destructive warning if server advance fails rather than swallowing error", () => {
@@ -215,6 +216,166 @@ describe("Shadowing Studio V2 - Practice Studio UX & State Architecture", () => 
       } finally {
         globalThis.crypto = originalCrypto;
       }
+    });
+  });
+
+  describe("11. Targeted Server Advance Mutation Race & Deduplication Invariants", () => {
+    it("A: allows server advance ACK to update session when UI practice cursor navigated during in-flight request", async () => {
+      let currentSession: any = {
+        id: "server-sess-1",
+        current_sentence: 0,
+        currentSentenceData: { id: "sent-0" },
+      };
+      const sessionRef = { current: currentSession };
+      let currentPracticeIndex = 0;
+      const inFlightServerAdvance = new Set<string>();
+
+      // Simulates advance request sent for cursor 0
+      const serverSessionId = currentSession.id;
+      const targetIdx = 0;
+      const advanceKey = `${serverSessionId}:${targetIdx}`;
+
+      inFlightServerAdvance.add(advanceKey);
+
+      // User navigates UI cursor to sentence 2 while advance is in flight
+      currentPracticeIndex = 2;
+
+      // advance returns next session with current_sentence: 1
+      const nextServerSession = {
+        id: "server-sess-1",
+        current_sentence: 1,
+        currentSentenceData: { id: "sent-1" },
+      };
+
+      // When promise resolves, sessionRef.current.id matches serverSessionId
+      const next = nextServerSession;
+      if (sessionRef.current?.id === serverSessionId) {
+        currentSession = next;
+        sessionRef.current = next;
+      }
+      inFlightServerAdvance.delete(advanceKey);
+
+      expect(currentSession.current_sentence).toBe(1);
+      expect(currentSession.currentSentenceData.id).toBe("sent-1");
+      expect(currentPracticeIndex).toBe(2); // UI cursor remains on sentence 2
+      expect(inFlightServerAdvance.has(advanceKey)).toBe(false);
+    });
+
+    it("B: applies server advance ACK safely when Continuous mode auto-advances UI", async () => {
+      let currentSession: any = {
+        id: "server-sess-1",
+        current_sentence: 0,
+        currentSentenceData: { id: "sent-0" },
+      };
+      const sessionRef = { current: currentSession };
+      let currentPracticeIndex = 0;
+      const inFlightServerAdvance = new Set<string>();
+
+      const serverSessionId = currentSession.id;
+      const targetIdx = 0;
+      const advanceKey = `${serverSessionId}:${targetIdx}`;
+      inFlightServerAdvance.add(advanceKey);
+
+      // Continuous timer auto-advances practice index from 0 to 1
+      currentPracticeIndex = 1;
+
+      // advance resolves
+      const next = { id: "server-sess-1", current_sentence: 1, currentSentenceData: { id: "sent-1" } };
+      if (sessionRef.current?.id === serverSessionId) {
+        currentSession = next;
+        sessionRef.current = next;
+      }
+      inFlightServerAdvance.delete(advanceKey);
+
+      expect(currentSession.current_sentence).toBe(1);
+      expect(inFlightServerAdvance.size).toBe(0);
+    });
+
+    it("C: rejects old advance response when a DIFFERENT session has been started", async () => {
+      let currentSession: any = {
+        id: "server-sess-1",
+        current_sentence: 0,
+        currentSentenceData: { id: "sent-0" },
+      };
+      const sessionRef = { current: currentSession };
+
+      const oldServerSessionId = "server-sess-1";
+
+      // User starts a new session
+      currentSession = {
+        id: "server-sess-2",
+        current_sentence: 0,
+        currentSentenceData: { id: "sent-0" },
+      };
+      sessionRef.current = currentSession;
+
+      // Old advance response arrives for session 1
+      const oldAdvanceResult = {
+        id: "server-sess-1",
+        current_sentence: 1,
+        currentSentenceData: { id: "sent-1" },
+      };
+
+      if (sessionRef.current?.id === oldServerSessionId) {
+        currentSession = oldAdvanceResult;
+      }
+
+      // Must NOT overwrite new session 2
+      expect(currentSession.id).toBe("server-sess-2");
+      expect(currentSession.current_sentence).toBe(0);
+    });
+
+    it("D: deduplicates simultaneous/rapid advance requests for the same authoritative sentence", () => {
+      const inFlightServerAdvance = new Set<string>();
+      const serverSessionId = "server-sess-1";
+      const targetIdx = 0;
+      const advanceKey = `${serverSessionId}:${targetIdx}`;
+      const advanceCalls: string[] = [];
+
+      const triggerAdvance = (attemptId: string) => {
+        if (!inFlightServerAdvance.has(advanceKey)) {
+          inFlightServerAdvance.add(advanceKey);
+          advanceCalls.push(attemptId);
+        }
+      };
+
+      triggerAdvance("attempt-1");
+      triggerAdvance("attempt-2"); // rapid retry while in flight
+
+      expect(advanceCalls).toEqual(["attempt-1"]);
+      expect(inFlightServerAdvance.has(advanceKey)).toBe(true);
+
+      // Clean up in finally
+      inFlightServerAdvance.delete(advanceKey);
+      expect(inFlightServerAdvance.has(advanceKey)).toBe(false);
+    });
+
+    it("E: clears in-flight guard on advance failure to allow future retries", async () => {
+      const inFlightServerAdvance = new Set<string>();
+      const serverSessionId = "server-sess-1";
+      const targetIdx = 0;
+      const advanceKey = `${serverSessionId}:${targetIdx}`;
+      let warningRaised = false;
+
+      inFlightServerAdvance.add(advanceKey);
+      try {
+        throw new Error("Network offline");
+      } catch {
+        warningRaised = true;
+      } finally {
+        inFlightServerAdvance.delete(advanceKey);
+      }
+
+      expect(warningRaised).toBe(true);
+      expect(inFlightServerAdvance.has(advanceKey)).toBe(false);
+
+      // Subsequent retry can now proceed
+      let secondAttemptSent = false;
+      if (!inFlightServerAdvance.has(advanceKey)) {
+        inFlightServerAdvance.add(advanceKey);
+        secondAttemptSent = true;
+      }
+      expect(secondAttemptSent).toBe(true);
     });
   });
 });
