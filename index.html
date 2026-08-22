@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="vi" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✨</text></svg>" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0" />
+    <meta name="description" content="LEXIS Language Workspace — Không gian học tiếng Anh và tiếng Trung song ngữ cao cấp với Spaced Repetition, Đọc tương tác, Phát âm và Shadowing." />
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
+    <meta name="theme-color" content="#4F46E5" />
+    <title>LEXIS — Language Workspace</title>
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400;1,600&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet" />
+
+    <script>
+      (function() {
+        try {
+          const theme = localStorage.getItem('tutrinh_theme') || 'system';
+          const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light');
+        } catch (e) {}
+      })();
+    </script>
+    <script type="module" crossorigin src="/quizletapp/assets/index-DJeXPO-d.js"></script>
+    <link rel="modulepreload" crossorigin href="/quizletapp/assets/Button-CZM3HC4U.js">
+    <link rel="stylesheet" crossorigin href="/quizletapp/assets/index-D_8B2r5A.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
