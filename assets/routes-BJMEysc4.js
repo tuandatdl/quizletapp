@@ -1,0 +1,1 @@
+var e={addVocabulary:`/add`,addReading:`/reading/new`};export{e as t};
