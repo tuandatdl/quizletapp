@@ -1,0 +1,1 @@
+var e=e=>{if(!e)return!1;let t=e.tagName.toLowerCase();if([`input`,`textarea`,`select`,`button`,`a`].includes(t)||e.hasAttribute(`contenteditable`)&&e.getAttribute(`contenteditable`)!==`false`)return!0;let n=e.getAttribute(`role`);return!![`button`,`textbox`,`searchbox`,`combobox`,`menuitem`,`tab`,`radio`,`checkbox`,`switch`].includes(n||``)};export{e as t};
