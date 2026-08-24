@@ -1,9 +1,9 @@
 /**
  * LEXIS Progressive Web App — Multi-Tier Service Worker
- * Version: 1.0.0
+ * Version: 1.1.1
  */
 
-const CACHE_VERSION = "lexis-v1.0.0";
+const CACHE_VERSION = "lexis-v1.1.1";
 const STATIC_CACHE = `lexis-static-${CACHE_VERSION}`;
 const MEDIA_CACHE = `lexis-media-${CACHE_VERSION}`;
 const DATA_CACHE = `lexis-data-${CACHE_VERSION}`;
@@ -51,6 +51,12 @@ self.addEventListener("activate", (event) => {
 // 3. Multi-tier Fetch Strategies
 self.addEventListener("fetch", (event) => {
   const { request } = event;
+
+  // Filter out non-http/https schemes (e.g., chrome-extension://, moz-extension://, blob:, data:)
+  if (!request.url.startsWith("http://") && !request.url.startsWith("https://")) {
+    return;
+  }
+
   const url = new URL(request.url);
 
   // Ignore non-GET requests for standard caching
