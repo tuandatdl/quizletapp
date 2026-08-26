@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://tuandatdl.github.io/quizletapp/sitemap.xml
