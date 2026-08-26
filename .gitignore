@@ -1,6 +1,0 @@
-node_modules/
-cloudflare/
-backups/
-data/
-.env*
-.DS_Store
