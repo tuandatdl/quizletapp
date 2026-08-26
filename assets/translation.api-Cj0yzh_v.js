@@ -1,0 +1,1 @@
+import{r as e}from"./createLucideIcon-DtlW7uw6.js";async function t(t){return(await e(t,`en`,`vi`)).translatedText}export{t};
