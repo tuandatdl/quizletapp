@@ -1,1 +1,0 @@
-import{a as e}from"./Button-CfV3SgDP.js";async function t(t){return(await e(t,`en`,`vi`)).translatedText}export{t};

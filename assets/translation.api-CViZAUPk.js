@@ -1,0 +1,1 @@
+import{_ as e}from"./Button-CQdrX3mX.js";async function t(t){return(await e(t,`en`,`vi`)).translatedText}export{t};
