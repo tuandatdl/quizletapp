@@ -1,1 +1,0 @@
-import{i as e}from"./loader-circle-BNQr9EFR.js";async function t(t){return(await e(t,`en`,`vi`)).translatedText}export{t};
