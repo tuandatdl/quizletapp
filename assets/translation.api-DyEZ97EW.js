@@ -1,0 +1,1 @@
+import{y as e}from"./Button-otSxlWMZ.js";async function t(t){return(await e(t,`en`,`vi`)).translatedText}export{t};
