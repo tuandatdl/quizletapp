@@ -1,1 +1,0 @@
-import{_ as e}from"./Button-BUDPwyLg.js";async function t(t){return(await e(t,`en`,`vi`)).translatedText}export{t};
