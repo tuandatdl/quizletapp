@@ -1,0 +1,1 @@
+import"./ConfettiCanvas-DgfMk0-l.js";
