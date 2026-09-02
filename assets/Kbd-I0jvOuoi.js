@@ -1,1 +1,0 @@
-import{i as e,j as t}from"./Button-CL5lDjHV.js";t();var n=e(),r=({children:e,className:t=``,style:r})=>(0,n.jsx)(`kbd`,{className:`inline-flex items-center justify-center px-1.5 py-0.5 text-[10px] font-mono font-semibold text-slate-400 bg-slate-800/80 border border-slate-700 rounded shadow-sm ${t}`,style:{minWidth:`18px`,minHeight:`18px`,...r},children:e});export{r as t};

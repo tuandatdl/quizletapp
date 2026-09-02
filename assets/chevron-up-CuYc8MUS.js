@@ -1,1 +1,0 @@
-import{r as e}from"./Button-BOd6hHkl.js";var t=e(`chevron-up`,[[`path`,{d:`m18 15-6-6-6 6`,key:`153udz`}]]);export{t};
