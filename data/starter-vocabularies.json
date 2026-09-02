@@ -1,0 +1,20 @@
+[
+  {
+    "id": "starter-vocab-1",
+    "term": "resilience",
+    "definition": "The capacity to recover quickly from difficulties; toughness.",
+    "meaningVi": "Khả năng phục hồi nhanh chóng sau khó khăn, nghịch cảnh",
+    "partOfSpeech": "noun",
+    "level": "B2",
+    "exampleSentence": "Courage and resilience are essential qualities for overcoming challenges."
+  },
+  {
+    "id": "starter-vocab-2",
+    "term": "comprehension",
+    "definition": "The ability to understand something.",
+    "meaningVi": "Sự hiểu, sự lĩnh hội",
+    "partOfSpeech": "noun",
+    "level": "B1",
+    "exampleSentence": "Reading comprehension improves with regular practice."
+  }
+]
