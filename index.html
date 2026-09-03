@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="vi" data-theme="light">
+<html lang="vi" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0" />
@@ -79,20 +79,20 @@
     <script>
       (function() {
         try {
-          const theme = localStorage.getItem('tutrinh_theme') || 'system';
-          const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          const theme = localStorage.getItem('tutrinh_theme') || 'dark';
+          const isDark = theme === 'dark' || (theme === 'system' && !window.matchMedia('(prefers-color-scheme: light)').matches);
           document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light');
         } catch (e) {}
       })();
     </script>
-    <script type="module" crossorigin src="/quizletapp/assets/index-Cz__dxYm.js"></script>
+    <script type="module" crossorigin src="/quizletapp/assets/index-CxfpI4u2.js"></script>
     <link rel="modulepreload" crossorigin href="/quizletapp/assets/rolldown-runtime-CXHxssQy.js">
     <link rel="modulepreload" crossorigin href="/quizletapp/assets/vendor-react-COcI53Ed.js">
     <link rel="modulepreload" crossorigin href="/quizletapp/assets/vendor-state-opSHeusR.js">
     <link rel="modulepreload" crossorigin href="/quizletapp/assets/client-BckurD7H.js">
     <link rel="modulepreload" crossorigin href="/quizletapp/assets/vendor-ui-CknGF5Io.js">
     <link rel="modulepreload" crossorigin href="/quizletapp/assets/vendor-db-O3h6kW9H.js">
-    <link rel="stylesheet" crossorigin href="/quizletapp/assets/index-DzYodUbL.css">
+    <link rel="stylesheet" crossorigin href="/quizletapp/assets/index-DxDfASbs.css">
   <link rel="manifest" href="/quizletapp/manifest.webmanifest"></head>
   <body>
     <div id="root"></div>
