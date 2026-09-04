@@ -1,10 +1,49 @@
 [
   {
+    "id": "starter-reading-remote-work",
+    "title": "The Shift Toward Remote Work",
+    "content": "The shift toward remote work has transformed modern professional environments. Many organizations now offer flexible schedules to boost productivity and employee satisfaction. Digital collaboration platforms allow distributed teams to communicate and share knowledge seamlessly. As technology continues to advance, hybrid work models are likely to shape the future of business.",
+    "translationVi": "Sự chuyển dịch sang làm việc từ xa đã biến đổi môi trường làm việc chuyên nghiệp hiện đại. Nhiều tổ chức hiện cung cấp lịch làm việc linh hoạt nhằm thúc đẩy năng suất và sự hài lòng của nhân viên. Các nền tảng cộng tác kỹ thuật số cho phép các nhóm làm việc phân tán giao tiếp và chia sẻ tri thức một cách liền mạch. Khi công nghệ tiếp tục phát triển, các mô hình làm việc kết hợp nhiều khả năng sẽ định hình tương lai của doanh nghiệp.",
+    "language": "en",
+    "difficulty": "B2",
+    "level": "B2",
+    "topic": "Technology & Workplace",
+    "audioUrl": "/audio/remote-work-studio.mp3",
+    "sentenceTimestamps": [
+      {
+        "id": 1,
+        "sentenceIndex": 0,
+        "start": 0,
+        "end": 5.3
+      },
+      {
+        "id": 2,
+        "sentenceIndex": 1,
+        "start": 5.8,
+        "end": 13.2
+      },
+      {
+        "id": 3,
+        "sentenceIndex": 2,
+        "start": 13.7,
+        "end": 21.1
+      },
+      {
+        "id": 4,
+        "sentenceIndex": 3,
+        "start": 21.6,
+        "end": 28.9
+      }
+    ],
+    "createdAt": "2026-09-04T00:00:00.000Z"
+  },
+  {
     "id": "starter-reading-1",
     "title": "Welcome to Lexis Language Platform",
     "content": "Lexis is an advanced language learning platform designed to help you master vocabulary and reading comprehension with AI-powered assistance. Practice every day to build a consistent habit and achieve fluency.",
     "language": "en",
     "difficulty": "B1",
+    "level": "B1",
     "createdAt": "2026-09-02T00:00:00.000Z"
   }
 ]
