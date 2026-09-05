@@ -1,1 +1,0 @@
-import{m as e}from"./client-CXgzWQqE.js";async function t(t){return(await e(t,`en`,`vi`)).translatedText}export{t};

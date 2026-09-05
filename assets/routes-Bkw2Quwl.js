@@ -1,1 +1,0 @@
-var e={addVocabulary:`/add`,addReading:`/reading/new`,toeicPractice:`/toeic/practice`};export{e as t};
