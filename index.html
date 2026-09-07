@@ -3,6 +3,31 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0" />
+    <script>
+      // Cơ chế tự động dọn sạch Service Worker cũ & cache rác
+      (function () {
+        const CURRENT_SW_VERSION = 'v2.9.10';
+        const LS_KEY = 'lexis_sw_cleanup_version';
+
+        if (localStorage.getItem(LS_KEY) !== CURRENT_SW_VERSION) {
+          if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.getRegistrations().then(function (registrations) {
+              for (var i = 0; i < registrations.length; i++) {
+                registrations[i].unregister();
+              }
+            });
+          }
+          if ('caches' in window) {
+            caches.keys().then(function (names) {
+              for (var i = 0; i < names.length; i++) {
+                caches.delete(names[i]);
+              }
+            });
+          }
+          localStorage.setItem(LS_KEY, CURRENT_SW_VERSION);
+        }
+      })();
+    </script>
     <meta name="theme-color" content="#0f172a" />
     <meta name="description" content="LEXIS Language Workspace — Không gian học tiếng Anh và tiếng Trung song ngữ cao cấp với Spaced Repetition, Đọc tương tác, Phát âm và Shadowing." />
     <meta name="keywords" content="học tiếng anh, học tiếng trung, flashcards, spaced repetition, srs, luyện đọc toeic, hsk, chép chính tả, ai ngữ pháp, từ vựng thông minh" />
@@ -85,17 +110,17 @@
         } catch (e) {}
       })();
     </script>
-    <script type="module" crossorigin src="/quizletapp/assets/index-BhpzZkYq.js"></script>
+    <script type="module" crossorigin src="/quizletapp/assets/index-D6fHvzFZ.js"></script>
     <link rel="modulepreload" crossorigin href="/quizletapp/assets/rolldown-runtime-CXHxssQy.js">
     <link rel="modulepreload" crossorigin href="/quizletapp/assets/vendor-react-CmUB0dRr.js">
     <link rel="modulepreload" crossorigin href="/quizletapp/assets/runtime-BRsB_w63.js">
     <link rel="modulepreload" crossorigin href="/quizletapp/assets/vendor-state-BUvV-iXd.js">
-    <link rel="modulepreload" crossorigin href="/quizletapp/assets/useVocabularyStore-DopTPNW3.js">
-    <link rel="modulepreload" crossorigin href="/quizletapp/assets/client-CznE7rs1.js">
+    <link rel="modulepreload" crossorigin href="/quizletapp/assets/useVocabularyStore-CxymDJYA.js">
+    <link rel="modulepreload" crossorigin href="/quizletapp/assets/client-DA6aHbbK.js">
     <link rel="modulepreload" crossorigin href="/quizletapp/assets/vendor-ui-CWFz4kQj.js">
     <link rel="modulepreload" crossorigin href="/quizletapp/assets/vendor-db-O3h6kW9H.js">
     <link rel="stylesheet" crossorigin href="/quizletapp/assets/index-Dawtr30Z.css">
-  <link rel="manifest" href="/quizletapp/manifest.webmanifest"></head>
+  <link rel="manifest" href="/quizletapp/manifest.webmanifest"><script id="vite-plugin-pwa:register-sw" src="/quizletapp/registerSW.js"></script></head>
   <body>
     <div id="root"></div>
     <noscript>
