@@ -27,6 +27,16 @@
           localStorage.setItem(LS_KEY, CURRENT_SW_VERSION);
         }
       })();
+
+      // Ngăn chặn lỗi uncaught promise do Extension trình duyệt chèn vào (như onboarding.js)
+      window.addEventListener('unhandledrejection', function (event) {
+        try {
+          var reason = event && event.reason ? String(event.reason.stack || event.reason.message || event.reason) : '';
+          if (reason.indexOf('onboarding.js') !== -1 || reason.indexOf('chrome-extension://') !== -1 || reason.indexOf('moz-extension://') !== -1) {
+            event.preventDefault();
+          }
+        } catch (e) {}
+      });
     </script>
     <meta name="theme-color" content="#0f172a" />
     <meta name="description" content="LEXIS Language Workspace — Không gian học tiếng Anh và tiếng Trung song ngữ cao cấp với Spaced Repetition, Đọc tương tác, Phát âm và Shadowing." />
@@ -61,9 +71,10 @@
     <!-- Canonical Link -->
     <link rel="canonical" href="https://tuandatdl.github.io/quizletapp/" />
 
+    <link rel="icon" type="image/x-icon" href="./favicon.ico" />
+    <link rel="shortcut icon" href="./favicon.ico" />
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✨</text></svg>" />
     <link rel="icon" type="image/png" href="./icons/icon-192.png" />
-    <link rel="shortcut icon" href="./icons/icon-192.png" />
     <link rel="manifest" href="./manifest.webmanifest" />
     <title>LEXIS — Language Workspace</title>
 
@@ -112,7 +123,7 @@
         } catch (e) {}
       })();
     </script>
-    <script type="module" crossorigin src="/quizletapp/assets/index-SsKlXDXu.js"></script>
+    <script type="module" crossorigin src="/quizletapp/assets/index-BefoLJfJ.js"></script>
     <link rel="modulepreload" crossorigin href="/quizletapp/assets/rolldown-runtime-CXHxssQy.js">
     <link rel="modulepreload" crossorigin href="/quizletapp/assets/vendor-react-CmUB0dRr.js">
     <link rel="modulepreload" crossorigin href="/quizletapp/assets/runtime-BRsB_w63.js">
