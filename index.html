@@ -6,7 +6,7 @@
     <script>
       // Cơ chế tự động dọn sạch Service Worker cũ & cache rác
       (function () {
-        const CURRENT_SW_VERSION = 'v2.9.16';
+        const CURRENT_SW_VERSION = 'v2.9.17';
         const LS_KEY = 'lexis_sw_cleanup_version';
 
         if (localStorage.getItem(LS_KEY) !== CURRENT_SW_VERSION) {
@@ -28,11 +28,20 @@
         }
       })();
 
-      // Ngăn chặn lỗi uncaught promise do Extension trình duyệt chèn vào (như onboarding.js)
+      // Ngăn chặn lỗi uncaught promise do Extension trình duyệt chèn vào (như M_ID, onboarding.js)
       window.addEventListener('unhandledrejection', function (event) {
         try {
-          var reason = event && event.reason ? String(event.reason.stack || event.reason.message || event.reason) : '';
-          if (reason.indexOf('onboarding.js') !== -1 || reason.indexOf('chrome-extension://') !== -1 || reason.indexOf('moz-extension://') !== -1) {
+          var reason = (event && event.reason ? String(event.reason.stack || event.reason.message || event.reason) : '').toLowerCase();
+          if (
+            reason.indexOf('onboarding.js') !== -1 ||
+            reason.indexOf('chrome-extension://') !== -1 ||
+            reason.indexOf('moz-extension://') !== -1 ||
+            reason.indexOf('safari-extension://') !== -1 ||
+            reason.indexOf('eppiocemhmnlbhjplcgkofciiegomcon') !== -1 ||
+            reason.indexOf('contentscript.js') !== -1 ||
+            reason.indexOf("reading 'm_id'") !== -1 ||
+            reason.indexOf('m_id') !== -1
+          ) {
             event.preventDefault();
           }
         } catch (e) {}
@@ -123,13 +132,13 @@
         } catch (e) {}
       })();
     </script>
-    <script type="module" crossorigin src="/quizletapp/assets/index-fTHPDt6R.js"></script>
+    <script type="module" crossorigin src="/quizletapp/assets/index-CjJYuT_D.js"></script>
     <link rel="modulepreload" crossorigin href="/quizletapp/assets/rolldown-runtime-CXHxssQy.js">
     <link rel="modulepreload" crossorigin href="/quizletapp/assets/vendor-react-CmUB0dRr.js">
     <link rel="modulepreload" crossorigin href="/quizletapp/assets/runtime-BRsB_w63.js">
     <link rel="modulepreload" crossorigin href="/quizletapp/assets/vendor-state-BUvV-iXd.js">
-    <link rel="modulepreload" crossorigin href="/quizletapp/assets/useVocabularyStore-CkHExcuF.js">
-    <link rel="modulepreload" crossorigin href="/quizletapp/assets/client--2_HLa0K.js">
+    <link rel="modulepreload" crossorigin href="/quizletapp/assets/useVocabularyStore-XdkZWbm3.js">
+    <link rel="modulepreload" crossorigin href="/quizletapp/assets/client-C40DMopk.js">
     <link rel="modulepreload" crossorigin href="/quizletapp/assets/vendor-ui-CWFz4kQj.js">
     <link rel="modulepreload" crossorigin href="/quizletapp/assets/vendor-db-O3h6kW9H.js">
     <link rel="stylesheet" crossorigin href="/quizletapp/assets/index-Dawtr30Z.css">
