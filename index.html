@@ -6,7 +6,7 @@
     <script>
       // Cơ chế tự động dọn sạch Service Worker cũ & cache rác
       (function () {
-        const CURRENT_SW_VERSION = 'v2.9.22';
+        const CURRENT_SW_VERSION = 'v2.9.23';
         const LS_KEY = 'lexis_sw_cleanup_version';
 
         if (localStorage.getItem(LS_KEY) !== CURRENT_SW_VERSION) {
@@ -129,20 +129,21 @@
     <script>
       (function() {
         try {
-          const theme = localStorage.getItem('tutrinh_theme') || 'dark';
+          const theme = localStorage.getItem('lexis_theme') || localStorage.getItem('tutrinh_theme') || 'dark';
           const isDark = theme === 'dark' || (theme === 'system' && !window.matchMedia('(prefers-color-scheme: light)').matches);
           document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light');
         } catch (e) {}
       })();
     </script>
-    <script type="module" crossorigin src="/quizletapp/assets/index-DVqrjyLc.js"></script>
+    <script type="module" crossorigin src="/quizletapp/assets/index-DG9XIFqS.js"></script>
     <link rel="modulepreload" crossorigin href="/quizletapp/assets/rolldown-runtime-CXHxssQy.js">
     <link rel="modulepreload" crossorigin href="/quizletapp/assets/vendor-react-CmUB0dRr.js">
     <link rel="modulepreload" crossorigin href="/quizletapp/assets/runtime-BRsB_w63.js">
     <link rel="modulepreload" crossorigin href="/quizletapp/assets/vendor-state-BUvV-iXd.js">
-    <link rel="modulepreload" crossorigin href="/quizletapp/assets/useVocabularyStore-CjTLgw2A.js">
-    <link rel="modulepreload" crossorigin href="/quizletapp/assets/apiKeyManager-CSmiuyIl.js">
-    <link rel="modulepreload" crossorigin href="/quizletapp/assets/client-C2f48PPO.js">
+    <link rel="modulepreload" crossorigin href="/quizletapp/assets/jsonUtils-DvSd29r0.js">
+    <link rel="modulepreload" crossorigin href="/quizletapp/assets/useVocabularyStore-BOgGPBVg.js">
+    <link rel="modulepreload" crossorigin href="/quizletapp/assets/apiKeyManager-c6xw3YCB.js">
+    <link rel="modulepreload" crossorigin href="/quizletapp/assets/client-CO_FdLfz.js">
     <link rel="modulepreload" crossorigin href="/quizletapp/assets/vendor-ui-CWFz4kQj.js">
     <link rel="modulepreload" crossorigin href="/quizletapp/assets/vendor-db-O3h6kW9H.js">
     <link rel="stylesheet" crossorigin href="/quizletapp/assets/index-Cx8PAtLI.css">

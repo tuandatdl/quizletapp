@@ -1,0 +1,1 @@
+function i(e,r){if(typeof e!="string")return r;const n=e.trim();if(!n)return r;try{const t=JSON.parse(n);return t==null?r!=null&&typeof r=="object"?r:t:Array.isArray(r)&&!Array.isArray(t)||r!==null&&typeof r=="object"&&!Array.isArray(r)&&(typeof t!="object"||Array.isArray(t))?r:t}catch{return r}}export{i as t};
