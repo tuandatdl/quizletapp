@@ -1,37 +1,165 @@
-<!DOCTYPE html>
-<html lang="vi">
+<!doctype html>
+<html lang="vi" data-theme="dark">
   <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Lexis - Đang chuyển hướng...</title>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0" />
     <script>
-      // Single Page Apps for GitHub Pages
-      // MIT License - https://github.com/rafgraph/spa-github-pages
-      var pathSegmentsToKeep = 1; // Giữ lại '/quizletapp'
+      // Cơ chế tự động dọn sạch Service Worker cũ & cache rác
+      (function () {
+        const CURRENT_SW_VERSION = 'v2.9.29';
+        const LS_KEY = 'lexis_sw_cleanup_version';
 
-      var l = window.location;
-      l.replace(
-        l.protocol + '//' + l.hostname + (l.port ? ':' + l.port : '') +
-        l.pathname.split('/').slice(0, 1 + pathSegmentsToKeep).join('/') + '/?/' +
-        l.pathname.slice(1).split('/').slice(pathSegmentsToKeep).join('/').replace(/&/g, '~and~') +
-        (l.search ? '&' + l.search.slice(1).replace(/&/g, '~and~') : '') +
-        l.hash
-      );
+        if (localStorage.getItem(LS_KEY) !== CURRENT_SW_VERSION) {
+          if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.getRegistrations().then(function (registrations) {
+              for (var i = 0; i < registrations.length; i++) {
+                registrations[i].unregister();
+              }
+            });
+          }
+          if ('caches' in window) {
+            caches.keys().then(function (names) {
+              for (var i = 0; i < names.length; i++) {
+                // Chỉ xóa cache tĩnh cũ, giữ nguyên runtime cache (Workbox) và piper-voices
+                if (names[i].indexOf('lexis-static-') === 0 && names[i].indexOf('v2.9.21') === -1) {
+                  caches.delete(names[i]);
+                }
+              }
+            });
+          }
+          localStorage.setItem(LS_KEY, CURRENT_SW_VERSION);
+        }
+      })();
+
+      // Ngăn chặn lỗi uncaught promise do Extension trình duyệt chèn vào (như M_ID, onboarding.js)
+      window.addEventListener('unhandledrejection', function (event) {
+        try {
+          var reason = (event && event.reason ? String(event.reason.stack || event.reason.message || event.reason) : '').toLowerCase();
+          if (
+            reason.indexOf('onboarding.js') !== -1 ||
+            reason.indexOf('chrome-extension://') !== -1 ||
+            reason.indexOf('moz-extension://') !== -1 ||
+            reason.indexOf('safari-extension://') !== -1 ||
+            reason.indexOf('eppiocemhmnlbhjplcgkofciiegomcon') !== -1 ||
+            reason.indexOf('contentscript.js') !== -1 ||
+            reason.indexOf("reading 'm_id'") !== -1 ||
+            reason.indexOf('m_id') !== -1
+          ) {
+            event.preventDefault();
+          }
+        } catch (e) {}
+      });
     </script>
-    <style>
-      body {
-        margin: 0;
-        height: 100vh;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background-color: #0b0f19;
-        color: #94a3b8;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    <meta name="theme-color" content="#0f172a" />
+    <meta name="description" content="LEXIS Language Workspace — Không gian học tiếng Anh và tiếng Trung song ngữ cao cấp với Spaced Repetition, Đọc tương tác, Phát âm và Shadowing." />
+    <meta name="keywords" content="học tiếng anh, học tiếng trung, flashcards, spaced repetition, srs, luyện đọc toeic, hsk, chép chính tả, ai ngữ pháp, từ vựng thông minh" />
+    <meta name="author" content="Lexis Team" />
+    <meta name="robots" content="index, follow" />
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
+
+    <!-- PWA & Mobile Web App Meta -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Lexis" />
+    <link rel="apple-touch-icon" href="/quizletapp/icons/icon-192.png" />
+
+    <!-- Open Graph / Facebook / Zalo Preview -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Lexis - Language Workspace" />
+    <meta property="og:url" content="https://tuandatdl.github.io/quizletapp/" />
+    <meta property="og:title" content="LEXIS — Language Workspace" />
+    <meta property="og:description" content="Không gian học tiếng Anh và tiếng Trung song ngữ cao cấp với Spaced Repetition, Đọc tương tác, Phát âm và Shadowing." />
+    <meta property="og:image" content="https://tuandatdl.github.io/quizletapp/icons/icon-512.png" />
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:url" content="https://tuandatdl.github.io/quizletapp/" />
+    <meta name="twitter:title" content="LEXIS — Language Workspace" />
+    <meta name="twitter:description" content="Không gian học tiếng Anh và tiếng Trung song ngữ cao cấp với Spaced Repetition, Đọc tương tác, Phát âm và Shadowing." />
+    <meta name="twitter:image" content="https://tuandatdl.github.io/quizletapp/icons/icon-512.png" />
+
+    <meta name="color-scheme" content="dark light" />
+
+    <!-- Canonical Link -->
+    <link rel="canonical" href="https://tuandatdl.github.io/quizletapp/" />
+
+    <link rel="icon" type="image/x-icon" href="/quizletapp/favicon.ico" />
+    <link rel="shortcut icon" href="/quizletapp/favicon.ico" />
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✨</text></svg>" />
+    <link rel="icon" type="image/png" href="/quizletapp/icons/icon-192.png" />
+    <link rel="manifest" href="/quizletapp/manifest.webmanifest" />
+    <title>LEXIS — Language Workspace</title>
+
+    <!-- Schema.org JSON-LD -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "Lexis Language Workspace",
+        "url": "https://tuandatdl.github.io/quizletapp/",
+        "description": "Nền tảng học ngoại ngữ thông minh kết hợp AI, Spaced Repetition và đọc hiểu tương tác.",
+        "applicationCategory": "EducationalApplication",
+        "operatingSystem": "Web, iOS, Android, macOS, Windows",
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "VND"
+        },
+        "author": {
+          "@type": "Organization",
+          "name": "Lexis Workspace"
+        }
       }
-    </style>
-  </head>
+    </script>
+
+    <!-- GitHub Pages Single Page App Redirect Receiver -->
+    <script>
+      (function(l) {
+        if (l.search[1] === '/' ) {
+          var decoded = l.search.slice(1).split('&').map(function(s) { 
+            return s.replace(/~and~/g, '&') 
+          }).join('?');
+          window.history.replaceState(null, null,
+              l.pathname.slice(0, -1) + decoded + l.hash
+          );
+        }
+      }(window.location))
+    </script>
+
+    <script>
+      (function() {
+        try {
+          const theme = localStorage.getItem('lexis_theme') || localStorage.getItem('tutrinh_theme') || 'dark';
+          const isDark = theme === 'dark' || (theme === 'system' && !window.matchMedia('(prefers-color-scheme: light)').matches);
+          document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light');
+        } catch (e) {}
+      })();
+    </script>
+    <script type="module" crossorigin src="/quizletapp/assets/index-UOx4emx-.js"></script>
+    <link rel="modulepreload" crossorigin href="/quizletapp/assets/rolldown-runtime-CXHxssQy.js">
+    <link rel="modulepreload" crossorigin href="/quizletapp/assets/vendor-react-CmUB0dRr.js">
+    <link rel="modulepreload" crossorigin href="/quizletapp/assets/runtime-BRsB_w63.js">
+    <link rel="modulepreload" crossorigin href="/quizletapp/assets/vendor-state-BUvV-iXd.js">
+    <link rel="modulepreload" crossorigin href="/quizletapp/assets/indexedDb-CyZ9oMk_.js">
+    <link rel="modulepreload" crossorigin href="/quizletapp/assets/vendor-supabase-CzjSrJXz.js">
+    <link rel="modulepreload" crossorigin href="/quizletapp/assets/jsonUtils-DvSd29r0.js">
+    <link rel="modulepreload" crossorigin href="/quizletapp/assets/useVocabularyStore-BtftEUT2.js">
+    <link rel="modulepreload" crossorigin href="/quizletapp/assets/translation.api-GBQbF_8E.js">
+    <link rel="modulepreload" crossorigin href="/quizletapp/assets/apiKeyManager-c6xw3YCB.js">
+    <link rel="modulepreload" crossorigin href="/quizletapp/assets/client-CtGT7To6.js">
+    <link rel="modulepreload" crossorigin href="/quizletapp/assets/vendor-ui-CWFz4kQj.js">
+    <link rel="modulepreload" crossorigin href="/quizletapp/assets/vendor-db-O3h6kW9H.js">
+    <link rel="stylesheet" crossorigin href="/quizletapp/assets/index-CRw9INpj.css">
+  <link rel="manifest" href="/quizletapp/manifest.webmanifest"></head>
   <body>
-    <p>Đang chuyển hướng về Lexis Workspace...</p>
+    <div id="root"></div>
+    <noscript>
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; padding: 24px; text-align: center; background-color: #0f172a; color: #f8fafc;">
+        <h1 style="font-size: 24px; font-weight: 800; margin-bottom: 12px; color: #818cf8;">Yêu Cầu Bật JavaScript</h1>
+        <p style="font-size: 15px; color: #94a3b8; max-width: 480px; line-height: 1.6; margin: 0 0 16px;">
+          Ứng dụng <strong>Lexis — Nền Tảng Học Ngôn Ngữ &amp; Quản Lý Từ Vựng Thông Minh Với AI</strong> cần JavaScript để hoạt động. Vui lòng kích hoạt JavaScript trên trình duyệt của bạn để tiếp tục học tập.
+        </p>
+      </div>
+    </noscript>
   </body>
 </html>
