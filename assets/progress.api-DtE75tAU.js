@@ -1,1 +1,0 @@
-import{_ as s,t as r}from"./client-Di47iHzc.js";var o={getDashboard:()=>r.get("/api/progress/dashboard"),getStreak:()=>r.get("/api/progress/streak"),getTodayPlan:()=>r.get("/api/today-plan"),recordActivity:async t=>{const a=await r.post("/api/activity",t);return s({source:"recordActivity",data:t}),a}};export{o as t};
