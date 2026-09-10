@@ -213,6 +213,64 @@
         .sidebar { display: none; }
         .app-header { padding: 0 12px; }
       }
+      /* 4. Skeleton Shimmer & Layout Placeholders (LCP Early Trigger) */
+      .skeleton-wrapper {
+        pointer-events: none;
+        user-select: none;
+      }
+      .skeleton-brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .skeleton-logo-box {
+        width: 28px;
+        height: 28px;
+        border-radius: 6px;
+        background: color-mix(in srgb, var(--brand-primary, #818cf8) 25%, transparent);
+      }
+      .skeleton-brand-text {
+        font-size: 15px;
+        font-weight: 700;
+        color: var(--text-primary);
+        letter-spacing: -0.01em;
+      }
+      .skeleton-body {
+        padding: 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+      .skeleton-hero {
+        background: var(--bg-surface);
+        border: 1px solid var(--border-default);
+        border-radius: 12px;
+        padding: 20px 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .skeleton-lcp-heading {
+        font-size: 20px;
+        font-weight: 700;
+        line-height: 1.3;
+        color: var(--text-primary);
+        margin: 0;
+      }
+      .skeleton-line {
+        height: 12px;
+        border-radius: 4px;
+        background: color-mix(in srgb, var(--text-secondary) 15%, transparent);
+      }
+      .skeleton-line.w-60 { width: 60%; }
+      .skeleton-line.w-40 { width: 40%; }
+      .skeleton-card {
+        height: 76px;
+        background: var(--bg-surface);
+        border: 1px solid var(--border-default);
+        border-radius: 10px;
+        opacity: 0.7;
+      }
     </style>
     <script type="module" crossorigin src="/quizletapp/assets/index-CxBHW3hh.js"></script>
     <link rel="modulepreload" crossorigin href="/quizletapp/assets/rolldown-runtime-CXHxssQy.js">
@@ -222,7 +280,28 @@
     <noscript><link rel="stylesheet" href="/quizletapp/assets/index-8Q9upPPO.css"></noscript>
   <link rel="manifest" href="/quizletapp/manifest.webmanifest"></head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <!-- Static Skeleton: Sẽ được React 19 thay thế tức thì khi mount -->
+      <div class="app-container skeleton-wrapper" aria-hidden="true">
+        <div class="main-content">
+          <header class="app-header">
+            <div class="skeleton-brand">
+              <div class="skeleton-logo-box"></div>
+              <span class="skeleton-brand-text">Lexis Workspace</span>
+            </div>
+          </header>
+          <main class="app-main skeleton-body">
+            <section class="skeleton-hero">
+              <h1 class="skeleton-lcp-heading">Lexis Workspace</h1>
+              <div class="skeleton-line w-60"></div>
+              <div class="skeleton-line w-40"></div>
+            </section>
+            <div class="skeleton-card"></div>
+            <div class="skeleton-card"></div>
+          </main>
+        </div>
+      </div>
+    </div>
     <noscript>
       <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; padding: 24px; text-align: center; background-color: #0f172a; color: #f8fafc;">
         <h1 style="font-size: 24px; font-weight: 800; margin-bottom: 12px; color: #818cf8;">Yêu Cầu Bật JavaScript</h1>
