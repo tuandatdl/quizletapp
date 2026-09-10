@@ -1,0 +1,1 @@
+import{t as e}from"./vendor-db-O3h6kW9H.js";var s=class extends e{vocabularies;readingProgress;syncQueue;constructor(){super("LexisOfflineDB"),this.version(1).stores({vocabularies:"id, term, topicId, language, syncStatus, localUpdatedAt",readingProgress:"id, passageId, completedAt, syncStatus",syncQueue:"++id, entityType, action, createdAt"})}},a=new s;export{a as t};

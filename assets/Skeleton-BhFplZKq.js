@@ -1,0 +1,1 @@
+import{r as t}from"./rolldown-runtime-CXHxssQy.js";import{_ as a,t as e}from"./vendor-react-CmUB0dRr.js";import{n as o}from"./Skeleton-DiJ-q1ui.js";var p=t(a(),1),m=e(),n=({variant:r="vocabulary"})=>(0,m.jsx)(o,{variant:r});export{n as t};
