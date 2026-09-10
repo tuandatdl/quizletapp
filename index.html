@@ -139,11 +139,87 @@
         } catch (e) {}
       })();
     </script>
+    <style id="critical-css">
+      /* 1. Reset & Base Box-Sizing */
+      *, *::before, *::after {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      html, body {
+        height: 100%;
+        height: 100dvh;
+        margin: 0;
+        padding: 0;
+        background-color: var(--bg-canvas);
+        color: var(--text-primary);
+        font-family: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+        text-rendering: optimizeLegibility;
+        -webkit-font-smoothing: antialiased;
+      }
+      /* 2. Core Design Tokens (Anti-FOUC & Anti-Theme Flash) */
+      :root {
+        --bg-canvas: #F8FAFC;
+        --bg-surface: #FFFFFF;
+        --text-primary: #0F172A;
+        --text-secondary: #334155;
+        --border-default: #E2E8F0;
+        --header-height: 52px;
+      }
+      [data-theme="dark"] {
+        --bg-canvas: #090D16;
+        --bg-surface: #111827;
+        --text-primary: #F8FAFC;
+        --text-secondary: #CBD5E1;
+        --border-default: #334155;
+      }
+      /* 3. Skeleton App Layout (CLS = 0.000) */
+      #root, .app-container {
+        height: 100%;
+        height: 100dvh;
+        width: 100vw;
+        display: flex;
+        overflow: hidden;
+        background-color: var(--bg-canvas);
+      }
+      .main-content {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+        height: 100dvh;
+        min-width: 0;
+        overflow-y: auto;
+      }
+      .app-header {
+        height: var(--header-height, 52px);
+        position: sticky;
+        top: 0;
+        z-index: 40;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 16px;
+        background-color: var(--bg-surface);
+        border-bottom: 1px solid var(--border-default);
+        flex-shrink: 0;
+      }
+      .app-main {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+      }
+      @media (max-width: 768px) {
+        .sidebar { display: none; }
+        .app-header { padding: 0 12px; }
+      }
+    </style>
     <script type="module" crossorigin src="/quizletapp/assets/index-CxBHW3hh.js"></script>
     <link rel="modulepreload" crossorigin href="/quizletapp/assets/rolldown-runtime-CXHxssQy.js">
     <link rel="modulepreload" crossorigin href="/quizletapp/assets/vendor-react-CmUB0dRr.js">
     <link rel="modulepreload" crossorigin href="/quizletapp/assets/runtime-BRsB_w63.js">
-    <link rel="stylesheet" crossorigin href="/quizletapp/assets/index-8Q9upPPO.css">
+    <link rel="preload" href="/quizletapp/assets/index-8Q9upPPO.css" as="style" onload="this.onload=null;this.rel='stylesheet'">
+    <noscript><link rel="stylesheet" href="/quizletapp/assets/index-8Q9upPPO.css"></noscript>
   <link rel="manifest" href="/quizletapp/manifest.webmanifest"></head>
   <body>
     <div id="root"></div>
