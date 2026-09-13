@@ -9,24 +9,21 @@
     <script>
       // Cơ chế tự động dọn sạch Service Worker cũ & cache rác
       (function () {
-        const CURRENT_SW_VERSION = 'v2.9.29';
+        const CURRENT_SW_VERSION = 'v2.9.29-mtzuiryi-kxcpio';
         const LS_KEY = 'lexis_sw_cleanup_version';
 
-        if (localStorage.getItem(LS_KEY) !== CURRENT_SW_VERSION) {
+        if (!localStorage.getItem(LS_KEY) || localStorage.getItem(LS_KEY) !== CURRENT_SW_VERSION) {
           if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.getRegistrations().then(function (registrations) {
-              for (var i = 0; i < registrations.length; i++) {
-                registrations[i].unregister();
+            navigator.serviceWorker.getRegistrations().then((registrations) => {
+              for (const registration of registrations) {
+                registration.unregister();
               }
             });
           }
           if ('caches' in window) {
-            caches.keys().then(function (names) {
-              for (var i = 0; i < names.length; i++) {
-                // Chỉ xóa cache tĩnh cũ, giữ nguyên runtime cache (Workbox) và piper-voices
-                if (names[i].indexOf('lexis-static-') === 0 && names[i].indexOf('v2.9.21') === -1) {
-                  caches.delete(names[i]);
-                }
+            caches.keys().then((keys) => {
+              for (const key of keys) {
+                caches.delete(key);
               }
             });
           }
