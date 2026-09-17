@@ -35,7 +35,8 @@
         "end": 28.9
       }
     ],
-    "createdAt": "2026-09-04T00:00:00.000Z"
+    "createdAt": "2026-09-04T00:00:00.000Z",
+    "updatedAt": "2026-09-04T00:00:00.000Z"
   },
   {
     "id": "starter-reading-1",
@@ -44,6 +45,7 @@
     "language": "en",
     "difficulty": "B1",
     "level": "B1",
-    "createdAt": "2026-09-02T00:00:00.000Z"
+    "createdAt": "2026-09-02T00:00:00.000Z",
+    "updatedAt": "2026-09-02T00:00:00.000Z"
   }
 ]
