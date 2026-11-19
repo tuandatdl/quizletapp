@@ -1,1 +1,0 @@
-function a(){return"static"}function t(){return a()==="static"}function e(){return"https://tu-trinh-language-api.tuandat-language.workers.dev".replace(/\/$/u,"")}var n={id:"local-profile",name:"Khách",email:"local@device.invalid",avatar:null};export{e as n,t as r,n as t};

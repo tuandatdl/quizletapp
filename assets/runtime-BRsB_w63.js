@@ -1,0 +1,1 @@
+function t(){return"static"}function a(){return t()==="static"}function e(){return"".replace(/\/$/u,"")}var i={id:"local-profile",name:"Khách",email:"local@device.invalid",avatar:null};export{e as n,a as r,i as t};
